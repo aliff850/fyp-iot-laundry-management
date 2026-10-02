@@ -1,74 +1,59 @@
 "use client";
 
 import React from "react";
+import Link from "next/link";
 import { Branch } from "@/types";
-import { Activity, ShieldCheck, MapPin, Radio } from "lucide-react";
+import { MapPin, LayoutGrid } from "lucide-react";
 
 interface HeaderProps {
   branches: Branch[];
   selectedBranch: string;
   onSelectBranch: (id: string) => void;
-  isBackendConnected: boolean;
-  isEsp32Live: boolean;
 }
 
 export function Header({
   branches,
   selectedBranch,
   onSelectBranch,
-  isBackendConnected,
-  isEsp32Live,
 }: HeaderProps) {
   return (
-    <header className="sticky top-0 z-40 bg-msu text-white shadow-md border-b border-msu-dark">
+    <header className="sticky top-0 z-40 bg-msu text-white shadow-md border-b-2 border-msu-dark">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           {/* Brand & Identity */}
           <div className="flex items-center space-x-3">
-            {/* <div className="w-10 h-10 rounded-lg bg-white/10 border border-white/20 flex items-center justify-center text-white font-black tracking-wider text-lg shadow-inner">
-              <span className="text-msu-gold">M</span>SU
-            </div> */}
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-lg font-bold tracking-tight text-white leading-tight">
+            <Link href="/" className="group flex items-center gap-2.5">
+              <div>
+                <h1 className="text-xl font-black tracking-tight text-white leading-tight group-hover:text-amber-200 transition-colors">
                   MSU SpinSense
                 </h1>
-                {/* <span className="text-[10px] font-semibold tracking-wider uppercase px-2 py-0.5 rounded bg-msu-gold text-slate-900 font-mono">
-                  IoT Portal
-                </span> */}
+                <p className="text-[11px] text-white/80 font-mono font-medium">
+                  Management & Science University
+                </p>
               </div>
-              <p className="text-xs text-white/80 font-medium">
-                Smart Laundry Management
-              </p>
-            </div>
+            </Link>
           </div>
 
           {/* Right Status & Controls */}
-          <div className="flex items-center space-x-4">
-            {/* ESP32 Live Edge Indicator */}
-            <div className="hidden sm:flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-black/25 border border-white/10">
-              <Radio className={`w-3.5 h-3.5 ${isEsp32Live ? "text-emerald-400 animate-pulse" : "text-amber-300"}`} />
-              <span className="text-white/90">
-                ESP32: <strong className={isEsp32Live ? "text-emerald-300" : "text-amber-200"}>{isEsp32Live ? "Streaming Live" : "Standby"}</strong>
-              </span>
-            </div>
+          <div className="flex items-center space-x-2.5 sm:space-x-3">
+            {/* Branch Hub Navigation Link */}
+            {/* <Link
+              href="/"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-msu-dark hover:bg-black/40 border border-white/20 text-xs font-bold text-white shadow-2xs transition-all"
+              title="Return to Branch Selection Hub"
+            >
+              <LayoutGrid className="w-3.5 h-3.5 text-amber-300" />
+              <span className="hidden sm:inline">Branch Hub</span>
+            </Link> */}
 
-            {/* Cloud Connection Pill */}
-            <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-black/25 border border-white/10">
-              <span className={`w-2 h-2 rounded-full ${isBackendConnected ? "bg-emerald-400 animate-ping" : "bg-amber-400"}`} />
-              <span className="text-white/90">
-                {isBackendConnected ? "Cloud Active" : "Mock Fallback"}
-              </span>
-            </div>
-
-            {/* Branch Selector */}
-            <div className="flex items-center space-x-1.5 bg-white text-slate-800 rounded-lg px-2.5 py-1.5 shadow-sm border border-slate-200 text-xs">
-              <MapPin className="w-3.5 h-3.5 text-msu" />
+            {/* Branch Selector Dropdown */}
+            {/* <div className="flex items-center space-x-1.5 bg-white text-slate-900 rounded-xl px-3 py-1.5 shadow-xs border-2 border-slate-300 text-xs">
+              <MapPin className="w-3.5 h-3.5 text-msu shrink-0" />
               <select
                 aria-label="Select Laundry Branch"
                 value={selectedBranch}
                 onChange={(e) => onSelectBranch(e.target.value)}
-                className="bg-transparent font-semibold text-slate-800 focus:outline-none cursor-pointer text-xs"
+                className="bg-transparent font-bold text-slate-900 focus:outline-none cursor-pointer text-xs"
               >
                 {branches.map((b) => (
                   <option key={b.id} value={b.id}>
@@ -76,7 +61,7 @@ export function Header({
                   </option>
                 ))}
               </select>
-            </div>
+            </div> */}
           </div>
         </div>
       </div>

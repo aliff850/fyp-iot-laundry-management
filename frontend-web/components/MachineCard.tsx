@@ -2,18 +2,7 @@
 
 import React, { useState } from "react";
 import { Machine } from "@/types";
-import {
-  Play,
-  Pause,
-  Square,
-  Sliders,
-  Clock,
-  Lock,
-  Unlock,
-  AlertCircle,
-  Thermometer,
-  Gauge,
-} from "lucide-react";
+import { Play, Pause, Square, AlertCircle, Clock, Thermometer, Gauge, DollarSign, Lock, Unlock } from "lucide-react";
 
 interface MachineCardProps {
   machine: Machine;
@@ -27,9 +16,9 @@ export function MachineCard({ machine, onCommand, onEditParameters }: MachineCar
 
   const isRunning = machine.status === "RUNNING";
   const isIdle = machine.status === "IDLE";
-  const isError = machine.status === "ERROR";
 
-  const handleAction = async (cmd: "start" | "pause" | "stop") => {
+  const handleAction = async (cmd: "start" | "pause" | "stop", e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
     setIsLoading(true);
     await onCommand(machine.id, cmd);
     setIsLoading(false);
@@ -37,186 +26,194 @@ export function MachineCard({ machine, onCommand, onEditParameters }: MachineCar
   };
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-xs hover:shadow-md transition-shadow overflow-hidden flex flex-col justify-between h-full">
-      {/* Header */}
-      <div className="p-4 border-b border-slate-100 flex items-start justify-between gap-2.5">
-        <div className="min-w-0 flex-1">
-          <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 font-mono truncate">
-            {machine.id} • {machine.type.toUpperCase()}
-          </span>
-          <h4
-            className="text-sm font-bold text-slate-900 leading-snug line-clamp-1 mt-0.5"
-            title={machine.name}
-          >
-            {machine.name}
-          </h4>
+    <div
+      onClick={() => onEditParameters(machine)}
+      className="bg-white rounded-2xl border-2 border-slate-300 hover:border-msu shadow-xs hover:shadow-md cursor-pointer transition-all duration-150 p-4 flex flex-col justify-between h-full select-none"
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onEditParameters(machine);
+        }
+      }}
+      aria-label={`Open machine parameters and controls for ${machine.id}`}
+    >
+      <div className="space-y-2">
+        {/* Machine ID */}
+        <div className="p-2.5 rounded-xl bg-slate-900 border-2 border-slate-950 text-center font-mono font-black text-xl text-white tracking-wide">
+          {machine.id}
         </div>
 
-        {/* Status Badge */}
-        <span
-          className={`shrink-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wide ${
+        {/* FOCAL POINT 1: Status */}
+        <div
+          className={`p-2.5 rounded-xl border-2 text-center font-mono font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2 ${
             isRunning
-              ? "bg-blue-100 text-blue-700"
+              ? "bg-blue-100 border-blue-500 text-blue-900"
               : isIdle
-              ? "bg-emerald-100 text-emerald-700"
-              : "bg-red-100 text-red-700"
+              ? "bg-emerald-100 border-emerald-500 text-emerald-900"
+              : "bg-red-100 border-red-500 text-red-900"
           }`}
         >
           <span
-            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-              isRunning ? "bg-blue-500 animate-ping" : isIdle ? "bg-emerald-500" : "bg-red-500"
+            className={`w-2.5 h-2.5 rounded-full ${
+              isRunning ? "bg-blue-600 animate-ping" : isIdle ? "bg-emerald-600" : "bg-red-600"
             }`}
           />
-          <span className="truncate">{machine.status}</span>
-        </span>
-      </div>
+          <span>{machine.status}</span>
+        </div>
 
-      {/* Body: Countdown & Parameters */}
-      <div className="p-4 space-y-3 flex-1 flex flex-col justify-between">
-        {/* Remaining Time Banner */}
+        {/* FOCAL POINT 2: Cycle Time (Hero Metric) */}
         <div
-          className={`p-3 rounded-lg flex items-center justify-between gap-2 ${
+          className={`p-3.5 rounded-xl border-2 flex flex-col items-center justify-center text-center ${
             isRunning
-              ? "bg-blue-50/70 border border-blue-100 text-blue-900"
-              : "bg-slate-50 border border-slate-100 text-slate-600"
+              ? "bg-blue-50/70 border-blue-300 text-blue-950"
+              : "bg-slate-50 border-slate-200 text-slate-800"
           }`}
         >
-          <div className="flex items-center gap-2 min-w-0 flex-1">
-            <Clock
-              className={`w-4 h-4 shrink-0 ${
-                isRunning ? "text-blue-600 animate-spin" : "text-slate-400"
-              }`}
-            />
-            <div className="min-w-0 flex-1">
-              <span className="block text-xs font-semibold truncate leading-tight">
-                {isRunning
-                  ? "Cycle in Progress"
-                  : isError
-                  ? "Service Required"
-                  : "Ready for Load"}
-              </span>
-              <p
-                className="text-[11px] text-slate-500 truncate leading-tight mt-0.5"
-                title={machine.current_cycle || "Idle / Available"}
-              >
-                {machine.current_cycle || "Idle / Available"}
-              </p>
-            </div>
+          <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-slate-500 uppercase tracking-wider">
+            <Clock className={`w-3.5 h-3.5 ${isRunning ? "text-blue-600 animate-spin" : "text-slate-400"}`} />
+            <span>Cycle Time</span>
           </div>
-          <div className="text-right shrink-0">
-            <span className="text-xl font-extrabold font-mono tracking-tight text-slate-900">
+          <div className="flex items-baseline gap-1 mt-0.5">
+            <span className="text-3xl sm:text-4xl font-black font-mono tracking-tight text-slate-950">
               {machine.remaining_time ?? 0}
             </span>
-            <span className="text-[11px] font-semibold text-slate-500 ml-1">mins</span>
+            <span className="text-xs font-bold font-mono text-slate-500">mins</span>
           </div>
         </div>
 
-        {/* Operating Parameter Badges Grid */}
-        <div className="grid grid-cols-2 gap-2 text-xs">
+        {/* MINOR DETAILS: Price, Temp, Speed, Door (Compact, Small Labels) */}
+        <div className="space-y-1.5 pt-1">
           {/* Price */}
-          <div className="flex items-center gap-1.5 p-2 rounded-lg bg-slate-50 text-slate-700 border border-slate-100 min-w-0">
-            <span className="text-[10px] font-bold text-slate-400 shrink-0">RM</span>
-            <span className="font-bold text-msu font-mono truncate">
-              {(machine.parameters?.price ?? 6.0).toFixed(2)}
+          <div className="py-1.5 px-3 rounded-lg bg-amber-50/70 border border-amber-200 flex items-center justify-between text-xs font-mono">
+            <span className="flex items-center gap-1.5 text-[11px] text-amber-800 font-bold uppercase">
+              <DollarSign className="w-3 h-3 text-amber-600" />
+              Price
+            </span>
+            <span className="font-bold text-amber-950 text-xs">
+              RM {(machine.parameters?.price ?? 6.0).toFixed(2)}
             </span>
           </div>
 
           {/* Temperature */}
-          <div className="flex items-center gap-1.5 p-2 rounded-lg bg-slate-50 text-slate-700 border border-slate-100 min-w-0">
-            <Thermometer className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <span className="font-semibold truncate">
+          <div className="py-1.5 px-3 rounded-lg bg-orange-50/70 border border-orange-200 flex items-center justify-between text-xs font-mono">
+            <span className="flex items-center gap-1.5 text-[11px] text-orange-800 font-bold uppercase">
+              <Thermometer className="w-3 h-3 text-orange-600" />
+              Temp
+            </span>
+            <span className="font-bold text-orange-950 text-xs">
               {machine.parameters?.temp_celsius ?? 40}°C
             </span>
           </div>
 
-          {/* Spin Speed */}
-          <div className="flex items-center gap-1.5 p-2 rounded-lg bg-slate-50 text-slate-700 border border-slate-100 min-w-0">
-            <Gauge className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <span className="font-semibold truncate">
+          {/* Speed */}
+          <div className="py-1.5 px-3 rounded-lg bg-cyan-50/70 border border-cyan-200 flex items-center justify-between text-xs font-mono">
+            <span className="flex items-center gap-1.5 text-[11px] text-cyan-800 font-bold uppercase">
+              <Gauge className="w-3 h-3 text-cyan-600" />
+              Speed
+            </span>
+            <span className="font-bold text-cyan-950 text-xs">
               {machine.parameters?.spin_speed ?? 800} RPM
             </span>
           </div>
 
-          {/* Door Status */}
-          <div className="flex items-center gap-1.5 p-2 rounded-lg bg-slate-50 text-slate-700 border border-slate-100 min-w-0">
-            {machine.parameters?.door_locked ? (
-              <Lock className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-            ) : (
-              <Unlock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-            )}
-            <span className="font-semibold truncate">
+          {/* Door Lock */}
+          <div
+            className={`py-1.5 px-3 rounded-lg border flex items-center justify-between text-xs font-mono ${
+              machine.parameters?.door_locked
+                ? "bg-emerald-50/70 border-emerald-200 text-emerald-950"
+                : "bg-amber-50/70 border-amber-200 text-amber-950"
+            }`}
+          >
+            <span className="flex items-center gap-1.5 text-[11px] font-bold uppercase">
+              {machine.parameters?.door_locked ? (
+                <Lock className="w-3 h-3 text-emerald-600" />
+              ) : (
+                <Unlock className="w-3 h-3 text-amber-600" />
+              )}
+              Door
+            </span>
+            <span className="font-bold text-xs">
               {machine.parameters?.door_locked ? "Locked" : "Unlocked"}
             </span>
           </div>
         </div>
       </div>
 
-      {/* Action Footer */}
-      <div className="p-3 bg-slate-50 border-t border-slate-100">
+      {/* Footer Controls */}
+      <div
+        className="mt-3 pt-3 border-t-2 border-slate-200"
+        onClick={(e) => e.stopPropagation()}
+      >
         {confirmCmd ? (
-          <div className="flex items-center justify-between gap-2 p-1.5 bg-amber-50 border border-amber-200 rounded-lg text-xs min-w-0">
-            <div className="flex items-center gap-1 text-amber-800 font-semibold min-w-0 flex-1 truncate">
-              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">{confirmCmd.toUpperCase()}?</span>
+          <div className="flex items-center justify-between gap-2 p-1.5 bg-amber-50 border-2 border-amber-300 rounded-xl text-xs">
+            <div className="flex items-center gap-1 text-amber-950 font-bold font-mono">
+              <AlertCircle className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+              <span>{confirmCmd.toUpperCase()}?</span>
             </div>
-            <div className="flex items-center gap-1 shrink-0">
+            <div className="flex items-center gap-1.5">
               <button
+                type="button"
                 disabled={isLoading}
-                onClick={() => handleAction(confirmCmd)}
-                className="px-2.5 py-1 bg-msu text-white text-[11px] font-bold rounded shadow-xs hover:bg-msu-dark disabled:opacity-50 transition-colors"
+                onClick={(e) => handleAction(confirmCmd, e)}
+                className="px-3 py-1 bg-msu text-white text-xs font-bold rounded-lg hover:bg-msu-dark disabled:opacity-50 transition-colors font-mono"
               >
-                Yes
+                Confirm
               </button>
               <button
+                type="button"
                 disabled={isLoading}
-                onClick={() => setConfirmCmd(null)}
-                className="px-2 py-1 text-slate-600 text-[11px] font-semibold hover:bg-white rounded transition-colors"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setConfirmCmd(null);
+                }}
+                className="px-2 py-1 text-slate-600 text-xs font-semibold hover:bg-white rounded-lg transition-colors font-mono"
               >
                 Cancel
               </button>
             </div>
           </div>
         ) : (
-          <div className="flex items-center justify-between gap-2">
-            {/* Quick Commands */}
-            <div className="flex items-center gap-1 shrink-0">
-              <button
-                disabled={isRunning || isError}
-                onClick={() => setConfirmCmd("start")}
-                className="p-1.5 rounded-lg border border-slate-200 bg-white text-emerald-600 hover:bg-emerald-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                title="Start Cycle"
-                aria-label={`Start cycle on ${machine.name}`}
-              >
-                <Play className="w-3.5 h-3.5 fill-current" />
-              </button>
-              <button
-                disabled={!isRunning}
-                onClick={() => setConfirmCmd("pause")}
-                className="p-1.5 rounded-lg border border-slate-200 bg-white text-amber-600 hover:bg-amber-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                title="Pause Cycle"
-                aria-label={`Pause cycle on ${machine.name}`}
-              >
-                <Pause className="w-3.5 h-3.5 fill-current" />
-              </button>
-              <button
-                disabled={!isRunning}
-                onClick={() => setConfirmCmd("stop")}
-                className="p-1.5 rounded-lg border border-slate-200 bg-white text-red-600 hover:bg-red-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                title="Emergency Stop"
-                aria-label={`Stop cycle on ${machine.name}`}
-              >
-                <Square className="w-3.5 h-3.5 fill-current" />
-              </button>
-            </div>
-
-            {/* Edit Parameters Button */}
+          <div className="flex items-center justify-center gap-2">
             <button
-              onClick={() => onEditParameters(machine)}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 text-xs font-semibold transition-colors shrink-0"
-              aria-label={`Configure parameters for ${machine.name}`}
+              type="button"
+              disabled={isRunning || machine.status === "ERROR"}
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirmCmd("start");
+              }}
+              className="flex-1 py-2 rounded-xl border-2 border-emerald-400 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-500 disabled:opacity-30 disabled:cursor-not-allowed transition-all flex items-center justify-center shadow-2xs"
+              title="Start Cycle"
+              aria-label={`Start cycle on ${machine.id}`}
             >
-              <Sliders className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-              <span>Configure</span>
+              <Play className="w-4 h-4 fill-current" />
+            </button>
+            <button
+              type="button"
+              disabled={!isRunning}
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirmCmd("pause");
+              }}
+              className="flex-1 py-2 rounded-xl border-2 border-amber-400 bg-amber-50 text-amber-700 hover:bg-amber-100 hover:border-amber-500 disabled:opacity-30 disabled:cursor-not-allowed transition-all flex items-center justify-center shadow-2xs"
+              title="Pause Cycle"
+              aria-label={`Pause cycle on ${machine.id}`}
+            >
+              <Pause className="w-4 h-4 fill-current" />
+            </button>
+            <button
+              type="button"
+              disabled={!isRunning}
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirmCmd("stop");
+              }}
+              className="flex-1 py-2 rounded-xl border-2 border-red-400 bg-red-50 text-red-700 hover:bg-red-100 hover:border-red-500 disabled:opacity-30 disabled:cursor-not-allowed transition-all flex items-center justify-center shadow-2xs"
+              title="Emergency Stop"
+              aria-label={`Stop cycle on ${machine.id}`}
+            >
+              <Square className="w-4 h-4 fill-current" />
             </button>
           </div>
         )}
