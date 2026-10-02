@@ -1,343 +1,148 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
-import { Header } from "@/components/Header";
-import { Sidebar, NavTab } from "@/components/Sidebar";
-import { LpgSafetyPanel } from "@/components/LpgSafetyPanel";
-import { MachineGrid } from "@/components/MachineGrid";
-import { ParameterModal } from "@/components/ParameterModal";
-import { TelemetrySection } from "@/components/TelemetrySection";
+import React, { useState, useEffect } from "react";
+import Link from "next/link";
+import { BranchLandingCard, BranchInfo } from "@/components/BranchLandingCard";
 import {
-  getBranches,
-  getMachines,
-  getLatestSensorData,
-  getTelemetry,
-  issueCommand,
-  updateParameters,
-} from "@/lib/api";
-import { Branch, LpgSensorData, Machine, MachineParameters, TelemetrySummary } from "@/types";
-import { RefreshCw, CheckCircle2, AlertTriangle, Layers, Sliders } from "lucide-react";
+  Building2,
+  WashingMachine,
+  Flame,
+  ArrowRight,
+  ShieldCheck,
+  Activity,
+} from "lucide-react";
 
-export default function DashboardPage() {
-  const [activeTab, setActiveTab] = useState<NavTab>("overview");
-  const [branches, setBranches] = useState<Branch[]>([]);
-  const [selectedBranch, setSelectedBranch] = useState("msu-shah-alam");
-
-  const [machines, setMachines] = useState<Machine[]>([]);
-  const [sensorData, setSensorData] = useState<LpgSensorData | null>(null);
-  const [telemetry, setTelemetry] = useState<TelemetrySummary | null>(null);
-
-  const [isBackendConnected, setIsBackendConnected] = useState(false);
-  const [isEsp32Live, setIsEsp32Live] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  const [editingMachine, setEditingMachine] = useState<Machine | null>(null);
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3500);
-  };
-
-  // Polling data fetcher
-  const refreshAllData = useCallback(async () => {
-    setIsRefreshing(true);
-    try {
-      const [branchRes, machineRes, sensorRes, telemetryRes] = await Promise.all([
-        getBranches(),
-        getMachines(),
-        getLatestSensorData(),
-        getTelemetry(selectedBranch),
-      ]);
-
-      if (branchRes.data.length > 0) setBranches(branchRes.data);
-      if (machineRes.data.length > 0) setMachines(machineRes.data);
-      if (sensorRes.data) {
-        setSensorData(sensorRes.data);
-        setIsEsp32Live(sensorRes.data.is_live_stream);
-      }
-      if (telemetryRes.data) setTelemetry(telemetryRes.data);
-
-      setIsBackendConnected(machineRes.isLive || sensorRes.isLive);
-    } catch (err) {
-      console.error("[Dashboard] Refresh failed:", err);
-      setIsBackendConnected(false);
-    } finally {
-      setIsRefreshing(false);
-    }
-  }, [selectedBranch]);
-
-  useEffect(() => {
-    refreshAllData();
-    // Poll every 4 seconds per PRD non-functional requirements
-    const interval = setInterval(refreshAllData, 4000);
-    return () => clearInterval(interval);
-  }, [refreshAllData]);
-
-  const handleCommand = async (machineId: string, cmd: "start" | "pause" | "stop") => {
-    const res = await issueCommand(machineId, cmd);
-    if (res.success) {
-      showToast(`Command '${cmd.toUpperCase()}' sent to ${machineId}`);
-      await refreshAllData();
-    } else {
-      showToast(`Failed to execute '${cmd}' on ${machineId}`);
-    }
-  };
-
-  const handleSaveParameters = async (machineId: string, params: MachineParameters) => {
-    const res = await updateParameters(machineId, params);
-    if (res.success) {
-      showToast(`Parameters updated for ${machineId}`);
-      await refreshAllData();
-    } else {
-      showToast(`Failed to update parameters for ${machineId}`);
-    }
-  };
-
-  const runningCount = machines.filter((m) => m.status === "RUNNING").length;
+export default function LandingPage() {
+  const branches: BranchInfo[] = [
+    {
+      id: "msu-shah-alam",
+      name: "MSU Shah Alam",
+      campusType: "Main Campus Hub",
+      address: "Management & Science University, Section 13, 40100 Shah Alam, Selangor",
+      washersCount: 4,
+      dryersCount: 4,
+      totalMachines: 8,
+      status: "ONLINE",
+    },
+    {
+      id: "msu-cheras",
+      name: "MSU Cheras",
+      campusType: "Cheras Campus Centre",
+      address: "MSU College Cheras, Jalan Manickavasagam, 56000 Cheras, Kuala Lumpur",
+      washersCount: 4,
+      dryersCount: 4,
+      totalMachines: 8,
+      status: "ONLINE",
+    },
+  ];
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
-      {/* Top Header */}
-      <Header
-        branches={branches}
-        selectedBranch={selectedBranch}
-        onSelectBranch={setSelectedBranch}
-        isBackendConnected={isBackendConnected}
-        isEsp32Live={isEsp32Live}
-      />
-
-      {/* Main Layout Body */}
-      <div className="flex-1 flex max-w-7xl w-full mx-auto">
-        {/* Navigation Sidebar */}
-        <Sidebar
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          runningCount={runningCount}
-          totalMachines={machines.length}
-        />
-
-        {/* Content Canvas */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 space-y-6 overflow-x-hidden">
-          {/* Top Banner & Refresh Trigger */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-200">
+    <div className="min-h-screen bg-[#E7ECF3] flex flex-col font-sans">
+      {/* Top Brand Header */}
+      <header className="bg-msu text-white shadow-md border-b-2 border-msu-dark">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16">
             <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 capitalize">
-                  {activeTab === "overview"
-                    ? "Branch Operations Overview"
-                    : activeTab === "fleet"
-                    ? "Commercial Machine Fleet"
-                    : activeTab === "parameters"
-                    ? "Machine Operating Parameters"
-                    : activeTab === "safety"
-                    ? "LPG Cylinders & Hazard Safety"
-                    : "Consumption & Performance Analytics"}
-                </h2>
-                <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded bg-msu-light text-msu border border-msu-border/30">
-                  {selectedBranch.toUpperCase()}
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Centralized telemetry & remote command center for self-service operators.
+              <h1 className="text-xl font-black tracking-tight text-white leading-tight">
+                MSU SpinSense
+              </h1>
+              <p className="text-[11px] text-white/80 font-mono font-medium">
+                Management & Science University
               </p>
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={refreshAllData}
-                disabled={isRefreshing}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 text-xs font-semibold shadow-2xs transition-all disabled:opacity-50"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin text-msu" : "text-slate-400"}`} />
-                <span>Sync Telemetry</span>
-              </button>
-            </div>
+            <Link
+              href="/dashboard?branch=msu-shah-alam"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-msu-dark hover:bg-black/40 border border-white/20 text-xs font-bold text-white shadow-2xs transition-all"
+            >
+              <span>Quick Dashboard</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Hub Content Canvas */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-8">
+        {/* Welcome Hero Banner */}
+        <div className="bg-white rounded-2xl border-2 border-slate-300 p-6 sm:p-8 shadow-xs">
+          <div className="max-w-3xl space-y-2">
+            {/* <span className="inline-block text-xs font-mono font-bold uppercase tracking-wider text-msu">
+              Operations Portal
+            </span> */}
+            <h2 className="text-2xl sm:text-4xl font-black tracking-tight text-slate-900 leading-tight">
+              Welcome to MSU SpinSense
+            </h2>
+            <p className="text-sm sm:text-base text-slate-600 font-medium">
+              Select a laundry facility below to inspect live machine telemetry, configure operating parameters, and monitor real-time LPG gas safety.
+            </p>
           </div>
 
-          {/* Toast Notification Banner */}
-          {toastMessage && (
-            <div className="p-3 rounded-lg bg-slate-900 text-white text-xs font-medium shadow-lg flex items-center justify-between animate-in slide-in-from-top-2 duration-150">
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                <span>{toastMessage}</span>
+          {/* Quick Metrics Bar */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6 pt-6 border-t-2 border-slate-200">
+            <div className="p-3 rounded-xl bg-slate-50 border-2 border-slate-200">
+              <div className="flex items-center gap-2 text-slate-500 font-mono text-[11px] font-bold uppercase">
+                <Building2 className="w-3.5 h-3.5 text-msu" />
+                <span>Branches</span>
               </div>
-              <button onClick={() => setToastMessage(null)} className="text-slate-400 hover:text-white text-xs font-mono">
-                ✕
-              </button>
+              <div className="text-2xl font-black text-slate-900 font-mono mt-1">2 Active</div>
             </div>
-          )}
 
-          {/* Dynamic Content Views */}
-          {activeTab === "overview" && (
-            <div className="space-y-6">
-              {/* LPG & Environmental Safety Section */}
-              {sensorData && <LpgSafetyPanel sensorData={sensorData} />}
-
-              {/* Machine Fleet Overview */}
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-bold uppercase tracking-wider text-slate-700">
-                    Live Laundry Fleet ({machines.length} Units)
-                  </h3>
-                  <button
-                    onClick={() => setActiveTab("fleet")}
-                    className="text-xs font-bold text-msu hover:underline"
-                  >
-                    View All Fleet &rarr;
-                  </button>
-                </div>
-                <MachineGrid
-                  machines={machines}
-                  onCommand={handleCommand}
-                  onEditParameters={(m) => setEditingMachine(m)}
-                />
+            <div className="p-3 rounded-xl bg-slate-50 border-2 border-slate-200">
+              <div className="flex items-center gap-2 text-slate-500 font-mono text-[11px] font-bold uppercase">
+                <WashingMachine className="w-3.5 h-3.5 text-blue-600" />
+                <span>Fleet Units</span>
               </div>
-
-              {/* Quick Telemetry Summary */}
-              {telemetry && (
-                <TelemetrySection
-                  telemetry={telemetry}
-                  onTimeframeChange={async (tf) => {
-                    const res = await getTelemetry(selectedBranch, tf);
-                    if (res.data) setTelemetry(res.data);
-                  }}
-                />
-              )}
+              <div className="text-2xl font-black text-slate-900 font-mono mt-1">16 Units</div>
             </div>
-          )}
 
-          {activeTab === "fleet" && (
-            <div className="space-y-4">
-              <MachineGrid
-                machines={machines}
-                onCommand={handleCommand}
-                onEditParameters={(m) => setEditingMachine(m)}
-              />
-            </div>
-          )}
-
-          {activeTab === "parameters" && (
-            <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
-              <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900">Operating Parameter Configuration</h3>
-                  <p className="text-xs text-slate-500">Configure cycle pricing, duration, temperature, and door locks per machine</p>
-                </div>
+            <div className="p-3 rounded-xl bg-slate-50 border-2 border-slate-200">
+              <div className="flex items-center gap-2 text-slate-500 font-mono text-[11px] font-bold uppercase">
+                <Flame className="w-3.5 h-3.5 text-emerald-600" />
+                <span>LPG Safety</span>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs text-left">
-                  <thead className="bg-slate-50 text-slate-500 font-bold uppercase tracking-wider text-[10px] border-b border-slate-200">
-                    <tr>
-                      <th className="py-3 px-4">Machine</th>
-                      <th className="py-3 px-4">Type</th>
-                      <th className="py-3 px-4">Status</th>
-                      <th className="py-3 px-4">Cycle Price</th>
-                      <th className="py-3 px-4">Duration</th>
-                      <th className="py-3 px-4">Temp</th>
-                      <th className="py-3 px-4">Spin Speed</th>
-                      <th className="py-3 px-4">Door Lock</th>
-                      <th className="py-3 px-4 text-right">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 font-medium">
-                    {machines.map((m) => (
-                      <tr key={m.id} className="hover:bg-slate-50/80 transition-colors">
-                        <td className="py-3 px-4 font-bold text-slate-900">{m.name}</td>
-                        <td className="py-3 px-4 uppercase font-mono text-slate-500">{m.type}</td>
-                        <td className="py-3 px-4">
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                              m.status === "RUNNING"
-                                ? "bg-blue-100 text-blue-700"
-                                : m.status === "IDLE"
-                                ? "bg-emerald-100 text-emerald-700"
-                                : "bg-red-100 text-red-700"
-                            }`}
-                          >
-                            {m.status}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 font-bold text-msu font-mono">RM {m.parameters.price.toFixed(2)}</td>
-                        <td className="py-3 px-4">{m.parameters.duration_mins} mins</td>
-                        <td className="py-3 px-4">{m.parameters.temp_celsius}°C</td>
-                        <td className="py-3 px-4">{m.parameters.spin_speed} RPM</td>
-                        <td className="py-3 px-4">
-                          <span className={`text-[10px] font-semibold ${m.parameters.door_locked ? "text-emerald-700" : "text-amber-700"}`}>
-                            {m.parameters.door_locked ? "Locked" : "Unlocked"}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 text-right">
-                          <button
-                            onClick={() => setEditingMachine(m)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-200 bg-white hover:bg-slate-100 font-bold text-slate-700 shadow-2xs"
-                          >
-                            <Sliders className="w-3 h-3 text-slate-400" />
-                            <span>Edit</span>
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="text-2xl font-black text-emerald-700 font-mono mt-1">Normal (0 Leaks)</div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-50 border-2 border-slate-200">
+              <div className="flex items-center gap-2 text-slate-500 font-mono text-[11px] font-bold uppercase">
+                <Activity className="w-3.5 h-3.5 text-amber-600" />
+                <span>Fleet Health</span>
               </div>
+              <div className="text-2xl font-black text-slate-900 font-mono mt-1">100% Online</div>
             </div>
-          )}
+          </div>
+        </div>
 
-          {activeTab === "safety" && (
-            <div className="space-y-6">
-              {sensorData && <LpgSafetyPanel sensorData={sensorData} />}
-
-              {/* Hardware Topology Card */}
-              <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs space-y-4">
-                <div className="flex items-center gap-2">
-                  <Layers className="w-4 h-4 text-msu" />
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                    Physical IoT Node Pinout & Telemetry Channel Mapping
-                  </h4>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-                  <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200">
-                    <span className="text-[10px] font-mono font-bold text-msu uppercase">Node 01 • MQ-6 Analog</span>
-                    <h5 className="font-bold text-slate-900 mt-1">LPG Gas Concentration</h5>
-                    <p className="text-[11px] text-slate-500 mt-0.5">ESP32 Pin GPIO 34 (ADC1). Voltage threshold &gt;1.3V triggers urgent buzzer and alert banner.</p>
-                  </div>
-                  <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200">
-                    <span className="text-[10px] font-mono font-bold text-emerald-600 uppercase">Node 01 • DHT22 Digital</span>
-                    <h5 className="font-bold text-slate-900 mt-1">Temperature & Humidity</h5>
-                    <p className="text-[11px] text-slate-500 mt-0.5">ESP32 Pin GPIO 4. Reads room humidity and exhaust temperature every 5 seconds.</p>
-                  </div>
-                  <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200">
-                    <span className="text-[10px] font-mono font-bold text-blue-600 uppercase">Node 02 • HX711 Load Cell</span>
-                    <h5 className="font-bold text-slate-900 mt-1">50KG Cylinder Scale (Simulated)</h5>
-                    <p className="text-[11px] text-slate-500 mt-0.5">Pending hardware integration. Backend provides calibrated simulated weight metrics.</p>
-                  </div>
-                </div>
-              </div>
+        {/* Laundry Branches Section */}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between pb-2 border-b-2 border-slate-300">
+            <div>
+              <h3 className="text-lg sm:text-xl font-black tracking-tight text-slate-900">
+                Select Laundry Branch
+              </h3>
+              {/* <p className="text-xs text-slate-500 font-medium">
+                Choose a campus location to open its dedicated Operations Overview
+              </p> */}
             </div>
-          )}
+            {/* <span className="text-xs font-mono font-bold px-3 py-1 rounded-full bg-white text-slate-700 border-2 border-slate-300">
+              2 Locations
+            </span> */}
+          </div>
 
-          {activeTab === "telemetry" && telemetry && (
-            <div className="space-y-6">
-              <TelemetrySection
-                telemetry={telemetry}
-                onTimeframeChange={async (tf) => {
-                  const res = await getTelemetry(selectedBranch, tf);
-                  if (res.data) setTelemetry(res.data);
-                }}
-              />
-            </div>
-          )}
-        </main>
-      </div>
+          {/* Cards Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {branches.map((b) => (
+              <BranchLandingCard key={b.id} branch={b} />
+            ))}
+          </div>
+        </div>
+      </main>
 
-      {/* Parameter Edit Modal */}
-      <ParameterModal
-        machine={editingMachine}
-        isOpen={!!editingMachine}
-        onClose={() => setEditingMachine(null)}
-        onSave={handleSaveParameters}
-      />
+      {/* Clean System Footer */}
+      <footer className="mt-auto py-6 border-t-2 border-slate-300 bg-white/60 text-center text-xs text-slate-500 font-mono">
+        <p>Management & Science University • IoT Smart Laundry & LPG Monitoring System</p>
+      </footer>
     </div>
   );
 }
