@@ -4,12 +4,16 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+// Disable brownout detector
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+
 // Network credentials
 const char *ssid = "BSC12A@unifi";
 const char *password = "norazlinnaim";
 
-// Render endpoint
-const char *serverURL = "https://gas-monitor-api.onrender.com/api/update";
+// Render endpoint (must include /api/update)
+const char *serverURL = "https://esp32-gas-api.onrender.com/api/update";
 
 // Pin definitions
 const int mq6Pin = 34;
@@ -20,10 +24,13 @@ DHT dht(dhtPin, DHTTYPE);
 
 unsigned long lastUpdate = 0;
 const unsigned long updateInterval =
-    2500; // DHT22 requires at least 2s between reads
+    5000; // 5s interval (sufficient for gas & ambient monitoring)
 
 void setup() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); // Disable brownout detector
+
   Serial.begin(115200);
+  delay(1000); // Allow power supply to settle
 
   dht.begin();
 
@@ -60,6 +67,7 @@ void loop() {
       client.setInsecure(); // Skips certificate validation for simplicity
       HTTPClient http;
 
+      http.setTimeout(15000); // 15 seconds to allow for Render cold-starts
       http.begin(client, serverURL);
       http.addHeader("Content-Type", "application/json");
 
@@ -76,9 +84,15 @@ void loop() {
       if (httpResponseCode > 0) {
         Serial.print("Data sent successfully. Server responded: ");
         Serial.println(httpResponseCode);
+        String response = http.getString();
+        Serial.print("Response: ");
+        Serial.println(response);
       } else {
         Serial.print("Error sending data. Code: ");
-        Serial.println(httpResponseCode);
+        Serial.print(httpResponseCode);
+        Serial.print(" (");
+        Serial.print(http.errorToString(httpResponseCode).c_str());
+        Serial.println(")");
       }
 
       http.end();
