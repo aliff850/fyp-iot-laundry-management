@@ -1,8 +1,14 @@
+import os
 from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel, Field
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+INDEX_FILE = os.path.join(STATIC_DIR, "index.html")
 
 app = FastAPI(
     title="MSU SpinSense - Smart Laundry Operator API",
@@ -163,13 +169,25 @@ latest_edge_data = {
 # Endpoints
 # ==========================================
 
-@app.get("/")
-def root():
+@app.get("/", response_class=HTMLResponse)
+@app.get("/dashboard", response_class=HTMLResponse)
+@app.get("/monitor", response_class=HTMLResponse)
+async def serve_dashboard():
+    """Serves the real-time auto-updating IoT telemetry dashboard"""
+    target = INDEX_FILE if os.path.exists(INDEX_FILE) else os.path.join(BASE_DIR, "index.html")
+    if os.path.exists(target):
+        with open(target, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse("<h2>MSU SpinSense Live Monitor: index.html not found.</h2>")
+
+@app.get("/api")
+@app.get("/api/status")
+def api_status():
     return {
         "status": "online",
         "service": "MSU SpinSense Operator API",
         "version": "1.0.0",
-        "endpoints": ["/auth/token", "/machines", "/telemetry", "/branches", "/api/latest"],
+        "endpoints": ["/auth/token", "/machines", "/telemetry", "/branches", "/api/latest", "/api/data", "/api/update"],
     }
 
 @app.post("/auth/token", response_model=TokenResponse)
@@ -323,6 +341,8 @@ async def update_sensor_data(payload: SensorPayload):
     return {"status": "success"}
 
 @app.get("/api/latest")
+@app.get("/api/data")
+@app.get("/api/update")
 def get_latest_data():
     """Real-time edge telemetry with enriched cylinder weight and safety status"""
     return latest_edge_data
