@@ -3,300 +3,702 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MSU SpinSense - Live IoT Edge Monitor</title>
+  <title>MSU SpinSense - Real-Time IoT Edge Telemetry & Safety Hub</title>
+  
+  <!-- Fonts: Poppins (Design System Headings) & JetBrains Mono (Telemetry Data) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700;800;900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  
+  <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Chart.js for High-Precision Live Streaming Trends -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
   <script>
     tailwind.config = {
       theme: {
         extend: {
           colors: {
-            msu: '#8B0000',
-            'msu-dark': '#660000',
-            'msu-light': '#FDF2F2',
-            'msu-border': '#DC2626',
-            'msu-gold': '#D4AF37',
+            msu: {
+              DEFAULT: '#8B0000',
+              dark: '#660000',
+              light: '#FDF2F2',
+              border: '#DC2626',
+              gold: '#D4AF37',
+              goldLight: '#FEF9C3',
+            },
             canvas: '#E7ECF3',
+            cardBg: '#FFFFFF',
           },
           fontFamily: {
-            sans: ['Poppins', 'sans-serif'],
-            mono: ['JetBrains Mono', 'monospace'],
+            sans: ['Poppins', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+            mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+          },
+          boxShadow: {
+            subtle: '0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05)',
+            card: '0 4px 6px -1px rgba(0, 0, 0, 0.06), 0 2px 4px -2px rgba(0, 0, 0, 0.05)',
+            glowRed: '0 0 25px rgba(220, 38, 38, 0.4)',
+            glowGreen: '0 0 20px rgba(34, 197, 94, 0.25)',
           }
         }
       }
     }
   </script>
+
   <style>
+    :root {
+      --color-canvas: #E7ECF3;
+      --color-msu: #8B0000;
+    }
     body {
-      background-color: #E7ECF3;
+      background-color: var(--color-canvas);
       font-family: 'Poppins', sans-serif;
+      color: #0F172A;
+      -webkit-font-smoothing: antialiased;
     }
     h1, h2, h3, h4, h5, h6 {
       font-weight: 900;
+      letter-spacing: -0.02em;
     }
-    .pulse-dot {
-      animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    .font-num {
+      font-family: 'JetBrains Mono', monospace;
+      font-variant-numeric: tabular-nums;
     }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.4; transform: scale(1.15); }
+    .pulse-ring {
+      animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+    }
+    @keyframes pulse-ring {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); }
+      70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(34, 197, 94, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+    }
+    .pulse-ring-alert {
+      animation: pulse-ring-alert 1.2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+    }
+    @keyframes pulse-ring-alert {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.8); }
+      70% { transform: scale(1.05); box-shadow: 0 0 0 14px rgba(220, 38, 38, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .pulse-ring, .pulse-ring-alert, .animate-spin {
+        animation: none !important;
+      }
+    }
+    /* Custom scrollbars */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #E2E8F0;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #94A3B8;
+      border-radius: 4px;
     }
   </style>
 </head>
-<body class="min-h-screen text-slate-900 flex flex-col">
-  <!-- Top Navigation Header -->
-  <header class="bg-msu text-white shadow-md border-b-2 border-msu-dark sticky top-0 z-30">
-    <div class="max-w-6xl mx-auto px-4 sm:px-6 py-3.5 flex items-center justify-between">
-      <div class="flex items-center gap-3">
-        <div class="w-10 h-10 rounded-xl bg-white/10 border border-white/20 flex items-center justify-center font-black text-amber-300 text-lg shadow-inner">
-          SP
+
+<body class="min-h-screen flex flex-col justify-between selection:bg-msu selection:text-white">
+
+  <!-- ======================================================== -->
+  <!-- Top Navigation Bar (Branded MSU Theme)                   -->
+  <!-- ======================================================== -->
+  <header class="bg-msu text-white shadow-md border-b-4 border-msu-dark sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between flex-wrap gap-3">
+      
+      <!-- Brand & Facility Context -->
+      <div class="flex items-center gap-3.5">
+        <div class="w-11 h-11 rounded-xl bg-white/10 border border-white/25 flex items-center justify-center font-black text-amber-300 text-xl tracking-tighter shadow-inner">
+          MSU
         </div>
         <div>
-          <h1 class="text-lg sm:text-xl font-black tracking-tight leading-tight text-white flex items-center gap-2">
-            MSU SpinSense
-            <span class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 uppercase tracking-wider">
-              EDGE NODE
+          <div class="flex items-center gap-2">
+            <h1 class="text-lg sm:text-xl font-black tracking-tight leading-tight text-white">
+              SpinSense
+            </h1>
+            <span class="text-[10px] font-num font-bold px-2 py-0.5 rounded-full bg-msu-gold text-slate-950 uppercase tracking-wider shadow-xs">
+              SAFETY TELEMETRY
             </span>
-          </h1>
-          <p class="text-xs text-white/80 font-mono">
-            IoT LPG Safety & Laundry Telemetry • Render Cloud
+          </div>
+          <p class="text-xs text-white/80 font-num">
+            LPG & Commercial Laundry Edge Node • MSU Shah Alam SSC
           </p>
         </div>
       </div>
 
-      <!-- Live Stream Status Badge -->
-      <div class="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/25 border border-white/20 text-xs font-mono">
-        <div id="statusDot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 pulse-dot"></div>
-        <span id="streamStatusText" class="font-bold text-white tracking-wide">CONNECTING...</span>
+      <!-- Header Controls: Audio Alert, Polling Speed, Live Status -->
+      <div class="flex items-center gap-2.5 sm:gap-3 flex-wrap">
+        
+        <!-- Sound Siren Toggle -->
+        <button id="btnSoundToggle" onclick="toggleAudioAlert()" aria-label="Toggle Hazard Audio Alert" 
+                class="px-2.5 py-1.5 rounded-xl bg-black/20 hover:bg-black/30 border border-white/20 text-xs font-num font-bold text-white flex items-center gap-1.5 transition-all focus-visible:ring-2 focus-visible:ring-amber-300"
+                title="Toggle Emergency Audible Alert">
+          <svg id="soundIcon" class="w-4 h-4 text-amber-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+          </svg>
+          <span id="soundLabel" class="hidden sm:inline">Sound: Off</span>
+        </button>
+
+        <!-- Polling Rate Dropdown -->
+        <div class="flex items-center bg-black/20 border border-white/20 rounded-xl px-2 py-1 text-xs font-num text-white">
+          <span class="text-white/60 mr-1 text-[11px] hidden sm:inline">Rate:</span>
+          <select id="pollIntervalSelect" onchange="changePollRate(this.value)" class="bg-transparent text-white font-bold text-xs focus:outline-none cursor-pointer">
+            <option value="2000" class="text-slate-900">2s (Turbo)</option>
+            <option value="3000" selected class="text-slate-900">3s (Default)</option>
+            <option value="5000" class="text-slate-900">5s (Standard)</option>
+            <option value="10000" class="text-slate-900">10s (Eco)</option>
+            <option value="0" class="text-slate-900">Paused</option>
+          </select>
+        </div>
+
+        <!-- Connection State Badge -->
+        <div id="connectionBadge" class="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/25 border border-white/20 text-xs font-num">
+          <div id="statusDot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 pulse-ring"></div>
+          <span id="streamStatusText" class="font-bold text-white tracking-wide">CONNECTING...</span>
+        </div>
+
       </div>
+
     </div>
   </header>
 
-  <!-- Main Dashboard Container -->
-  <main class="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-6 space-y-6">
-    
-    <!-- Top System Alert / Status Bar -->
-    <div id="hazardCard" class="p-6 rounded-2xl border-2 transition-all duration-300 shadow-sm bg-emerald-50 border-emerald-600 text-emerald-950">
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-5">
+  <!-- ======================================================== -->
+  <!-- Main Operational Dashboard Body                          -->
+  <!-- ======================================================== -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+
+    <!-- 1. Master Hazard Status Banner (WCAG Assertive Live Region) -->
+    <section id="hazardSection" aria-live="assertive" class="rounded-2xl border-2 transition-all duration-300 shadow-card bg-emerald-50 border-emerald-600 p-5 sm:p-6">
+      <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
         
-        <!-- Left: Status Icon & Headline -->
-        <div class="flex items-center gap-4">
-          <div id="hazardIconBox" class="w-16 h-16 rounded-2xl flex items-center justify-center shrink-0 bg-emerald-600 text-white shadow-md">
-            <svg id="hazardIconSvg" class="w-9 h-9" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+        <!-- Left: Status Icon + Safety Evaluation -->
+        <div class="flex items-start sm:items-center gap-4">
+          <div id="hazardIconBox" class="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl flex items-center justify-center shrink-0 bg-emerald-600 text-white shadow-md transition-colors">
+            <svg id="hazardIconSvg" class="w-10 h-10" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
           <div>
-            <div class="flex items-center gap-2">
-              <span class="text-xs font-black tracking-widest uppercase text-slate-500 font-mono">
-                LPG ATMOSPHERE MONITOR
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-xs font-black tracking-widest uppercase text-slate-500 font-num">
+                ATMOSPHERE SAFETY ASSESSMENT
               </span>
-              <span id="hazardBadge" class="text-xs font-black px-2.5 py-0.5 rounded-md uppercase font-mono bg-emerald-200 text-emerald-900 border border-emerald-300">
+              <span id="hazardBadge" class="text-xs font-black px-2.5 py-0.5 rounded-md uppercase font-num bg-emerald-200 text-emerald-900 border border-emerald-300">
                 SAFE
               </span>
+              <span id="staleBadge" class="hidden text-xs font-black px-2 py-0.5 rounded-md uppercase font-num bg-amber-200 text-amber-900 border border-amber-400">
+                DATA STALE
+              </span>
             </div>
-            <h2 id="hazardTitle" class="text-2xl sm:text-3xl font-black tracking-tight text-slate-950 mt-0.5">
+            <h2 id="hazardTitle" class="text-2xl sm:text-3xl lg:text-4xl font-black tracking-tight text-slate-950 mt-1">
               ATMOSPHERE SAFE
             </h2>
-            <p id="hazardSubtitle" class="text-xs font-medium text-slate-600 mt-0.5">
-              MQ-6 gas sensor baseline nominal. No hazardous combustible leak detected.
+            <p id="hazardSubtitle" class="text-xs sm:text-sm font-medium text-slate-600 mt-1 max-w-xl">
+              MQ-6 combustible sensor nominal. Atmospheric concentration below standard 1000 PPM threshold. Gas lines intact.
             </p>
           </div>
         </div>
 
-        <!-- Right: Real-Time PPM & Voltage Readouts -->
-        <div class="flex items-center gap-6 sm:gap-8 border-t md:border-t-0 pt-4 md:pt-0 border-slate-300/80">
-          <div>
-            <span class="block text-[11px] font-black uppercase tracking-wider text-slate-500 font-mono">
-              CONCENTRATION
-            </span>
-            <div class="flex items-baseline gap-1 mt-0.5">
-              <span id="valPpm" class="text-4xl sm:text-5xl font-black font-mono text-slate-950">
-                --
-              </span>
-              <span class="text-sm font-black text-slate-600 font-mono uppercase">PPM</span>
+        <!-- Right: Primary Readouts with Visual Safety Scale -->
+        <div class="flex flex-wrap items-center justify-start lg:justify-end gap-6 sm:gap-8 pt-4 lg:pt-0 border-t lg:border-t-0 border-slate-300/80">
+          
+          <!-- Concentration Readout -->
+          <div class="min-w-[130px]">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-black uppercase tracking-wider text-slate-500 font-num">LPG CONCENTRATION</span>
             </div>
+            <div class="flex items-baseline gap-1.5 mt-0.5">
+              <span id="valPpm" class="text-4xl sm:text-5xl font-black font-num text-slate-950 tracking-tight">--</span>
+              <span class="text-sm font-black font-num text-slate-600 uppercase">PPM</span>
+            </div>
+            <span id="ppmEnvelope" class="text-[11px] font-num text-emerald-700 font-bold block mt-0.5">&lt; 1000 PPM (Nominal)</span>
           </div>
 
-          <div class="h-12 w-0.5 bg-slate-300 hidden sm:block"></div>
+          <div class="h-14 w-0.5 bg-slate-300 hidden sm:block"></div>
 
-          <div>
-            <span class="block text-[11px] font-black uppercase tracking-wider text-slate-500 font-mono">
-              MQ-6 VOLTAGE
-            </span>
-            <div class="flex items-baseline gap-1 mt-0.5">
-              <span id="valVoltage" class="text-3xl sm:text-4xl font-black font-mono text-slate-950">
-                --
-              </span>
-              <span class="text-sm font-black text-slate-600 font-mono">V</span>
+          <!-- MQ-6 Sensor Analog Voltage -->
+          <div class="min-w-[110px]">
+            <span class="text-[11px] font-black uppercase tracking-wider text-slate-500 font-num">MQ-6 VOLTAGE</span>
+            <div class="flex items-baseline gap-1.5 mt-0.5">
+              <span id="valVoltage" class="text-4xl sm:text-5xl font-black font-num text-slate-950 tracking-tight">--</span>
+              <span class="text-sm font-black font-num text-slate-600">V</span>
             </div>
+            <span id="voltEnvelope" class="text-[11px] font-num text-slate-600 font-bold block mt-0.5">Baseline ~0.80V</span>
           </div>
+
+          <!-- Demo Test Gas Leak Simulator Button -->
+          <button onclick="toggleSimulation()" id="btnSimulate" 
+                  class="px-3.5 py-2.5 rounded-xl border-2 border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-num font-bold transition-all shadow-xs flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-msu"
+                  title="Simulate high gas spike to test alarm sirens and interface behavior">
+            <svg class="w-4 h-4 text-msu" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+            <span id="btnSimulateText">Test Siren Alert</span>
+          </button>
+
         </div>
 
       </div>
-    </div>
 
-    <!-- 3 Telemetry Cards Grid -->
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+      <!-- Visual Safety Level Bar (Safe 0-1.2V -> Warning 1.2-1.7V -> Critical >1.7V) -->
+      <div class="mt-5 pt-4 border-t border-slate-300/60">
+        <div class="flex justify-between items-center text-[11px] font-num font-bold text-slate-600 mb-1.5">
+          <span>GAS SAFETY ENVELOPE</span>
+          <span id="envelopeStatusText" class="text-emerald-700 font-extrabold uppercase">Safe Operating Band</span>
+        </div>
+        <div class="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex relative">
+          <!-- Color bands -->
+          <div class="h-full bg-emerald-500" style="width: 40%" title="Safe: 0 - 1.2V"></div>
+          <div class="h-full bg-amber-400" style="width: 25%" title="Warning: 1.2V - 1.7V"></div>
+          <div class="h-full bg-rose-600" style="width: 35%" title="Hazard: > 1.7V"></div>
+          <!-- Pointer indicator -->
+          <div id="safetyPointer" class="absolute top-0 bottom-0 w-2 bg-slate-950 border border-white rounded-full transition-all duration-500 shadow-md" style="left: 20%"></div>
+        </div>
+        <div class="flex justify-between text-[10px] font-num text-slate-500 mt-1">
+          <span>0.0V (0 PPM)</span>
+          <span>1.2V (Warning Threshold)</span>
+          <span>1.75V (Evacuate Hazard)</span>
+          <span>3.3V (Saturation)</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. Primary 3-Metric Telemetry Cards Grid -->
+    <section class="grid grid-cols-1 md:grid-cols-3 gap-5" aria-label="Sensor Readings">
       
       <!-- Card 1: Ambient Temperature (DHT22) -->
-      <div class="bg-white rounded-2xl border-2 border-slate-300 p-5 shadow-xs flex flex-col justify-between hover:border-slate-400 transition-colors">
-        <div class="flex items-center justify-between mb-3">
-          <div class="flex items-center gap-2">
-            <div class="w-8 h-8 rounded-lg bg-orange-100 flex items-center justify-center text-orange-600 font-bold">
-              °C
-            </div>
-            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-800 font-mono">
-              Temperature
-            </h3>
-          </div>
-          <span class="text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-slate-100 text-slate-600 border border-slate-200">
-            DHT22
-          </span>
-        </div>
-
-        <div class="my-2 flex items-baseline justify-between">
-          <div class="flex items-baseline gap-1">
-            <span id="valTemp" class="text-4xl font-black font-mono text-slate-900 tracking-tight">--</span>
-            <span class="text-base font-black font-mono text-slate-500">°C</span>
-          </div>
-          <span id="tempStatus" class="text-xs font-bold font-mono px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
-            Ambient
-          </span>
-        </div>
-
-        <div class="text-[11px] text-slate-500 font-mono pt-3 border-t border-slate-100 flex justify-between">
-          <span>Operating range</span>
-          <span class="font-bold text-slate-700">20°C - 45°C</span>
-        </div>
-      </div>
-
-      <!-- Card 2: Ambient Humidity (DHT22) -->
-      <div class="bg-white rounded-2xl border-2 border-slate-300 p-5 shadow-xs flex flex-col justify-between hover:border-slate-400 transition-colors">
-        <div class="flex items-center justify-between mb-3">
-          <div class="flex items-center gap-2">
-            <div class="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600 font-bold">
-              %
-            </div>
-            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-800 font-mono">
-              Relative Humidity
-            </h3>
-          </div>
-          <span class="text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-slate-100 text-slate-600 border border-slate-200">
-            DHT22
-          </span>
-        </div>
-
-        <div class="my-2 flex items-baseline justify-between">
-          <div class="flex items-baseline gap-1">
-            <span id="valHumidity" class="text-4xl font-black font-mono text-slate-900 tracking-tight">--</span>
-            <span class="text-base font-black font-mono text-slate-500">%</span>
-          </div>
-          <span id="humidityStatus" class="text-xs font-bold font-mono px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">
-            Normal
-          </span>
-        </div>
-
-        <div class="text-[11px] text-slate-500 font-mono pt-3 border-t border-slate-100 flex justify-between">
-          <span>Target baseline</span>
-          <span class="font-bold text-slate-700">40% - 75% RH</span>
-        </div>
-      </div>
-
-      <!-- Card 3: LPG Tank Scale -->
-      <div class="bg-white rounded-2xl border-2 border-slate-300 p-5 shadow-xs flex flex-col justify-between hover:border-slate-400 transition-colors">
-        <div class="flex items-center justify-between mb-3">
-          <div class="flex items-center gap-2">
-            <div class="w-8 h-8 rounded-lg bg-rose-100 flex items-center justify-center text-msu font-bold">
-              KG
-            </div>
-            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-800 font-mono">
-              LPG Tank Level
-            </h3>
-          </div>
-          <span id="tankBadge" class="text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-            ADEQUATE
-          </span>
-        </div>
-
-        <div class="my-2 flex items-baseline justify-between">
-          <div class="flex items-baseline gap-1">
-            <span id="valTankWeight" class="text-3xl font-black font-mono text-slate-900">38.6</span>
-            <span class="text-sm font-bold font-mono text-slate-500">/ 50 kg</span>
-          </div>
-          <span id="valTankPercent" class="text-2xl font-black font-mono text-slate-900">77%</span>
-        </div>
-
-        <!-- Progress bar -->
-        <div class="mt-2">
-          <div class="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden">
-            <div id="tankBar" class="h-full bg-msu rounded-full transition-all duration-500" style="width: 77%"></div>
-          </div>
-          <div class="flex justify-between text-[10px] text-slate-500 font-mono font-bold mt-1.5">
-            <span>0 kg</span>
-            <span>Commercial 50kg</span>
-          </div>
-        </div>
-      </div>
-
-    </div>
-
-    <!-- Edge Health & Ingestion Diagnostic Bar -->
-    <div class="bg-white rounded-2xl border-2 border-slate-300 p-5 shadow-xs">
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div class="bg-cardBg rounded-2xl border-2 border-slate-300 p-5 shadow-card hover:border-slate-400 transition-all flex flex-col justify-between">
         <div>
-          <h3 class="text-xs font-black uppercase tracking-wider text-slate-800 font-mono">
-            Edge Node Diagnostic Feed
-          </h3>
-          <p class="text-xs text-slate-600 mt-0.5">
-            Auto-refreshing every 3 seconds directly from <code class="bg-slate-100 px-1 py-0.5 rounded text-msu font-mono">/api/latest</code>.
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2.5">
+              <div class="w-9 h-9 rounded-xl bg-orange-100 border border-orange-200 flex items-center justify-center text-orange-600 font-black text-sm">
+                °C
+              </div>
+              <div>
+                <h3 class="text-xs font-bold uppercase tracking-wider text-slate-700 font-num">
+                  Ambient Temperature
+                </h3>
+                <span class="text-[10px] text-slate-500 font-num">DHT22 Digital Probe</span>
+              </div>
+            </div>
+            <!-- Unit Switcher -->
+            <button onclick="toggleTempUnit()" class="text-[11px] font-num font-bold px-2 py-0.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 transition-colors">
+              <span id="unitToggleLabel">Switch to °F</span>
+            </button>
+          </div>
+
+          <div class="my-4 flex items-baseline justify-between">
+            <div class="flex items-baseline gap-1.5">
+              <span id="valTemp" class="text-5xl font-black font-num text-slate-900 tracking-tight">--</span>
+              <span id="tempUnitDisplay" class="text-lg font-black font-num text-slate-500">°C</span>
+            </div>
+            <div class="text-right">
+              <span id="tempComfortBadge" class="text-xs font-bold font-num px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                Comfortable
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-3 border-t border-slate-200/80 flex items-center justify-between text-[11px] font-num text-slate-600">
+          <span>Heat Index / Dew: <strong id="dewPointVal" class="text-slate-900 font-bold">--°C</strong></span>
+          <span class="text-slate-400">Target: 20-32°C</span>
+        </div>
+      </div>
+
+      <!-- Card 2: Relative Humidity (DHT22) -->
+      <div class="bg-cardBg rounded-2xl border-2 border-slate-300 p-5 shadow-card hover:border-slate-400 transition-all flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2.5">
+              <div class="w-9 h-9 rounded-xl bg-blue-100 border border-blue-200 flex items-center justify-center text-blue-600 font-black text-sm">
+                %
+              </div>
+              <div>
+                <h3 class="text-xs font-bold uppercase tracking-wider text-slate-700 font-num">
+                  Relative Humidity
+                </h3>
+                <span class="text-[10px] text-slate-500 font-num">Capacitive Humidity</span>
+              </div>
+            </div>
+            <span id="humidityStatusBadge" class="text-[10px] font-num font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+              Optimal
+            </span>
+          </div>
+
+          <div class="my-4 flex items-baseline justify-between">
+            <div class="flex items-baseline gap-1.5">
+              <span id="valHumidity" class="text-5xl font-black font-num text-slate-900 tracking-tight">--</span>
+              <span class="text-lg font-black font-num text-slate-500">% RH</span>
+            </div>
+            <div class="text-right">
+              <span class="text-xs font-num font-bold text-slate-500">Air Quality</span>
+              <p id="humidityQualityText" class="text-xs font-black text-slate-800 font-num">Dryer Zone Normal</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-3 border-t border-slate-200/80 flex items-center justify-between text-[11px] font-num text-slate-600">
+          <span>Facility baseline</span>
+          <span class="font-bold text-slate-900">45% - 75% RH</span>
+        </div>
+      </div>
+
+      <!-- Card 3: Commercial LPG 50kg Scale -->
+      <div class="bg-cardBg rounded-2xl border-2 border-slate-300 p-5 shadow-card hover:border-slate-400 transition-all flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2.5">
+              <div class="w-9 h-9 rounded-xl bg-rose-100 border border-rose-200 flex items-center justify-center text-msu font-black text-sm">
+                KG
+              </div>
+              <div>
+                <h3 class="text-xs font-bold uppercase tracking-wider text-slate-700 font-num">
+                  Commercial LPG Tank
+                </h3>
+                <span class="text-[10px] text-slate-500 font-num">Dual Gas Dryer Supply</span>
+              </div>
+            </div>
+            <span id="tankBadge" class="text-[10px] font-num font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+              ADEQUATE
+            </span>
+          </div>
+
+          <div class="my-3 flex items-baseline justify-between">
+            <div class="flex items-baseline gap-1">
+              <span id="valTankWeight" class="text-4xl font-black font-num text-slate-900">38.6</span>
+              <span class="text-sm font-bold font-num text-slate-500">/ 50.0 kg</span>
+            </div>
+            <span id="valTankPercent" class="text-2xl font-black font-num text-slate-900">77%</span>
+          </div>
+
+          <!-- Fill Level Bar -->
+          <div class="w-full bg-slate-200 rounded-full h-3 overflow-hidden shadow-inner mt-2">
+            <div id="tankBar" class="h-full bg-msu rounded-full transition-all duration-700" style="width: 77%"></div>
+          </div>
+        </div>
+
+        <div class="pt-3 border-t border-slate-200/80 flex items-center justify-between text-[11px] font-num text-slate-600">
+          <span>Est. Dryer Run Time</span>
+          <span class="font-bold text-slate-900">~14.5 Operating Days</span>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- 3. Real-Time Telemetry Trends (Chart.js Visualization) -->
+    <section class="bg-cardBg rounded-2xl border-2 border-slate-300 p-5 sm:p-6 shadow-card">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-200 gap-3">
+        <div>
+          <div class="flex items-center gap-2">
+            <h3 class="text-sm sm:text-base font-black uppercase tracking-wider text-slate-900 font-num">
+              Real-Time Dynamic Telemetry Stream
+            </h3>
+            <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-num font-bold border border-slate-200">
+              LAST 25 READINGS
+            </span>
+          </div>
+          <p class="text-xs text-slate-500 mt-0.5">
+            Continuously charting voltage swings and ambient temperature received from ESP32 edge firmware.
           </p>
         </div>
 
-        <div class="flex flex-wrap items-center gap-3 text-xs font-mono">
-          <div class="px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200">
-            <span class="text-slate-500">Packets Received:</span>
-            <span id="packetCount" class="font-bold text-slate-900">0</span>
+        <!-- Chart Mode Toggle -->
+        <div class="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs font-num font-bold">
+          <button id="btnViewGas" onclick="switchChartMode('gas')" class="px-3 py-1 rounded-lg bg-white shadow-xs text-msu font-black">
+            MQ-6 Gas (V & PPM)
+          </button>
+          <button id="btnViewClimate" onclick="switchChartMode('climate')" class="px-3 py-1 rounded-lg text-slate-600 hover:text-slate-900">
+            DHT22 Climate (°C & %RH)
+          </button>
+        </div>
+      </div>
+
+      <!-- Chart Canvas Container -->
+      <div class="mt-4 relative h-64 sm:h-72 w-full">
+        <canvas id="telemetryChart"></canvas>
+      </div>
+
+      <!-- Real-Time Metrics Legend -->
+      <div class="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-4 text-xs font-num text-slate-600">
+        <div class="flex items-center gap-4">
+          <div class="flex items-center gap-1.5">
+            <span class="w-3 h-3 rounded-full bg-msu inline-block"></span>
+            <span>Sensor Voltage (V)</span>
           </div>
-          <div class="px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200">
-            <span class="text-slate-500">Last Telemetry:</span>
-            <span id="lastTimeAgo" class="font-bold text-slate-900">Waiting...</span>
+          <div class="flex items-center gap-1.5">
+            <span class="w-3 h-3 rounded-full bg-amber-500 inline-block"></span>
+            <span>Warning Line (1.25V)</span>
           </div>
-          <button onclick="forceRefresh()" class="px-3 py-1.5 rounded-lg bg-msu text-white font-bold hover:bg-msu-dark transition-colors flex items-center gap-1.5">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          <div class="flex items-center gap-1.5">
+            <span class="w-3 h-3 rounded-full bg-rose-600 inline-block"></span>
+            <span>Critical Evacuation (1.75V)</span>
+          </div>
+        </div>
+        <div class="text-[11px] text-slate-500">
+          Calculated using: <code class="bg-slate-100 px-1 py-0.5 rounded text-slate-700">1009.2 * (Rs/R0)^-2.35</code>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. Edge Hardware Diagnostics & Raw Ingestion Feed -->
+    <section class="bg-cardBg rounded-2xl border-2 border-slate-300 p-5 sm:p-6 shadow-card space-y-4">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h3 class="text-xs sm:text-sm font-black uppercase tracking-wider text-slate-900 font-num flex items-center gap-2">
+            Edge Ingestion Diagnostics
+            <span class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
+          </h3>
+          <p class="text-xs text-slate-600 mt-0.5">
+            Active endpoint: <code class="bg-slate-100 px-1.5 py-0.5 rounded text-msu font-num font-bold">/api/update</code> • Render Node.js/Python Proxy
+          </p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2.5 text-xs font-num">
+          <!-- Packet Counter -->
+          <div class="px-3 py-1.5 rounded-xl bg-slate-100 border border-slate-200">
+            <span class="text-slate-500">Packets Ingested:</span>
+            <span id="packetCount" class="font-black text-slate-900">0</span>
+          </div>
+
+          <!-- Latency / RTT -->
+          <div class="px-3 py-1.5 rounded-xl bg-slate-100 border border-slate-200">
+            <span class="text-slate-500">Polling Ping:</span>
+            <span id="pollingPing" class="font-black text-emerald-700">-- ms</span>
+          </div>
+
+          <!-- Last Contact Time Ago -->
+          <div class="px-3 py-1.5 rounded-xl bg-slate-100 border border-slate-200">
+            <span class="text-slate-500">Last Seen:</span>
+            <span id="lastTimeAgo" class="font-black text-slate-900">Waiting...</span>
+          </div>
+
+          <!-- Force Refresh Action Button -->
+          <button onclick="forceRefresh()" id="btnPollNow" 
+                  class="px-3.5 py-1.5 rounded-xl bg-msu text-white font-bold hover:bg-msu-dark transition-all flex items-center gap-1.5 shadow-xs focus-visible:ring-2 focus-visible:ring-msu">
+            <svg id="pollSpinIcon" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+            </svg>
             <span>Poll Now</span>
           </button>
         </div>
       </div>
 
-      <!-- Raw Inbound Telemetry Preview (Expandable) -->
-      <details class="mt-4 pt-4 border-t border-slate-200 text-xs font-mono">
-        <summary class="cursor-pointer text-slate-600 hover:text-slate-900 font-bold select-none">
-          View Raw Ingestion JSON Payload
-        </summary>
-        <pre id="rawPayload" class="mt-2 p-3 bg-slate-900 text-emerald-400 rounded-xl overflow-x-auto text-[11px] leading-relaxed">
-{ "status": "Waiting for edge data..." }
-        </pre>
-      </details>
-    </div>
+      <!-- Raw Payload Accordion with Copy Button -->
+      <div class="pt-3 border-t border-slate-200">
+        <details class="group">
+          <summary class="flex items-center justify-between cursor-pointer text-xs font-num font-bold text-slate-700 hover:text-slate-950 select-none py-1">
+            <span class="flex items-center gap-2">
+              <svg class="w-4 h-4 text-slate-400 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+              </svg>
+              Inspect Live Inbound JSON Payload
+            </span>
+            <span class="text-[11px] text-slate-400 group-open:text-slate-600">Click to expand</span>
+          </summary>
+
+          <div class="mt-3 relative">
+            <button onclick="copyPayload()" class="absolute top-2 right-2 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] font-num font-bold border border-slate-700 transition-colors">
+              <span id="copyBtnText">Copy JSON</span>
+            </button>
+            <pre id="rawPayload" class="p-4 bg-slate-900 text-emerald-400 rounded-xl overflow-x-auto text-[11px] font-num leading-relaxed shadow-inner border border-slate-800">
+{ "status": "Connecting to backend service..." }
+            </pre>
+          </div>
+        </details>
+      </div>
+    </section>
 
   </main>
 
-  <!-- Footer -->
-  <footer class="mt-auto py-4 text-center text-xs font-mono text-slate-500 border-t border-slate-300/80 bg-white/50">
-    MSU SpinSense • Smart Laundry Management System (Section 13, Shah Alam)
+  <!-- ======================================================== -->
+  <!-- Footer                                                   -->
+  <!-- ======================================================== -->
+  <footer class="mt-auto py-4 text-center text-xs font-num text-slate-500 border-t border-slate-300 bg-white/70">
+    <div class="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+      <p>MSU SpinSense • Smart Commercial Laundry Facility Platform</p>
+      <p class="text-slate-400">Management and Science University • FYP IoT Telemetry Node</p>
+    </div>
   </footer>
 
-  <!-- Real-Time Auto-Refresh Logic -->
+  <!-- ======================================================== -->
+  <!-- Logic & Telemetry Processing Engine                      -->
+  <!-- ======================================================== -->
   <script>
+    // System State Variables
     let packetCount = 0;
     let lastReceivedTimestamp = null;
+    let pollInterval = 3000;
+    let pollTimer = null;
+    let audioAlertEnabled = false;
+    let audioContext = null;
+    let isSimulationActive = false;
+    let isFahrenheit = false;
+    let activeChartMode = 'gas'; // 'gas' or 'climate'
+    let telemetryChart = null;
 
-    // MQ-6 Logarithmic PPM Calculation Function
+    // Rolling Data History Buffer (Last 25 entries for sparklines)
+    const historyBuffer = {
+      labels: [],
+      voltage: [],
+      ppm: [],
+      temperature: [],
+      humidity: []
+    };
+
+    // Initialize Chart.js
+    function initChart() {
+      const ctx = document.getElementById('telemetryChart').getContext('2d');
+      telemetryChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: historyBuffer.labels,
+          datasets: [
+            {
+              label: 'MQ-6 Voltage (V)',
+              data: historyBuffer.voltage,
+              borderColor: '#8B0000',
+              backgroundColor: 'rgba(139, 0, 0, 0.08)',
+              borderWidth: 2.5,
+              tension: 0.35,
+              fill: true,
+              yAxisID: 'yVoltage'
+            },
+            {
+              label: 'Calculated PPM',
+              data: historyBuffer.ppm,
+              borderColor: '#D97706',
+              borderDash: [4, 4],
+              borderWidth: 2,
+              tension: 0.35,
+              fill: false,
+              yAxisID: 'yPpm'
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: { duration: 400 },
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: {
+              display: true,
+              position: 'top',
+              labels: {
+                font: { family: 'JetBrains Mono', size: 11, weight: 'bold' },
+                color: '#334155'
+              }
+            },
+            tooltip: {
+              backgroundColor: '#0F172A',
+              titleFont: { family: 'Poppins', size: 12, weight: 'bold' },
+              bodyFont: { family: 'JetBrains Mono', size: 12 }
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: '#E2E8F0' },
+              ticks: { font: { family: 'JetBrains Mono', size: 10 }, color: '#64748B' }
+            },
+            yVoltage: {
+              type: 'linear',
+              position: 'left',
+              min: 0,
+              max: 3.3,
+              grid: { color: '#E2E8F0' },
+              ticks: { font: { family: 'JetBrains Mono', size: 10 }, color: '#8B0000' },
+              title: { display: true, text: 'Voltage (V)', font: { family: 'JetBrains Mono', size: 11, weight: 'bold' } }
+            },
+            yPpm: {
+              type: 'linear',
+              position: 'right',
+              min: 0,
+              max: 5000,
+              grid: { drawOnChartArea: false },
+              ticks: { font: { family: 'JetBrains Mono', size: 10 }, color: '#D97706' },
+              title: { display: true, text: 'LPG PPM', font: { family: 'JetBrains Mono', size: 11, weight: 'bold' } }
+            }
+          }
+        }
+      });
+    }
+
+    // Switch between Gas and Climate chart datasets
+    function switchChartMode(mode) {
+      activeChartMode = mode;
+      const btnGas = document.getElementById('btnViewGas');
+      const btnClimate = document.getElementById('btnViewClimate');
+
+      if (mode === 'gas') {
+        btnGas.className = "px-3 py-1 rounded-lg bg-white shadow-xs text-msu font-black";
+        btnClimate.className = "px-3 py-1 rounded-lg text-slate-600 hover:text-slate-900";
+
+        telemetryChart.data.datasets = [
+          {
+            label: 'MQ-6 Voltage (V)',
+            data: historyBuffer.voltage,
+            borderColor: '#8B0000',
+            backgroundColor: 'rgba(139, 0, 0, 0.08)',
+            borderWidth: 2.5,
+            tension: 0.35,
+            fill: true,
+            yAxisID: 'yVoltage'
+          },
+          {
+            label: 'Calculated PPM',
+            data: historyBuffer.ppm,
+            borderColor: '#D97706',
+            borderDash: [4, 4],
+            borderWidth: 2,
+            tension: 0.35,
+            fill: false,
+            yAxisID: 'yPpm'
+          }
+        ];
+        telemetryChart.options.scales.yVoltage.title.text = 'Voltage (V)';
+        telemetryChart.options.scales.yVoltage.max = 3.3;
+        telemetryChart.options.scales.yPpm.display = true;
+      } else {
+        btnClimate.className = "px-3 py-1 rounded-lg bg-white shadow-xs text-msu font-black";
+        btnGas.className = "px-3 py-1 rounded-lg text-slate-600 hover:text-slate-900";
+
+        telemetryChart.data.datasets = [
+          {
+            label: isFahrenheit ? 'Temperature (°F)' : 'Temperature (°C)',
+            data: isFahrenheit ? historyBuffer.temperature.map(c => (c * 9/5 + 32)) : historyBuffer.temperature,
+            borderColor: '#EA580C',
+            backgroundColor: 'rgba(234, 88, 12, 0.08)',
+            borderWidth: 2.5,
+            tension: 0.35,
+            fill: true,
+            yAxisID: 'yVoltage'
+          },
+          {
+            label: 'Relative Humidity (% RH)',
+            data: historyBuffer.humidity,
+            borderColor: '#2563EB',
+            borderWidth: 2,
+            tension: 0.35,
+            fill: false,
+            yAxisID: 'yPpm'
+          }
+        ];
+        telemetryChart.options.scales.yVoltage.title.text = isFahrenheit ? 'Temp (°F)' : 'Temp (°C)';
+        telemetryChart.options.scales.yVoltage.max = isFahrenheit ? 120 : 60;
+        telemetryChart.options.scales.yPpm.display = true;
+        telemetryChart.options.scales.yPpm.max = 100;
+        telemetryChart.options.scales.yPpm.title.text = 'Humidity (%)';
+      }
+      telemetryChart.update();
+    }
+
+    // MQ-6 Logarithmic PPM Calculation
     function calculatePpm(voltage) {
-      const v = Math.max(0.1, Math.min(3.25, voltage));
+      const v = Math.max(0.05, Math.min(3.25, voltage));
       const vc = 3.3;
       const rl = 10.0;
       const r0 = 3.15;
@@ -304,77 +706,197 @@
       const ratio = Math.max(0.1, rs / r0);
       let ppm = Math.round(1009.2 * Math.pow(ratio, -2.35));
       if (v <= 0.85) {
-        ppm = Math.round(150 + ((v - 0.1) / 0.75) * 150);
+        ppm = Math.round(120 + ((v - 0.05) / 0.80) * 180);
       }
       return Math.min(10000, Math.max(50, ppm));
     }
 
-    async function fetchTelemetry() {
+    // Audible Hazard Alert Siren using Web Audio API
+    function playWarningChirp(isCritical) {
+      if (!audioAlertEnabled) return;
       try {
-        const res = await fetch('/api/latest');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioContext.state === 'suspended') {
+          audioContext.resume();
+        }
+        const osc = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        osc.type = isCritical ? 'sawtooth' : 'sine';
+        osc.frequency.setValueAtTime(isCritical ? 880 : 520, audioContext.currentTime);
+        if (isCritical) {
+          osc.frequency.exponentialRampToValueAtTime(1200, audioContext.currentTime + 0.15);
+        }
+        gain.gain.setValueAtTime(0.2, audioContext.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+        osc.connect(gain);
+        gain.connect(audioContext.destination);
+        osc.start();
+        osc.stop(audioContext.currentTime + 0.3);
+      } catch (e) {
+        console.error("Audio synth error:", e);
+      }
+    }
+
+    function toggleAudioAlert() {
+      audioAlertEnabled = !audioAlertEnabled;
+      const label = document.getElementById('soundLabel');
+      const icon = document.getElementById('soundIcon');
+      if (audioAlertEnabled) {
+        label.textContent = "Sound: On";
+        label.className = "hidden sm:inline text-emerald-300 font-bold";
+        icon.className = "w-4 h-4 text-emerald-300";
+        // Prompt audio context unlock
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        playWarningChirp(false);
+      } else {
+        label.textContent = "Sound: Off";
+        label.className = "hidden sm:inline text-white/80";
+        icon.className = "w-4 h-4 text-amber-300";
+      }
+    }
+
+    // Unit toggle between Celsius and Fahrenheit
+    function toggleTempUnit() {
+      isFahrenheit = !isFahrenheit;
+      document.getElementById('unitToggleLabel').textContent = isFahrenheit ? "Switch to °C" : "Switch to °F";
+      document.getElementById('tempUnitDisplay').textContent = isFahrenheit ? "°F" : "°C";
+      forceRefresh();
+    }
+
+    // Toggle simulation mode for supervisor demonstration
+    function toggleSimulation() {
+      isSimulationActive = !isSimulationActive;
+      const btn = document.getElementById('btnSimulate');
+      const text = document.getElementById('btnSimulateText');
+      if (isSimulationActive) {
+        btn.className = "px-3.5 py-2.5 rounded-xl border-2 border-rose-600 bg-rose-600 text-white text-xs font-num font-bold transition-all shadow-glowRed animate-pulse";
+        text.textContent = "Reset Test Simulator";
+      } else {
+        btn.className = "px-3.5 py-2.5 rounded-xl border-2 border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-num font-bold transition-all shadow-xs flex items-center gap-2";
+        text.textContent = "Test Siren Alert";
+      }
+      fetchTelemetry();
+    }
+
+    // Ingestion & Polling Engine
+    async function fetchTelemetry() {
+      const startTime = performance.now();
+      const spinIcon = document.getElementById('pollSpinIcon');
+      if (spinIcon) spinIcon.classList.add('animate-spin');
+
+      try {
+        let data;
+        if (isSimulationActive) {
+          // Simulated high-hazard gas leak injection
+          data = {
+            voltage: 2.18,
+            temperature: 31.4,
+            humidity: 62.0,
+            received_at: new Date().toISOString(),
+            is_live_stream: true,
+            is_leak_detected: true,
+            leak_status: "CRITICAL"
+          };
+        } else {
+          const res = await fetch('/api/latest');
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          data = await res.json();
+        }
+
+        const rtt = Math.round(performance.now() - startTime);
+        document.getElementById('pollingPing').textContent = `${rtt} ms`;
 
         packetCount++;
         document.getElementById('packetCount').textContent = packetCount;
         document.getElementById('rawPayload').textContent = JSON.stringify(data, null, 2);
 
-        // Update values
+        // Sanitize telemetry values
         const voltage = typeof data.voltage === 'number' ? data.voltage : 0.85;
-        const temp = typeof data.temperature === 'number' ? data.temperature : 28.0;
+        const tempC = typeof data.temperature === 'number' ? data.temperature : 27.5;
         const hum = typeof data.humidity === 'number' ? data.humidity : 65.0;
         const ppm = calculatePpm(voltage);
 
+        // Update readouts
         document.getElementById('valVoltage').textContent = voltage.toFixed(2);
-        document.getElementById('valTemp').textContent = temp.toFixed(1);
-        document.getElementById('valHumidity').textContent = hum.toFixed(0);
         document.getElementById('valPpm').textContent = ppm;
 
-        if (data.received_at) {
-          lastReceivedTimestamp = new Date(data.received_at);
+        if (isFahrenheit) {
+          const tempF = (tempC * 9/5) + 32;
+          document.getElementById('valTemp').textContent = tempF.toFixed(1);
         } else {
-          lastReceivedTimestamp = new Date();
+          document.getElementById('valTemp').textContent = tempC.toFixed(1);
         }
+        document.getElementById('valHumidity').textContent = hum.toFixed(0);
 
-        // Evaluate LPG status
-        const isCritical = voltage >= 1.75 || ppm >= 2500;
-        const isWarning = voltage >= 1.25 || ppm >= 1000;
+        // Calculate approximate Dew point: T - ((100 - RH) / 5)
+        const dew = tempC - ((100 - hum) / 5);
+        document.getElementById('dewPointVal').textContent = `${dew.toFixed(1)}°C`;
 
-        const hazardCard = document.getElementById('hazardCard');
+        lastReceivedTimestamp = data.received_at ? new Date(data.received_at) : new Date();
+
+        // Update Safety Scale Bar Pointer
+        // Mapping 0V -> 0% to 3.3V -> 100%
+        const pointerPercent = Math.min(100, Math.max(0, (voltage / 3.3) * 100));
+        document.getElementById('safetyPointer').style.left = `${pointerPercent}%`;
+
+        // Evaluate Hazard Boundaries
+        const isCritical = voltage >= 1.75 || ppm >= 2500 || data.leak_status === "CRITICAL";
+        const isWarning = (!isCritical) && (voltage >= 1.25 || ppm >= 1000 || data.leak_status === "WARNING");
+
+        const hazardSection = document.getElementById('hazardSection');
         const hazardBadge = document.getElementById('hazardBadge');
         const hazardTitle = document.getElementById('hazardTitle');
         const hazardSubtitle = document.getElementById('hazardSubtitle');
         const hazardIconBox = document.getElementById('hazardIconBox');
+        const envelopeStatusText = document.getElementById('envelopeStatusText');
+        const ppmEnvelope = document.getElementById('ppmEnvelope');
 
         if (isCritical) {
-          hazardCard.className = "p-6 rounded-2xl border-2 transition-all duration-300 shadow-md bg-red-100 border-red-600 text-red-950 animate-pulse";
-          hazardIconBox.className = "w-16 h-16 rounded-2xl flex items-center justify-center shrink-0 bg-red-600 text-white shadow-md";
-          hazardBadge.className = "text-xs font-black px-2.5 py-0.5 rounded-md uppercase font-mono bg-red-200 text-red-900 border border-red-400";
+          hazardSection.className = "rounded-2xl border-2 transition-all duration-300 shadow-glowRed bg-red-100 border-red-600 p-5 sm:p-6 text-red-950";
+          hazardIconBox.className = "w-16 h-16 sm:w-20 sm:h-20 rounded-2xl flex items-center justify-center shrink-0 bg-red-600 text-white shadow-md pulse-ring-alert";
+          hazardBadge.className = "text-xs font-black px-2.5 py-0.5 rounded-md uppercase font-num bg-red-200 text-red-900 border border-red-400";
           hazardBadge.textContent = "CRITICAL LEAK";
           hazardTitle.textContent = "HAZARDOUS GAS LEAK";
-          hazardSubtitle.textContent = "Immediate danger! Elevated LPG concentration detected in facility atmosphere.";
+          hazardSubtitle.textContent = "EMERGENCY: High combustible LPG concentration detected in laundry facility! Shut off dryer master valve immediately.";
+          envelopeStatusText.textContent = "HAZARD: EVACUATION LEVEL REACHED";
+          envelopeStatusText.className = "text-rose-700 font-extrabold uppercase";
+          ppmEnvelope.textContent = "> 2500 PPM (Hazard)";
+          ppmEnvelope.className = "text-[11px] font-num text-rose-700 font-bold block mt-0.5";
+          playWarningChirp(true);
         } else if (isWarning) {
-          hazardCard.className = "p-6 rounded-2xl border-2 transition-all duration-300 shadow-sm bg-amber-100 border-amber-600 text-amber-950";
-          hazardIconBox.className = "w-16 h-16 rounded-2xl flex items-center justify-center shrink-0 bg-amber-600 text-white shadow-md";
-          hazardBadge.className = "text-xs font-black px-2.5 py-0.5 rounded-md uppercase font-mono bg-amber-200 text-amber-900 border border-amber-400";
+          hazardSection.className = "rounded-2xl border-2 transition-all duration-300 shadow-card bg-amber-50 border-amber-600 p-5 sm:p-6 text-amber-950";
+          hazardIconBox.className = "w-16 h-16 sm:w-20 sm:h-20 rounded-2xl flex items-center justify-center shrink-0 bg-amber-600 text-white shadow-md";
+          hazardBadge.className = "text-xs font-black px-2.5 py-0.5 rounded-md uppercase font-num bg-amber-200 text-amber-900 border border-amber-400";
           hazardBadge.textContent = "ELEVATED WARNING";
-          hazardTitle.textContent = "ELEVATED GAS WARNING";
-          hazardSubtitle.textContent = "Combustible gas traces detected above standard baseline. Inspect dryer lines.";
+          hazardTitle.textContent = "ELEVATED GAS DETECTED";
+          hazardSubtitle.textContent = "Combustible traces detected above standard baseline. Inspect commercial dryer fittings and exhaust flues.";
+          envelopeStatusText.textContent = "ELEVATED: ATTENTION REQUIRED";
+          envelopeStatusText.className = "text-amber-700 font-extrabold uppercase";
+          ppmEnvelope.textContent = "1000 - 2500 PPM (Warning)";
+          ppmEnvelope.className = "text-[11px] font-num text-amber-700 font-bold block mt-0.5";
+          playWarningChirp(false);
         } else {
-          hazardCard.className = "p-6 rounded-2xl border-2 transition-all duration-300 shadow-sm bg-emerald-50 border-emerald-600 text-emerald-950";
-          hazardIconBox.className = "w-16 h-16 rounded-2xl flex items-center justify-center shrink-0 bg-emerald-600 text-white shadow-md";
-          hazardBadge.className = "text-xs font-black px-2.5 py-0.5 rounded-md uppercase font-mono bg-emerald-200 text-emerald-900 border border-emerald-300";
+          hazardSection.className = "rounded-2xl border-2 transition-all duration-300 shadow-card bg-emerald-50 border-emerald-600 p-5 sm:p-6 text-emerald-950";
+          hazardIconBox.className = "w-16 h-16 sm:w-20 sm:h-20 rounded-2xl flex items-center justify-center shrink-0 bg-emerald-600 text-white shadow-md";
+          hazardBadge.className = "text-xs font-black px-2.5 py-0.5 rounded-md uppercase font-num bg-emerald-200 text-emerald-900 border border-emerald-300";
           hazardBadge.textContent = "ATMOSPHERE SAFE";
           hazardTitle.textContent = "ATMOSPHERE SAFE";
-          hazardSubtitle.textContent = "MQ-6 gas sensor baseline nominal. No hazardous combustible leak detected.";
+          hazardSubtitle.textContent = "MQ-6 combustible sensor nominal. Atmospheric concentration below standard 1000 PPM threshold. Gas lines intact.";
+          envelopeStatusText.textContent = "Safe Operating Band";
+          envelopeStatusText.className = "text-emerald-700 font-extrabold uppercase";
+          ppmEnvelope.textContent = "< 1000 PPM (Nominal)";
+          ppmEnvelope.className = "text-[11px] font-num text-emerald-700 font-bold block mt-0.5";
         }
 
-        // Stream status header
+        // Stream Status in Top Navigation
         const statusDot = document.getElementById('statusDot');
         const streamStatusText = document.getElementById('streamStatusText');
-
         if (data.is_live_stream) {
-          statusDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-400 pulse-dot";
+          statusDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-400 pulse-ring";
           streamStatusText.textContent = "LIVE STREAMING";
           streamStatusText.className = "font-bold text-emerald-300 tracking-wide";
         } else {
@@ -383,42 +905,98 @@
           streamStatusText.className = "font-bold text-amber-300 tracking-wide";
         }
 
+        // Append to Rolling History Buffer for Chart
+        const timeLabel = new Date().toLocaleTimeString('en-GB', { hour12: false });
+        if (historyBuffer.labels.length >= 25) {
+          historyBuffer.labels.shift();
+          historyBuffer.voltage.shift();
+          historyBuffer.ppm.shift();
+          historyBuffer.temperature.shift();
+          historyBuffer.humidity.shift();
+        }
+        historyBuffer.labels.push(timeLabel);
+        historyBuffer.voltage.push(voltage);
+        historyBuffer.ppm.push(ppm);
+        historyBuffer.temperature.push(tempC);
+        historyBuffer.humidity.push(hum);
+
+        if (telemetryChart) {
+          telemetryChart.update('none'); // Update smoothly without glitch
+        }
+
       } catch (err) {
         console.error("Polling error:", err);
-        document.getElementById('streamStatusText').textContent = "OFFLINE / RETRYING";
-        document.getElementById('statusDot').className = "w-2.5 h-2.5 rounded-full bg-red-400";
+        document.getElementById('streamStatusText').textContent = "DISCONNECTED";
+        document.getElementById('streamStatusText').className = "font-bold text-rose-300 tracking-wide";
+        document.getElementById('statusDot').className = "w-2.5 h-2.5 rounded-full bg-rose-500";
+        document.getElementById('pollingPing').textContent = "ERR";
+      } finally {
+        if (spinIcon) spinIcon.classList.remove('animate-spin');
       }
     }
 
-    function updateTimeAgo() {
+    // Time Ago & Stale Heartbeat Detector
+    function updateHeartbeat() {
       if (!lastReceivedTimestamp) return;
       const secondsAgo = Math.floor((new Date() - lastReceivedTimestamp) / 1000);
       const elem = document.getElementById('lastTimeAgo');
+      const staleBadge = document.getElementById('staleBadge');
+
       if (secondsAgo < 5) {
         elem.textContent = "Just now";
-        elem.className = "font-bold text-emerald-700";
+        elem.className = "font-black text-emerald-700 font-num";
+        staleBadge.classList.add('hidden');
       } else if (secondsAgo < 60) {
         elem.textContent = `${secondsAgo}s ago`;
-        elem.className = "font-bold text-slate-800";
+        elem.className = "font-black text-slate-800 font-num";
+        if (secondsAgo > 15) {
+          staleBadge.classList.remove('hidden');
+        } else {
+          staleBadge.classList.add('hidden');
+        }
       } else {
         const mins = Math.floor(secondsAgo / 60);
         elem.textContent = `${mins}m ago`;
-        elem.className = "font-bold text-amber-700";
+        elem.className = "font-black text-rose-700 font-num";
+        staleBadge.classList.remove('hidden');
       }
     }
 
+    // Change polling frequency or pause
+    function changePollRate(rateMs) {
+      pollInterval = parseInt(rateMs, 10);
+      if (pollTimer) clearInterval(pollTimer);
+      if (pollInterval > 0) {
+        pollTimer = setInterval(fetchTelemetry, pollInterval);
+        fetchTelemetry();
+      } else {
+        document.getElementById('streamStatusText').textContent = "POLLING PAUSED";
+        document.getElementById('streamStatusText').className = "font-bold text-amber-300";
+      }
+    }
+
+    // Manual Force Refresh
     function forceRefresh() {
       fetchTelemetry();
     }
 
-    // Initial fetch
-    fetchTelemetry();
+    // Copy JSON Payload to clipboard
+    function copyPayload() {
+      const text = document.getElementById('rawPayload').textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = document.getElementById('copyBtnText');
+        btn.textContent = "Copied!";
+        setTimeout(() => { btn.textContent = "Copy JSON"; }, 2000);
+      });
+    }
 
-    // Auto-poll every 3 seconds (real-time stream)
-    setInterval(fetchTelemetry, 3000);
-
-    // Update 'time ago' indicator every second
-    setInterval(updateTimeAgo, 1000);
+    // Boot on page load
+    window.addEventListener('DOMContentLoaded', () => {
+      initChart();
+      fetchTelemetry();
+      pollTimer = setInterval(fetchTelemetry, pollInterval);
+      setInterval(updateHeartbeat, 1000);
+    });
   </script>
 </body>
 </html>
