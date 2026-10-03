@@ -54,9 +54,9 @@ class Machine(BaseModel):
     parameters: MachineParameters
 
 class SensorPayload(BaseModel):
-    voltage: float = Field(..., ge=0.0, le=5.0, description="Analog voltage from MQ-6")
-    temperature: float = Field(..., description="Temperature in Celsius from DHT22")
-    humidity: float = Field(..., ge=0.0, le=100.0, description="Relative humidity in percentage")
+    voltage: float = 0.0
+    temperature: float = 0.0
+    humidity: float = 0.0
 
 # ==========================================
 # In-Memory State & Mock Fixtures
@@ -302,8 +302,9 @@ def get_telemetry(
 # ESP32 Edge Ingestion & Safety Endpoints
 # ==========================================
 
-@app.post("/api/update", status_code=status.HTTP_200_OK)
-def update_sensor_data(payload: SensorPayload):
+@app.post("/api/update")
+@app.post("/api/data")
+async def update_sensor_data(payload: SensorPayload):
     """Inbound telemetry from ESP32 edge node (MQ-6 & DHT22)"""
     global latest_edge_data
 
@@ -311,17 +312,15 @@ def update_sensor_data(payload: SensorPayload):
     is_leak = payload.voltage > 1.3
     leak_status = "CRITICAL" if payload.voltage > 1.8 else ("WARNING" if payload.voltage > 1.3 else "SAFE")
 
-    latest_edge_data.update({
-        "voltage": payload.voltage,
-        "temperature": payload.temperature,
-        "humidity": payload.humidity,
-        "received_at": datetime.now(timezone.utc).isoformat(),
-        "is_live_stream": True,
-        "is_leak_detected": is_leak,
-        "leak_status": leak_status,
-    })
+    latest_edge_data["voltage"] = round(float(payload.voltage), 2)
+    latest_edge_data["temperature"] = round(float(payload.temperature), 1)
+    latest_edge_data["humidity"] = round(float(payload.humidity), 1)
+    latest_edge_data["received_at"] = datetime.now(timezone.utc).isoformat()
+    latest_edge_data["is_live_stream"] = True
+    latest_edge_data["is_leak_detected"] = is_leak
+    latest_edge_data["leak_status"] = leak_status
 
-    return {"message": "Reading updated successfully", "data": latest_edge_data}
+    return {"status": "success"}
 
 @app.get("/api/latest")
 def get_latest_data():

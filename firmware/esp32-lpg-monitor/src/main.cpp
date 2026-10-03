@@ -2,103 +2,83 @@
 #include <DHT.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 
-// Disable brownout detector
-#include "soc/soc.h"
-#include "soc/rtc_cntl_reg.h"
+// Hardware Pin Configurations
+#define MQ6_ANALOG_PIN 34
+#define DHT_PIN 4
+#define DHT_TYPE DHT22
 
-// Network credentials
+// Network & API Configuration
 const char *ssid = "BSC12A@unifi";
 const char *password = "norazlinnaim";
-
-// Render endpoint (must include /api/update)
 const char *serverURL = "https://esp32-gas-api.onrender.com/api/update";
 
-// Pin definitions
-const int mq6Pin = 34;
-const int dhtPin = 4;
-#define DHTTYPE DHT22
-
-DHT dht(dhtPin, DHTTYPE);
-
-unsigned long lastUpdate = 0;
-const unsigned long updateInterval =
-    5000; // 5s interval (sufficient for gas & ambient monitoring)
+// Initialize Sensors
+DHT dht(DHT_PIN, DHT_TYPE);
 
 void setup() {
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); // Disable brownout detector
-
   Serial.begin(115200);
-  delay(1000); // Allow power supply to settle
 
   dht.begin();
 
+  // Establish Wi-Fi Connection
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
+
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nConnected to WiFi!");
+
+  Serial.println("\nConnected to Wi-Fi network");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
 }
 
 void loop() {
-  if (millis() - lastUpdate > updateInterval) {
-    lastUpdate = millis();
+  // 1. Gather Sensor Data
+  float humidity = dht.readHumidity();
+  float temperature = dht.readTemperature();
+  int rawAdcValue = analogRead(MQ6_ANALOG_PIN);
 
-    if (WiFi.status() == WL_CONNECTED) {
-      // Read DHT22
-      float humidity = dht.readHumidity();
-      float temperature = dht.readTemperature();
+  float measuredVoltage = (rawAdcValue * 3.3) / 4095.0;
 
-      // Read MQ-6
-      int rawValue = analogRead(mq6Pin);
-      float voltage = (rawValue / 4095.0) * 3.3;
-
-      // Validate DHT22 readings
-      if (isnan(humidity) || isnan(temperature)) {
-        Serial.println("Failed to read from DHT22 sensor!");
-        return;
-      }
-
-      // Configure HTTPS client
-      WiFiClientSecure client;
-      client.setInsecure(); // Skips certificate validation for simplicity
-      HTTPClient http;
-
-      http.setTimeout(15000); // 15 seconds to allow for Render cold-starts
-      http.begin(client, serverURL);
-      http.addHeader("Content-Type", "application/json");
-
-      // Format payload as JSON
-      String jsonPayload = "{\"voltage\":" + String(voltage, 2) +
-                           ",\"temperature\":" + String(temperature, 2) +
-                           ",\"humidity\":" + String(humidity, 2) + "}";
-
-      Serial.print("Sending payload: ");
-      Serial.println(jsonPayload);
-
-      int httpResponseCode = http.POST(jsonPayload);
-
-      if (httpResponseCode > 0) {
-        Serial.print("Data sent successfully. Server responded: ");
-        Serial.println(httpResponseCode);
-        String response = http.getString();
-        Serial.print("Response: ");
-        Serial.println(response);
-      } else {
-        Serial.print("Error sending data. Code: ");
-        Serial.print(httpResponseCode);
-        Serial.print(" (");
-        Serial.print(http.errorToString(httpResponseCode).c_str());
-        Serial.println(")");
-      }
-
-      http.end();
-    } else {
-      Serial.println("WiFi disconnected. Reconnecting...");
-      WiFi.reconnect();
-    }
+  // Safe fallback if DHT sensor fails, but DO NOT abort the loop
+  if (isnan(humidity) || isnan(temperature)) {
+    Serial.println("Failed to read from DHT sensor!");
+    humidity = 0.0;
+    temperature = 0.0;
   }
+
+  // 2. Transmit Data to Render API
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+
+    // Initialize the HTTP client with your Render URL
+    http.begin(serverURL);
+
+    // Specify the content type as JSON
+    http.addHeader("Content-Type", "application/json");
+
+    // Construct the JSON payload string
+    String jsonPayload = "{\"voltage\":" + String(measuredVoltage, 2) +
+                         ",\"temperature\":" + String(temperature, 1) +
+                         ",\"humidity\":" + String(humidity, 1) + "}";
+
+    // Send the POST request
+    int httpResponseCode = http.POST(jsonPayload);
+
+    Serial.print("HTTP Response code: ");
+    Serial.println(httpResponseCode);
+
+    // Free network resources
+    http.end();
+  } else {
+    Serial.println("Error: Wi-Fi Disconnected");
+    // Attempt to reconnect
+    WiFi.reconnect();
+  }
+
+  // Wait 10 seconds before the next reading to avoid spamming the free Render tier
+  delay(10000);
 }
