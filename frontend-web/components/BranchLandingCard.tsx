@@ -9,94 +9,117 @@ import {
   Flame,
   ArrowRight,
   ShieldCheck,
-  CheckCircle2,
+  AlertTriangle,
 } from "lucide-react";
-
-export interface BranchInfo {
-  id: string;
-  name: string;
-  campusType: string;
-  address: string;
-  washersCount: number;
-  dryersCount: number;
-  totalMachines: number;
-  status: "ONLINE" | "BUSY" | "MAINTENANCE";
-}
+import { Branch } from "@/types";
 
 interface BranchLandingCardProps {
-  branch: BranchInfo;
+  branch: Branch;
 }
 
 export function BranchLandingCard({ branch }: BranchLandingCardProps) {
+  const isCritical = branch.health_status === "CRITICAL";
+  const isWarning = branch.health_status === "WARNING";
+
   return (
-    <div className="bg-white rounded-2xl border-2 border-slate-300 hover:border-msu shadow-xs hover:shadow-md transition-all duration-200 p-6 flex flex-col justify-between group">
-      {/* Card Header */}
+    <div className="bg-white rounded-xl border border-slate-200 hover:border-msu-border shadow-xs hover:shadow-md transition-all p-4 flex flex-col justify-between gap-3 group">
+      {/* Card Header Row per DESIGN.md 4.3 */}
       <div>
-        <div className="flex items-start justify-between gap-3 mb-3">
-          <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-300">
+        <div className="flex items-center justify-between gap-2 mb-2 pb-2 border-b border-slate-100">
+          <span className="inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
             <MapPin className="w-3 h-3 text-msu" />
-            {branch.campusType}
+            <span className="truncate">{branch.campus_type || "Campus Facility"}</span>
           </span>
 
-          <span className="inline-flex items-center gap-1.5 text-[11px] font-mono font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs">
-            <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
-            {branch.status}
+          <span
+            className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full ${
+              isCritical
+                ? "bg-red-100 text-red-700 animate-pulse"
+                : isWarning
+                ? "bg-amber-100 text-amber-700"
+                : "bg-green-100 text-green-700"
+            }`}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                isCritical ? "bg-red-500" : isWarning ? "bg-amber-500" : "bg-green-500"
+              }`}
+            />
+            {isCritical ? "Critical" : isWarning ? "Warning" : "Normal"}
           </span>
         </div>
 
-        <h3 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight group-hover:text-msu transition-colors">
+        <h3 className="text-base font-semibold text-slate-800 leading-tight group-hover:text-msu transition-colors truncate">
           {branch.name}
         </h3>
-        <p className="text-xs text-slate-500 font-medium mt-1">
-          {branch.address}
+        <p className="text-xs text-slate-500 font-medium mt-0.5 truncate">
+          {branch.address}, {branch.city}
         </p>
 
-        {/* Divider */}
-        <div className="h-0.5 bg-slate-200 my-4" />
-
-        {/* Machine Breakdown */}
-        <div className="space-y-2.5">
-          <div className="flex items-center justify-between">
-            <span className="block text-[11px] font-mono font-bold uppercase tracking-wider text-slate-500">
-              Hippo Laundry Fleet
-            </span>
-            <span className="text-[11px] font-mono font-bold text-slate-700">
-              {branch.totalMachines} Total Units
+        {/* Micro-grid per DESIGN.md 4.3 */}
+        <div className="grid grid-cols-2 gap-2 mt-3">
+          <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-slate-600 text-xs font-medium">
+              <WashingMachine className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+              <span>Washers</span>
+            </div>
+            <span className="text-xs font-bold text-slate-900">
+              {branch.active_washers ?? 2}/{branch.total_washers ?? 4}
             </span>
           </div>
 
-          <div className="grid grid-cols-2 gap-2.5 text-xs">
-            <div className="flex items-center gap-2.5 p-3 rounded-xl bg-slate-50 border-2 border-slate-200">
-              <WashingMachine className="w-5 h-5 text-blue-600 shrink-0" />
-              <div>
-                <span className="block font-bold text-slate-900 font-mono text-sm">
-                  {branch.washersCount} Washers
-                </span>
-                <span className="text-[10px] text-slate-500 font-medium">Commercial Heavy</span>
-              </div>
+          <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-slate-600 text-xs font-medium">
+              <Wind className="w-3.5 h-3.5 text-cyan-600 shrink-0" />
+              <span>Dryers</span>
             </div>
+            <span className="text-xs font-bold text-slate-900">
+              {branch.active_dryers ?? 2}/{branch.total_dryers ?? 4}
+            </span>
+          </div>
 
-            <div className="flex items-center gap-2.5 p-3 rounded-xl bg-slate-50 border-2 border-slate-200">
-              <Wind className="w-5 h-5 text-amber-600 shrink-0" />
-              <div>
-                <span className="block font-bold text-slate-900 font-mono text-sm">
-                  {branch.dryersCount} Dryers
-                </span>
-                <span className="text-[10px] text-slate-500 font-medium">Commercial Gas</span>
-              </div>
+          <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-slate-600 text-xs font-medium">
+              <Flame className="w-3.5 h-3.5 text-orange-600 shrink-0" />
+              <span>Fuel</span>
             </div>
+            <span className="text-xs font-bold text-slate-900">
+              {branch.lpg_status ?? "Nominal"}
+            </span>
+          </div>
+
+          <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-slate-600 text-xs font-medium">
+              {isCritical ? (
+                <AlertTriangle className="w-3.5 h-3.5 text-red-600 shrink-0" />
+              ) : (
+                <ShieldCheck className="w-3.5 h-3.5 text-green-600 shrink-0" />
+              )}
+              <span>Safety</span>
+            </div>
+            <span
+              className={`text-xs font-bold ${
+                isCritical ? "text-red-700" : isWarning ? "text-amber-700" : "text-green-700"
+              }`}
+            >
+              {isCritical ? "Hazard" : isWarning ? "Alert" : "Passed"}
+            </span>
           </div>
         </div>
       </div>
 
-      {/* Action Footer */}
-      <div className="mt-6 pt-4 border-t-2 border-slate-200">
+      {/* Action Footer per DESIGN.md 4.3 */}
+      <div className="pt-2.5 mt-1 border-t border-slate-100 flex items-center justify-between gap-2">
+        <span className="text-xs text-slate-500 font-medium">
+          {branch.opening_hours || "24 Hours"}
+        </span>
+
         <Link
           href={`/dashboard?branch=${branch.id}`}
-          className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-msu hover:bg-msu-dark text-white font-bold text-xs uppercase tracking-wider shadow-xs hover:shadow-md transition-all"
+          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-msu hover:bg-msu-dark text-white text-xs font-semibold transition-colors shadow-2xs"
         >
-          <span>Launch Operations</span>
-          <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+          <span>Open Dashboard</span>
+          <ArrowRight className="w-3.5 h-3.5" />
         </Link>
       </div>
     </div>

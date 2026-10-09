@@ -3,65 +3,89 @@
 import React from "react";
 import Link from "next/link";
 import { Branch } from "@/types";
-import { MapPin, LayoutGrid } from "lucide-react";
+import { MapPin, LayoutGrid, User } from "lucide-react";
 
 interface HeaderProps {
   branches: Branch[];
   selectedBranch: string;
   onSelectBranch: (id: string) => void;
+  operatorName?: string;
+  onAuthClick?: () => void;
 }
 
 export function Header({
   branches,
   selectedBranch,
   onSelectBranch,
+  operatorName = "MSU Operator",
+  onAuthClick,
 }: HeaderProps) {
   return (
-    <header className="sticky top-0 z-40 bg-msu text-white shadow-md border-b-2 border-msu-dark">
+    <header className="sticky top-0 z-40 bg-msu text-white shadow-sm border-b border-msu-dark">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           {/* Brand & Identity */}
-          <div className="flex items-center space-x-3">
-            <Link href="/" className="group flex items-center gap-2.5">
-              <div>
-                <h1 className="text-xl font-black tracking-tight text-white leading-tight group-hover:text-amber-200 transition-colors">
+          <div className="flex items-center gap-3 min-w-0">
+            <Link href="/" className="group flex items-center gap-2 min-w-0">
+              <div className="min-w-0">
+                <h1 className="text-lg font-bold tracking-tight text-white leading-tight group-hover:text-amber-200 transition-colors truncate">
                   MSU SpinSense
                 </h1>
-                <p className="text-[11px] text-white/80 font-mono font-medium">
-                  Management & Science University
+                <p className="text-xs text-white/80 font-medium truncate hidden sm:block">
+                  Management & Science University • Operator Portal
                 </p>
               </div>
             </Link>
           </div>
 
           {/* Right Status & Controls */}
-          <div className="flex items-center space-x-2.5 sm:space-x-3">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            {/* Live Connectivity Pill */}
+            <div className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/20 border border-white/20 text-xs font-medium text-emerald-300">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span>Gateway Online</span>
+            </div>
+
             {/* Branch Hub Navigation Link */}
-            {/* <Link
-              href="/"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-msu-dark hover:bg-black/40 border border-white/20 text-xs font-bold text-white shadow-2xs transition-all"
+            <Link
+              href="/branches"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-msu-dark hover:bg-black/30 border border-white/20 text-xs font-semibold text-white transition-colors"
               title="Return to Branch Selection Hub"
             >
               <LayoutGrid className="w-3.5 h-3.5 text-amber-300" />
-              <span className="hidden sm:inline">Branch Hub</span>
-            </Link> */}
+              <span className="hidden sm:inline">All Branches</span>
+            </Link>
 
             {/* Branch Selector Dropdown */}
-            {/* <div className="flex items-center space-x-1.5 bg-white text-slate-900 rounded-xl px-3 py-1.5 shadow-xs border-2 border-slate-300 text-xs">
-              <MapPin className="w-3.5 h-3.5 text-msu shrink-0" />
-              <select
-                aria-label="Select Laundry Branch"
-                value={selectedBranch}
-                onChange={(e) => onSelectBranch(e.target.value)}
-                className="bg-transparent font-bold text-slate-900 focus:outline-none cursor-pointer text-xs"
+            {branches.length > 0 && (
+              <div className="flex items-center gap-1.5 bg-white text-slate-800 rounded-lg px-2.5 py-1.5 border border-slate-200 text-xs shadow-2xs">
+                <MapPin className="w-3.5 h-3.5 text-msu shrink-0" />
+                <select
+                  aria-label="Select Laundry Branch"
+                  value={selectedBranch}
+                  onChange={(e) => onSelectBranch(e.target.value)}
+                  className="bg-transparent font-semibold text-slate-900 focus:outline-none cursor-pointer text-xs pr-1"
+                >
+                  {branches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Operator Auth Button */}
+            {onAuthClick && (
+              <button
+                onClick={onAuthClick}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 border border-white/20 text-xs font-semibold transition-colors text-white"
+                title="Operator Account"
               >
-                {branches.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
-            </div> */}
+                <User className="w-3.5 h-3.5 text-amber-300" />
+                <span className="hidden md:inline">{operatorName}</span>
+              </button>
+            )}
           </div>
         </div>
       </div>
