@@ -8,8 +8,7 @@ import {
   SafetyTelemetry,
   TelemetrySummary,
 } from "@/types";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "https://esp32-gas-api.onrender.com").replace(/\/$/, "");
 
 // Fallback mock dataset
 let mockBranches: Branch[] = [
@@ -368,8 +367,9 @@ export async function fetchWithFallback<T>(
 ): Promise<{ data: T; isLive: boolean }> {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
-    const res = await fetch(`${API_BASE}${url}`, {
+    const timeout = setTimeout(() => controller.abort(), 6000);
+    const targetUrl = url.startsWith("http") ? url : `${API_BASE}${url}`;
+    const res = await fetch(targetUrl, {
       ...options,
       signal: controller.signal,
       headers: { "Content-Type": "application/json", ...options?.headers },
@@ -495,8 +495,11 @@ export async function createBranch(newBranch: Partial<Branch>): Promise<{ succes
 // ------------------------------------------
 
 export async function getMachines(branchId?: string, type?: "washer" | "dryer"): Promise<{ data: Machine[]; isLive: boolean }> {
-  const query = type ? `?type=${type}` : "";
-  const endpoint = branchId ? `/branches/${branchId}/machines${query}` : `/machines${query}`;
+  const params = new URLSearchParams();
+  if (branchId) params.append("branch_id", branchId);
+  if (type) params.append("type", type);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  const endpoint = `/machines${query}`;
   const result = await fetchWithFallback<Machine[]>(endpoint, mockMachines);
   if (!result.isLive) {
     let filtered = [...mockMachines];
@@ -773,5 +776,5 @@ export async function getTelemetry(
     ],
   };
 
-  return fetchWithFallback<TelemetrySummary>(`/branches/${branchId}/analytics?timeframe=${timeframe}`, fallback);
+  return fetchWithFallback<TelemetrySummary>(`/telemetry?branch_id=${branchId}&timeframe=${timeframe}`, fallback);
 }
