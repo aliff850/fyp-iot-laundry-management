@@ -45,6 +45,7 @@ function DashboardContent() {
   const [lpgCylinders, setLpgCylinders] = useState<LpgCylinder[]>([]);
   const [sensorData, setSensorData] = useState<LpgSensorData | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetrySummary | null>(null);
+  const [isLiveStream, setIsLiveStream] = useState<boolean>(true);
 
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -95,10 +96,24 @@ function DashboardContent() {
         setMachines(machineRes.data);
       }
       if (lpgRes.data.length > 0) {
-        setLpgCylinders(lpgRes.data);
+        let cyls = lpgRes.data;
+        if (sensorRes.data && typeof sensorRes.data.lpg_weight_kg === "number") {
+          cyls = cyls.map((c, idx) => {
+            if (idx === 0 && !c.maintenance_mode) {
+              return {
+                ...c,
+                weight_kg: sensorRes.data.lpg_weight_kg,
+                capacity_percent: sensorRes.data.lpg_capacity_percent,
+              };
+            }
+            return c;
+          });
+        }
+        setLpgCylinders(cyls);
       }
       if (sensorRes.data) {
         setSensorData(sensorRes.data);
+        setIsLiveStream(sensorRes.isLive);
       }
       if (telemetryRes.data) {
         setTelemetry(telemetryRes.data);
@@ -153,6 +168,7 @@ function DashboardContent() {
         onSelectBranch={handleBranchChange}
         operatorName={operatorName}
         onAuthClick={() => setIsAuthOpen(true)}
+        isLive={isLiveStream}
       />
 
       {/* Main Layout Body */}

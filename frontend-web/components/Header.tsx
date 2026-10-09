@@ -11,6 +11,7 @@ interface HeaderProps {
   onSelectBranch: (id: string) => void;
   operatorName?: string;
   onAuthClick?: () => void;
+  isLive?: boolean;
 }
 
 export function Header({
@@ -19,6 +20,7 @@ export function Header({
   onSelectBranch,
   operatorName = "MSU Operator",
   onAuthClick,
+  isLive = true,
 }: HeaderProps) {
   return (
     <header className="sticky top-0 z-40 bg-msu text-white shadow-sm border-b border-msu-dark">
@@ -41,9 +43,13 @@ export function Header({
           {/* Right Status & Controls */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             {/* Live Connectivity Pill */}
-            <div className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/20 border border-white/20 text-xs font-medium text-emerald-300">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span>Gateway Online</span>
+            <div className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${
+              isLive
+                ? "bg-black/20 border-white/20 text-emerald-300"
+                : "bg-black/20 border-amber-400/40 text-amber-300"
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${isLive ? "bg-emerald-400 animate-pulse" : "bg-amber-400"}`} />
+              <span>{isLive ? "ESP32 Live Stream" : "Offline (Cached)"}</span>
             </div>
 
             {/* Branch Hub Navigation Link */}
