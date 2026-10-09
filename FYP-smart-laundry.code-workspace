@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "esp32-lpg-monitor",
+			"path": "firmware/esp32-lpg-monitor"
+		}
+	],
+	"settings": {
+		"git.ignoreLimitWarning": true
+	}
+}
