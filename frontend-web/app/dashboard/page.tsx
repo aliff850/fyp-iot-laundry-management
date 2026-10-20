@@ -201,14 +201,14 @@ function DashboardContent() {
                 {activeTab === "overview"
                   ? "Operations Overview"
                   : activeTab === "fleet"
-                  ? "Segregated Machine Fleet"
-                  : activeTab === "lpg"
-                  ? "Multi-Cylinder LPG Management"
-                  : activeTab === "safety"
-                  ? "Environmental Safety & Air Quality"
-                  : activeTab === "parameters"
-                  ? "Firmware Operating Parameters"
-                  : "Consumption & Revenue Analytics"}
+                    ? "Machine Fleet Management"
+                    : activeTab === "lpg"
+                      ? "Multi-Cylinder LPG Management"
+                      : activeTab === "safety"
+                        ? "Environmental Safety and Air Quality"
+                        : activeTab === "parameters"
+                          ? "Firmware Operating Parameters"
+                          : "Consumption and Revenue Analytics"}
               </h2>
 
               <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-white text-msu border border-msu-border shadow-2xs">
@@ -396,13 +396,12 @@ function DashboardContent() {
                         <td className="py-3 px-4">{m.capacity_kg ?? 15} kg</td>
                         <td className="py-3 px-4">
                           <span
-                            className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
-                              m.status === "RUNNING"
-                                ? "bg-blue-100 text-blue-700"
-                                : m.status === "IDLE"
+                            className={`px-2 py-0.5 rounded-full text-xs font-semibold ${m.status === "RUNNING"
+                              ? "bg-blue-100 text-blue-700"
+                              : m.status === "IDLE"
                                 ? "bg-green-100 text-green-700"
                                 : "bg-red-100 text-red-700"
-                            }`}
+                              }`}
                           >
                             {m.status}
                           </span>

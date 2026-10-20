@@ -118,29 +118,28 @@ export function LpgManifoldRack({ branchId, cylinders, onCylinderUpdated }: LpgM
           const statusBadge = isMaint
             ? { label: "Swap Mode", color: "bg-slate-100 text-slate-700" }
             : isCrit
-            ? { label: "Critical", color: "bg-red-100 text-red-700 animate-pulse" }
-            : isWarn
-            ? { label: "Low Gas", color: "bg-amber-100 text-amber-700" }
-            : { label: "Normal", color: "bg-green-100 text-green-700" };
+              ? { label: "Critical", color: "bg-red-100 text-red-700 animate-pulse" }
+              : isWarn
+                ? { label: "Low Gas", color: "bg-amber-100 text-amber-700" }
+                : { label: "Normal", color: "bg-green-100 text-green-700" };
 
           const progressColor = isMaint
             ? "bg-slate-400"
             : isCrit
-            ? "bg-red-500"
-            : isWarn
-            ? "bg-amber-500"
-            : "bg-green-500";
+              ? "bg-red-500"
+              : isWarn
+                ? "bg-amber-500"
+                : "bg-green-500";
 
           return (
             <div
               key={cyl.cylinder_id}
-              className={`rounded-xl border p-4 flex flex-col justify-between gap-4 transition-colors ${
-                isCrit ? "border-red-500" : isWarn ? "border-amber-500" : "border-slate-200 hover:border-slate-300"
-              }`}
+              className={`rounded-xl border p-4 flex flex-col justify-between gap-4 transition-colors ${isCrit ? "border-red-500" : isWarn ? "border-amber-500" : "border-slate-200 hover:border-slate-300"
+                }`}
             >
               <div className="space-y-3">
                 {/* Header */}
-                <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-col justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="w-6 h-6 shrink-0 rounded-md bg-slate-100 text-slate-700 text-xs font-semibold flex items-center justify-center">
                       {cyl.cylinder_id.replace("CYL-", "")}
@@ -196,9 +195,8 @@ export function LpgManifoldRack({ branchId, cylinders, onCylinderUpdated }: LpgM
                     disabled={isLoading}
                     onClick={() => handleToggleMaintenance(cyl)}
                     aria-pressed={isMaint}
-                    className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
-                      isMaint ? "bg-msu text-white hover:bg-msu-dark" : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                    }`}
+                    className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${isMaint ? "bg-msu text-white hover:bg-msu-dark" : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                      }`}
                   >
                     {isMaint ? "On" : "Off"}
                   </button>
