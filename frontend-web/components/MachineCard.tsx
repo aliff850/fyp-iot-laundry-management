@@ -82,7 +82,7 @@ export function MachineCard({ machine, onCommand, onEditParameters }: MachineCar
     >
       <div className="space-y-4">
         {/* Header: label + status */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-col justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-8 h-8 shrink-0 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center">
               {machine.type === "washer" ? <WashingMachine className="w-4 h-4" /> : <Wind className="w-4 h-4" />}
@@ -95,7 +95,7 @@ export function MachineCard({ machine, onCommand, onEditParameters }: MachineCar
             </div>
           </div>
 
-          <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${status.badge}`}>
+          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-semibold ${status.badge}`}>
             <span className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
             {status.label}
           </span>
@@ -143,9 +143,8 @@ export function MachineCard({ machine, onCommand, onEditParameters }: MachineCar
             {machine.parameters?.spin_speed ?? 800} RPM
           </span>
           <span
-            className={`inline-flex items-center gap-1 truncate px-2.5 py-1 rounded-full ${
-              doorLocked ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
-            }`}
+            className={`inline-flex items-center gap-1 truncate px-2.5 py-1 rounded-full ${doorLocked ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+              }`}
           >
             {doorLocked ? <Lock className="w-3 h-3 shrink-0" /> : <Unlock className="w-3 h-3 shrink-0" />}
             {doorLocked ? "Locked" : "Unlocked"}
