@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timezone
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -122,6 +122,15 @@ class SensorPayload(BaseModel):
     voltage: float = 0.0
     temperature: float = 0.0
     humidity: float = 0.0
+
+class TelemetryRecord(BaseModel):
+    edge_record_id: int = Field(..., description="Local database auto-increment ID from Pi 5")
+    device_id: str = Field(..., description="Originating node identifier, e.g., ESP32-LPG or ESP32-ENV")
+    recorded_at: str = Field(..., description="Timestamp recorded at the edge")
+    data: Dict[str, Any] = Field(..., description="Raw sensor dictionary from ESP32")
+
+class BatchTelemetryRequest(BaseModel):
+    batch: List[TelemetryRecord]
 
 # ==========================================
 # In-Memory State & Fixtures
@@ -966,6 +975,91 @@ def get_telemetry_legacy(
     timeframe: Literal["daily", "weekly", "monthly"] = "daily",
 ):
     return get_branch_analytics(branch_id=branch_id, timeframe=timeframe)
+
+# ------------------------------------------
+# Edge-to-Cloud Sync Worker Ingestion
+# ------------------------------------------
+
+@app.post("/api/v1/telemetry/batch", status_code=status.HTTP_200_OK)
+async def receive_batch_telemetry(payload: BatchTelemetryRequest):
+    """
+    Ingests batch records forwarded by the Raspberry Pi 5 sync worker.
+    Parses sensor data, updates live telemetry, and re-evaluates safety alerts.
+    """
+    global latest_edge_data
+
+    if not payload.batch:
+        return {"status": "success", "processed": 0}
+
+    processed_count = 0
+
+    for item in payload.batch:
+        sensor_dict = item.data
+        device_id = item.device_id
+        timestamp = item.recorded_at
+
+        # 1. Update Environmental & Gas Safety (DHT22 & MQ-6)
+        if "voltage" in sensor_dict or "temperature" in sensor_dict:
+            v = float(sensor_dict.get("voltage", latest_edge_data["voltage"]))
+            t = float(sensor_dict.get("temperature", latest_edge_data["temperature"]))
+            h = float(sensor_dict.get("humidity", latest_edge_data["humidity"]))
+
+            is_leak = v > 1.3
+            leak_status = "CRITICAL" if v > 1.8 else ("WARNING" if v > 1.3 else "SAFE")
+
+            latest_edge_data["voltage"] = round(v, 2)
+            latest_edge_data["temperature"] = round(t, 1)
+            latest_edge_data["humidity"] = round(h, 1)
+            latest_edge_data["received_at"] = timestamp
+            latest_edge_data["is_live_stream"] = True
+            latest_edge_data["is_leak_detected"] = is_leak
+            latest_edge_data["leak_status"] = leak_status
+
+        # 2. Update LPG Manifold Telemetry (HX711 Load Cells)
+        if "cylinders" in sensor_dict:
+            # Format: {"cylinders": [{"cylinder_id": "CYL-01", "weight_kg": 38.5}, ...]}
+            branch = sensor_dict.get("branch_id", "msu-shah-alam")
+            if branch in lpg_manifolds_db:
+                for c_data in sensor_dict["cylinders"]:
+                    cid = c_data.get("cylinder_id")
+                    weight = float(c_data.get("weight_kg", 0.0))
+                    target = next((c for c in lpg_manifolds_db[branch] if c.cylinder_id == cid), None)
+                    if target and not target.maintenance_mode:
+                        target.weight_kg = round(weight, 2)
+                        pct = (target.weight_kg / target.max_capacity_kg) * 100.0
+                        target.capacity_percent = round(pct, 1)
+                        if pct < 5.0:
+                            target.status = "CRITICAL"
+                        elif pct < 15.0:
+                            target.status = "WARNING"
+                        else:
+                            target.status = "HEALTHY"
+
+        elif "lpg_weight_kg" in sensor_dict:
+            # Single-weight payload fallback
+            weight = float(sensor_dict["lpg_weight_kg"])
+            latest_edge_data["lpg_weight_kg"] = round(weight, 2)
+            pct = (weight / latest_edge_data["lpg_max_weight_kg"]) * 100.0
+            latest_edge_data["lpg_capacity_percent"] = round(pct, 1)
+
+        # 3. Update Machine State (e.g., SCT-013 current / ADXL345 vibration)
+        machine_id = sensor_dict.get("machine_id")
+        if machine_id and machine_id in machines_db:
+            machine = machines_db[machine_id]
+            if "power_w" in sensor_dict:
+                machine.power_w = float(sensor_dict["power_w"])
+            if "drum_rpm" in sensor_dict:
+                machine.drum_rpm = int(sensor_dict["drum_rpm"])
+            if "status" in sensor_dict:
+                machine.status = sensor_dict["status"]
+
+        processed_count += 1
+
+    return {
+        "status": "success",
+        "processed_records": processed_count,
+        "last_edge_id": payload.batch[-1].edge_record_id,
+    }
 
 # ------------------------------------------
 # ESP32 Edge Ingestion & Safety Endpoints
