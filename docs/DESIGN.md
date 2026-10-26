@@ -1,196 +1,371 @@
-# UI/UX Design System & Specifications
+# SpinSense Dark Interface Design Guide
 
-## Brand & Aesthetic Vision
-The dashboard follows the corporate identity of Management & Science University (MSU Malaysia — `msu.edu.my`). The visual language pairs rich MSU Crimson/Maroon with slate neutrals and pure white surfaces, producing a high-contrast, clean industrial IoT monitoring interface.
+**Revision:** 2026-10-26
 
----
+This guide defines the target visual language for SpinSense web dashboards and the operator PWA. Its reference is the [Pi gateway dashboard](../pi5/dashboard/index.html): charcoal surfaces, restrained coral, system typography, small corners, readable measurements, and quiet data tables. Navy is an approved addition for structural regions.
 
-## 1. Color Palette & Design Tokens
+This is a documentation specification, not evidence that the applications have adopted the theme. The Pi reference currently uses custom CSS; future web implementations translate its appearance into Tailwind utilities. Native Flutter implementation is outside this styling contract.
 
-### 1.1. Core Brand Colors
-- **MSU Crimson (Primary):** `#8B0000` (Deep Maroon / Primary Brand Accent)
-  - `msu-crimson-dark`: `#660000` (Header accents, hover state for primary buttons)
-  - `msu-crimson-light`: `#FDF2F2` (Active sidebar items, subtle badge backgrounds)
-  - `msu-crimson-border`: `#F87171` (Selected card borders, alert badges)
-- **MSU Gold Accent (Tertiary):** `#D4AF37` / `#B8860B` (Used sparingly for highlights, secondary badges)
+The [PRD](PRD.md) owns permissions, behavior, measurements, thresholds, and data semantics. [AGENTS.md](../AGENTS.md) owns development workflow. This guide must not introduce alternate business rules, simulated success paths, or new runtime APIs.
 
-### 1.2. Surface & Layout Neutrals
-- **App Background (Canvas):** `#F8FAFC` (Tailwind `slate-50`)
-- **Card / Surface Background:** `#FFFFFF` (Pure White)
-- **Border / Divider:** `#E2E8F0` (Tailwind `slate-200`)
-- **Text Primary:** `#0F172A` (Tailwind `slate-900`)
-- **Text Secondary / Muted:** `#64748B` (Tailwind `slate-500`)
+## 1. Visual principles
 
-### 1.3. State & Sensor Indicators
-- **Idle / Available / Safe:**
-  - Background: `#DCFCE7` (Tailwind `green-100`)
-  - Text: `#15803D` (Tailwind `green-700`)
-  - Dot: `#22C55E` (Tailwind `green-500`)
-- **Running / Active Cycle:**
-  - Background: `#DBEAFE` (Tailwind `blue-100`)
-  - Text: `#1D4ED8` (Tailwind `blue-700`)
-  - Dot: `#3B82F6` (Tailwind `blue-500`)
-- **Warning / Low Gas (<15%) / High Heat:**
-  - Background: `#FEF3C7` (Tailwind `amber-100`)
-  - Text: `#B45309` (Tailwind `amber-700`)
-  - Dot: `#F59E0B` (Tailwind `amber-500`)
-- **Error / Gas Leak / Machine Offline:**
-  - Background: `#FEE2E2` (Tailwind `red-100`)
-  - Text: `#B91C1C` (Tailwind `red-700`)
-  - Dot: `#EF4444` (Tailwind `red-500`)
+- Keep the main canvas charcoal. Use navy on navigation, selected structural regions, and secondary controls; do not turn every panel blue.
+- Let one useful reading or operational finding lead. Use a larger fuel reading or an incident requiring attention rather than several competing oversized metrics.
+- Use coral sparingly for the SpinSense mark, focus indicators, selected underlines, and a main data series. Destructive actions use the negative token, not the brand accent.
+- Keep ordinary panels flat and shadow-free. Use a surface step and optional decorative border; reserve shadows for dialogs, menus, and other genuinely floating elements.
+- Use one system font, sentence-case labels, moderate weight, and tabular numbers. Avoid tracked uppercase metadata, decorative icon containers, gradients, glass, glows, and flashing alarms.
+- Separate surface hierarchy, operational status, data provenance, and connectivity. Navy does not mean running, coral does not mean fault, and a reachable API does not prove sensor health.
+- Preserve the reference's space: a small corner radius does not require cramped padding. Peer panels can repeat when they represent peer assets; balance the grid against actual content rather than forcing identical empty tiles.
 
----
+Navy supplements the reference in selected structural regions. Preserve the reference's charcoal ground, composition, and restrained use of color across the wider operator interface.
 
-## 2. Tailwind CSS Configuration Reference
+## 2. Tailwind v4 theme contract
 
-Add this to `frontend-web/tailwind.config.ts`:
+### 2.1 Allowed customization
 
-```typescript
-import type { Config } from "tailwindcss";
+Component presentation must use Tailwind utility classes and standard variants. A single shared Tailwind v4 theme defines **colors and font families only**. Preserve Tailwind's default spacing, sizing, font-size, weight, radius, breakpoint, shadow, and motion scales.
 
-const config: Config = {
-  content: [
-    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
-  ],
-  theme: {
-    extend: {
-      colors: {
-        msu: {
-          DEFAULT: "#8B0000",
-          dark: "#660000",
-          light: "#FDF2F2",
-          border: "#FCA5A5",
-          gold: "#D4AF37",
-        },
-      },
-      fontFamily: {
-        sans: ["var(--font-inter)", "sans-serif"],
-      },
-    },
-  },
-  plugins: [],
-};
+The following is a documented target for the shared web stylesheet, not an instruction to change application files as part of this documentation update:
 
-export default config;
+```css
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #171719;
+  --color-surface: #131217;
+  --color-raised: #212023;
+
+  --color-navy: #14243a;
+  --color-navy-hover: #1b304b;
+  --color-navy-selected: #223d5b;
+
+  --color-ink: #f2f2f3;
+  --color-muted: #b4b4ba;
+  --color-faint: #94949d;
+
+  --color-line: #2c2b30;
+  --color-rule: #242328;
+  --color-control: #8c8a93;
+
+  --color-accent: #ef6268;
+  --color-positive: #79c5a6;
+  --color-warning: #dfb463;
+  --color-negative: #ef8798;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+}
 ```
 
----
+Do not reset the entire theme namespace: standard Tailwind scales remain available. Do not add custom typography sizes, radii, spacing, breakpoints, durations, or keyframes. The only project CSS authoring exception is this shared import/theme definition; there are no custom component selectors, global body rules, or utility aliases.
 
-## 3. Typography & Hierarchy
-- **Font Family:** `Inter`, `system-ui`, sans-serif.
-- **Page Titles:** `text-2xl font-bold tracking-tight text-slate-900`
-- **Section Headings:** `text-base font-semibold text-slate-800`
-- **Metric Figures:** `text-3xl font-extrabold text-slate-900 tracking-tight`
-- **Card Subtitles:** `text-xs font-medium text-slate-500 uppercase tracking-wider`
-- **Status Badges:** `inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold`
+Use semantic utilities generated from these tokens, such as `bg-canvas`, `bg-surface`, `bg-navy`, `text-ink`, `border-control`, and `font-sans`. Define palette values once rather than repeating raw colors in component markup.
 
----
+### 2.2 Palette roles
 
-## 4. UI Layout & Component Guidelines
+| Tokens | Use |
+|---|---|
+| `canvas` / `surface` / `raised` | Page ground, primary data panels, nested wells and subtle neutral selection |
+| `navy` / `navy-hover` / `navy-selected` | Navigation and limited structural regions; secondary-control hover and selected/pressed fills |
+| `ink` / `muted` / `faint` | Primary text, supporting text, tertiary metadata on permitted surfaces |
+| `line` / `rule` | Decorative panel outlines and row separators; never the sole boundary of an interactive control |
+| `control` | Meaningful input/button boundaries and row interaction outlines |
+| `accent` | Brand mark, selected underline, focus outline, restrained data emphasis |
+| `positive` / `warning` / `negative` | Explicit positive, pending/warning, and failure/critical/destructive meaning |
 
-### 4.1. Global Spacing & Density Tokens
-All components across the application must follow a compact, reserved spacing standard:
-- **Application Page Shell:** `p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full`.
-- **Card / Surface Containers:**
-  - Standard Cards / Panels: Strictly `p-3.5` or `p-4` (14px–16px).
-  - Modal / Slide-Over dialogs: `p-5` or `p-6` (never `p-8` or `p-10`).
-  - Metric Pills / Nested Tiles: `p-2` or `p-2.5` (8px–10px).
-- **Layout Gap Scale:**
-  - Tight item groups (badges, small controls): `gap-1.5` or `gap-2` (6px–8px).
-  - Standard card interior rows / form fields: `gap-3` (12px).
-  - Grid gutters between cards: `gap-3.5` or `gap-4` (14px–16px). Never use `gap-6` or `gap-8` in dense dashboard grids.
+All reference colors are preserved except its original interactive boundary, which is strengthened for the added navy surfaces. The navy colors are new additions. Ordinary dark panels may be darker than the canvas, as in the Pi reference; avoid adding shadows to simulate elevation.
 
-### 4.2. Navigation & App Shell
-- **Top Header Bar:**
-  - Background: `#8B0000` (MSU Crimson) with white text.
-  - Height: Compact `h-14` or `h-16`.
-  - Branding: University-styled "MSU SmartLaundry Operator Portal" with a crisp status pill indicating backend connectivity.
-  - Branch Selector: Styled white dropdown with current branch label.
-- **Left Navigation Drawer:**
-  - Background: White (`#FFFFFF`), right border `border-slate-200`.
-  - Links: Overview, Machine Fleet, Parameter Control, LPG & Safety, Telemetry & Revenue, System Logs.
-  - Active Item: `border-l-4 border-msu bg-msu-light text-msu font-semibold`.
+Primary buttons invert the dark theme: `bg-ink text-surface`. Secondary controls may use navy. Never use light text on the bright coral, mint, amber, or rose fills; inverted labels on those fills use `text-surface` and a measured pairing.
 
-### 4.3. Card Architecture & Data Presentation
-Any card component across the site (Machine cards, Safety metrics, Revenue summaries, System telemetry) must follow this layout skeleton:
-- **Card Shell:** Rounded border shell (`rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col justify-between p-4`).
-- **Header Row:** Compact single flex line (`flex items-center justify-between pb-2.5 border-b border-slate-100`).
-- **Body Area:**
-  - Keep internal metrics structured in 2-column or 3-column micro-grids (`grid grid-cols-2 gap-2 mt-2.5`).
-  - Do not cram multiple distinct telemetry points into an unwrapped single row.
-  - Badges use reserved inner padding (`px-2 py-0.5 text-xs font-medium rounded`).
-- **Action Footer:**
-  - Top divider: `pt-2.5 mt-2.5 border-t border-slate-100 flex items-center justify-between gap-2`.
-  - Action elements: Compact sizing (`h-8 text-xs font-medium px-2.5 rounded-lg`). If more than 2 secondary actions exist, collapse them into an overflow menu.
+### 2.3 Styling restrictions
 
-### 4.4. Machine Parameter Configuration Modal / Slide-Over
-Triggered when editing machine settings (`PUT /machines/{id}/parameters`):
-- Compact form inputs for:
-  - Price (numeric input with RM prefix).
-  - Cycle Duration (number stepper in minutes).
-  - Temperature (select dropdown: Cold, 30°C, 40°C, 60°C).
-  - Water Level (segmented control: Low, Medium, High).
-  - Spin Speed (segmented control: 400, 800, 1200 RPM).
-  - Door Lock Override (toggle switch).
-- Action buttons: "Save Parameters" (`bg-msu text-white hover:bg-msu-dark`) and "Cancel".
+- No inline styles, arbitrary-value utilities, arbitrary-property utilities, custom selectors, component CSS, or `@apply`.
+- Do not recreate the Pi's class names as CSS rules. Express layout, border, focus, selection, motion, and responsiveness directly through utilities.
+- Use complete literal class strings in state maps. Do not construct color, span, or size classes from fragments at runtime.
+- For dynamic visualizations, SVG drawing attributes such as path coordinates and bar geometry may describe data. Use utilities for color, stroke appearance, layout, and sizing; do not write inline CSS to set a percentage width.
+- Keep SVG icons on `currentColor` using `fill-none stroke-current` or `fill-current` as appropriate. Use the existing outline icon set; do not add a new icon dependency for a visual refresh.
 
-### 4.5. LPG & Safety Monitoring Widget
-- **LPG Weight Card:**
-  - Visual cylinder progress bar or vertical tank visualization showing `XX.X kg / 50.0 kg`.
-  - Amber badge if $< 15\%$, red pulsing alert if $< 5\%$.
-- **Gas Leak Detection (MQ-6):**
-  - Normal state: Green checkmark with text "Safe - No Gas Detected".
-  - Leak state: Full-width crimson flashing banner `text-red-700 bg-red-100 border border-red-500` with high-urgency icon.
-- **Environment Telemetry (DHT22):**
-  - Side-by-side metric tiles showing Temperature (`°C`) and Relative Humidity (`%`).
+## 3. Typography, spacing, and responsive layout
 
----
+### 3.1 Type recipes
 
-## 5. Agent Constraints & Layout Guardrails (Meta-Prompt)
+| Role | Complete class recipe |
+|---|---|
+| Default text context | `font-sans text-sm leading-normal text-ink` |
+| Page title | `text-2xl font-semibold leading-tight tracking-tight text-ink` |
+| Section title | `text-base font-semibold leading-normal text-ink` |
+| Leading measurement | `text-4xl font-medium leading-tight tracking-tight text-ink tabular-nums` |
+| Supporting measurement | `text-2xl font-medium leading-tight text-ink tabular-nums` |
+| Labels and explanations | `text-sm leading-normal text-muted` |
+| Secondary metadata on charcoal | `text-xs leading-normal text-faint` |
+| Metadata on navy hover/selected | `text-xs leading-normal text-muted` |
+| Units beside a measurement | `ml-1 text-sm font-normal tracking-normal text-muted` |
+| Numeric table cell | `px-4 py-3.5 text-right text-sm text-ink tabular-nums whitespace-nowrap` |
 
-All coding agents generating frontend components must adhere to the following layout, density, and responsive limits across all pages and components:
+Use the same precision and unit conventions for the same metric. Numeric zero is a real reading; missing data is not zero. Use a readable smaller dash for unavailable values rather than a large numeric-looking placeholder.
 
-```markdown
-You are an expert UI/UX front-end engineer. When generating UI layouts and components, strictly follow these structural and responsive design constraints:
+The Pi's 26px title maps to `text-2xl`, and its 13px metadata maps to `text-xs` or `text-sm` according to purpose. These are deliberate standard-scale adaptations. The 36px leading reading maps to `text-4xl`. Do not introduce custom font sizes to reproduce every pixel.
 
-1. Global Padding & Anti-Bloat Rules:
-- Enforce compact, reserved padding across ALL components:
-  - Standard cards and widget containers: Strictly `p-3.5` or `p-4` (14px–16px). NEVER use `p-6`, `p-8`, or larger on dashboard cards or nested grid components.
-  - Nested micro-tiles, telemetry pills, and status badges: Use `p-1.5` to `p-2.5`.
-  - Button and control heights: Standardize on compact scales (`h-8` to `h-9` for cards/toolbars, `text-xs` or `text-sm`).
-- Grid gutters: Use `gap-3.5` or `gap-4` for card grids. Never use `gap-6` or `gap-8` inside dense operator dashboards.
+### 3.2 Shell and panel recipes
 
-2. Layout Density & Anti-Cramping Rules:
-- Maximum 3 items per horizontal flex row on desktop. Stack vertically (`flex-col`) or use a structured grid (`grid-cols-2` or `grid-cols-3`) when displaying more than 3 data points.
-- Always append `flex-wrap` to horizontal rows where items can exceed container bounds. Never allow unwrapped horizontal overflow.
-- Favor vertical hierarchy and multi-column micro-grids over squeezing items side-by-side into tight spaces.
+| Element | Complete class recipe |
+|---|---|
+| Page root | `min-h-screen bg-canvas font-sans text-sm leading-normal text-ink scheme-dark` |
+| Shared content width | `mx-auto w-full max-w-360 px-4 md:px-6 xl:px-10` |
+| Main vertical spacing | `py-6 md:pt-9 md:pb-7` |
+| Header region | `border-b border-line bg-navy` |
+| Header inner layout | `mx-auto flex min-h-16 w-full max-w-360 items-center justify-between gap-4 px-4 md:min-h-19 md:px-6 xl:px-10` |
+| Page heading/action row | `mb-6 flex flex-wrap items-start justify-between gap-4` |
+| Overview grid | `mb-8 grid grid-cols-1 gap-4 md:grid-cols-2 md:gap-6 xl:grid-cols-7` |
+| Leading panel | `min-w-0 rounded-md bg-surface px-5 py-4 md:p-7 xl:col-span-3` |
+| First supporting panel | `min-w-0 rounded-md bg-surface px-5 py-4 md:p-7 xl:col-span-2` |
+| Second supporting panel | `min-w-0 rounded-md bg-surface px-5 py-4 md:col-span-2 md:p-7 xl:col-span-2` |
+| Navy structural panel | `min-w-0 rounded-md border border-line bg-navy px-5 py-4 md:p-7` |
+| Panel heading row | `mb-5 flex flex-wrap items-center justify-between gap-3` |
+| Related readings grid | `grid grid-cols-2 gap-5` |
+| Wrapping metadata/actions | `flex flex-wrap items-center gap-3` |
 
-3. Content & Copy Limits:
-- Keep text concise:
-  - Headings & Titles: 3–6 words maximum.
-  - Subtitles, Tooltips & Status Descriptions: 1–2 short sentences maximum.
-  - Button/Action labels: 1–3 words maximum.
-- Truncate dynamic or external strings automatically using `truncate` or `line-clamp-2` combined with `min-w-0` on flex children.
+The seven-track desktop grid approximates the reference's leading-panel proportions without a custom grid template. At `md` the third panel spans the two columns; at `xl` the spans become three, two, and two. On mobile every panel occupies the full row.
 
-4. Sizing & Responsive Discipline:
-- Never hardcode rigid pixel widths on parent containers (e.g., `width: 500px`). Use relative sizing (`w-full max-w-sm`), flex ratios, or CSS Grid tracks (`grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4`).
-- Tables must live inside an `overflow-x-auto` wrapper, or switch to stacked card layouts on smaller viewports.
-- Toolbars and Action Footers: If there are more than 2 secondary action buttons, group them into an overflow/dropdown menu rather than rendering them side-by-side.
-- Ensure all screens remain unbroken down to 375px mobile viewports.
+The maximum content width is 1440px at Tailwind's default spacing scale. Mobile side padding is 16px, tablet padding 24px, and large-screen padding 40px. Panel padding becomes 28px on larger screens; mobile panels use 20px horizontal and 16px vertical padding. The previous guide's blanket prohibition on larger padding and 24px gaps is retired.
 
-5. Component Checklist Before Output:
-- Did you use `p-3.5` or `p-4` instead of `p-6+` for cards and surfaces?
-- Are dense data points organized into micro-grids rather than squeezed onto one unwrapped row?
-- Does every flex child with text include `min-w-0` and truncation handling?
-- Will the component fit cleanly on a 375px screen without horizontal layout clipping?
+Use standard mobile-first `sm`, `md`, `lg`, and `xl` variants, not the Pi's custom 1100px/340px media queries. The documented overview changes at `md` and `xl`. At intermediate widths, wrap controls and metadata before they collide. If a product screen has sidebar navigation, fold it on small screens; the Pi's top-bar layout does not require introducing a sidebar.
+
+## 4. Component recipes
+
+The recipes are visual fragments, not functional implementations. Connect controls to real behavior and authorization from the PRD. Keep a visible label or accessible name; an icon alone is not sufficient.
+
+### 4.1 Navigation, brand, and selection
+
+Use `inline-flex items-center gap-3 text-lg font-semibold tracking-tight text-ink` for the SpinSense wordmark row. Its mark uses `size-7 shrink-0 text-accent` on the base navy background.
+
+A navigation link on the base navy region:
+
+```html
+<a href="/branches"
+   class="inline-flex min-h-11 items-center rounded-md px-3 text-sm text-muted transition-colors duration-150 hover:bg-navy-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent motion-reduce:transition-none">
+  Branches
+</a>
 ```
 
----
+The active link uses this complete alternative recipe:
 
-## 6. Directives for Coding Agents
-1. **Mock Vendor Service:** Provide a fallback mock adapter in `src/lib/api/` that implements the vendor endpoints (`/auth/token`, `/machines`, `/machines/{id}/commands`, `/telemetry`, `/machines/{id}/parameters`) with realistic simulated data when the backend is offline.
-2. **State Management:** Use clean React state or React Query / SWR for polling the `/machines` and telemetry endpoints every 4 seconds.
-3. **Component Modularity:** Separate machine components into `MachineCard`, `MachineGrid`, `ParameterModal`, and `SafetyPanel` inside `src/components/`.
-4. **Icons:** Exclusively use `lucide-react` for clean, professional iconography.
+```html
+<a href="/branches" aria-current="page"
+   class="inline-flex min-h-11 items-center rounded-md bg-navy-selected px-3 text-sm font-semibold text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent">
+  Branches
+</a>
+```
+
+The router chooses the appropriate complete class string and sets `aria-current="page"` only on the active destination. A boolean ARIA utility does not match that enumerated value. Use primary/secondary text on navy hover/selected fills. Coral may remain an underline or focus outline, not small text on those fills. Do not reintroduce a colored left rail and coral-filled selection on every navigation item.
+
+### 4.2 Buttons
+
+Use one main filled action per view. All three recipes retain a minimum 44px touch height, readable disabled colors, a focus outline, and a reduced-motion fallback. Use the actual `disabled` attribute when unavailable.
+
+**Primary:**
+
+```html
+<button type="button"
+  class="inline-flex min-h-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-3.5 py-2 text-sm font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted motion-reduce:transition-none">
+  Refresh now
+</button>
+```
+
+**Secondary/navy:**
+
+```html
+<button type="button"
+  class="inline-flex min-h-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-sm font-medium text-ink transition-colors duration-150 enabled:hover:bg-navy-hover enabled:active:bg-navy-selected focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted motion-reduce:transition-none">
+  View details
+</button>
+```
+
+**Destructive:**
+
+```html
+<button type="button"
+  class="inline-flex min-h-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-negative bg-negative px-3.5 py-2 text-sm font-semibold text-surface transition-colors duration-150 enabled:hover:border-ink motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted motion-reduce:transition-none">
+  Remove assignment
+</button>
+```
+
+Use negative styling on both a destructive trigger and its confirmation. For asynchronous work, prevent duplicate submission, expose `aria-busy`, and change the visible label to the real pending operation. Loading is not success and does not require decorative animation.
+
+### 4.3 Inputs and selects
+
+```html
+<div class="grid gap-2">
+  <label for="branch-label" class="text-sm font-medium text-ink">Branch label</label>
+  <input id="branch-label" name="branch_label" type="text"
+    class="min-h-11 w-full min-w-0 rounded-md border border-control bg-canvas px-3 py-2 text-sm text-ink placeholder:text-faint transition-colors duration-150 enabled:hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted aria-invalid:border-negative motion-reduce:transition-none">
+</div>
+```
+
+A native select uses the same complete class string as the input, without the `placeholder:text-faint` utility. Keep native selection behavior; do not add custom select CSS. Set `aria-invalid="true"` on validation failure and attach a visible `text-sm text-negative` explanation through `aria-describedby`. Keep required format/validation instructions visible; placeholders do not replace labels. Disabled fields retain a label and a reason.
+
+### 4.4 Tabs and filters
+
+Use plain underline filters on charcoal panels rather than filled coral pills:
+
+```html
+<div class="flex min-w-0 gap-6 overflow-x-auto border-b border-line">
+  <button type="button" aria-pressed="true"
+    class="min-h-11 shrink-0 whitespace-nowrap border-b-2 border-transparent py-3 text-sm text-muted transition-colors duration-150 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent aria-pressed:border-accent aria-pressed:text-ink motion-reduce:transition-none">
+    All records
+  </button>
+  <button type="button" aria-pressed="false"
+    class="min-h-11 shrink-0 whitespace-nowrap border-b-2 border-transparent py-3 text-sm text-muted transition-colors duration-150 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent aria-pressed:border-accent aria-pressed:text-ink motion-reduce:transition-none">
+    Pending
+  </button>
+</div>
+```
+
+These are filter buttons, not ARIA tabs. A true tabbed interface must implement tab semantics, selected state, and keyboard behavior. Keep filters inside their scroll region without causing page-wide horizontal overflow or clipping focus indicators.
+
+### 4.5 Notices and operational states
+
+| Presentation | Complete class recipe |
+|---|---|
+| Neutral/freshness notice | `rounded-md border-l-2 border-control bg-raised px-4 py-3 text-sm text-muted` |
+| Warning notice | `rounded-md border-l-2 border-warning bg-raised px-4 py-3 text-sm text-ink` |
+| Error/critical notice | `rounded-md border-l-2 border-negative bg-raised px-4 py-3 text-sm text-ink` |
+| Positive status | `inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-positive` |
+| Pending/warning status | `inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-warning` |
+| Failed/quarantined status | `inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-negative` |
+| Unknown/offline/provenance label | `inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-muted` |
+
+Every mark has words: for example, Synced, Pending, Quarantined, Unknown, Offline, or Simulated. These are separate meanings, not interchangeable states. Do not color normal zero counts as warnings or render a failure label merely because a machine is offline. Running/paused labels use their actual state wording; the design does not infer machine state from a palette color.
+
+### 4.6 Tables
+
+- Wrapper: `max-h-120 w-full overflow-auto rounded-md bg-surface focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent`. Give an independently keyboard-scrollable wrapper an accessible name and a keyboard focus stop where needed.
+- Long diagnostic table: `w-full min-w-220 border-collapse text-sm`. Ordinary short tables use `w-full border-collapse text-sm` instead.
+- Header: `sticky top-0 z-10 bg-surface px-4 py-3.5 text-left text-sm font-normal text-muted whitespace-nowrap`. Numeric headers replace `text-left` with `text-right tabular-nums`.
+- Row: `border-t border-rule hover:outline hover:outline-1 hover:outline-control hover:-outline-offset-1`.
+- Text cell: `px-4 py-3.5 text-sm text-ink whitespace-nowrap`. Numeric cells use the recipe in Section 3.1.
+- Cell subline: `mt-0.5 block text-xs text-faint`.
+- Optional pinned identity cell: `sticky left-0 z-10 bg-surface px-4 py-3.5 text-sm text-ink whitespace-nowrap`. At the header intersection use `z-20`.
+- Footer: `flex flex-wrap justify-between gap-3 border-t border-line px-5 py-3.5 text-xs text-faint md:px-7`.
+
+Keep headers on the same surface as rows: no zebra stripes or saturated header bands. Numerical headers and values share the same right edge. Pin identity only where horizontal scrolling is genuinely needed, and keep all required diagnostic fields available. A selectable row uses `bg-navy-selected` with `text-ink` or `text-muted` throughout; replace faint sublines in that selected state.
+
+### 4.7 Fuel, environment, and delivery panels
+
+```html
+<section aria-labelledby="fuel-heading"
+  class="min-w-0 rounded-md bg-surface px-5 py-4 md:p-7 xl:col-span-3">
+  <h2 id="fuel-heading" class="mb-5 text-base font-semibold text-ink">Fuel reading</h2>
+  <dl class="grid gap-4">
+    <div>
+      <dt class="mb-2 text-sm text-muted">Gross mass</dt>
+      <dd class="text-4xl font-medium leading-tight tracking-tight text-ink tabular-nums">
+        <span aria-label="Unavailable" class="text-2xl text-faint">—</span>
+        <span class="ml-1 text-sm font-normal tracking-normal text-muted">kg</span>
+      </dd>
+    </div>
+  </dl>
+  <p class="mt-5 text-xs text-faint">No validated mass reading available.</p>
+</section>
+```
+
+Use the same panel shell and `grid grid-cols-2 gap-5` for temperature/humidity. Use `text-2xl font-medium text-ink tabular-nums` for supporting values and `text-sm text-muted` for unit/label text. Keep raw gas readings distinct from a validated physical concentration; use the provider's units and validity metadata.
+
+Delivery panels show confirmed sync state with a text label and associated count. Summary counts must identify their scope, such as the returned recent-record window rather than the whole backlog. Use `grid grid-cols-2 gap-x-6 gap-y-2.5` for label/value pairs, `text-sm text-muted` for labels, and `text-right text-sm text-ink tabular-nums` for counts.
+
+Native/data-driven SVG may visualize a valid measurement without inline styles. Keep the raw value visible; do not turn missing or out-of-range data into a plausible bounded gauge. Follow the PRD for calibration, capacity, validity, and incident evaluation.
+
+### 4.8 Machine cards, incident rows, and dialogs
+
+| Element | Complete class recipe |
+|---|---|
+| Machine card | `flex min-w-0 flex-col gap-4 rounded-md bg-surface px-5 py-4 md:p-7` |
+| Machine identity row | `flex min-w-0 flex-wrap items-start justify-between gap-3` |
+| Machine reading grid | `grid grid-cols-2 gap-x-6 gap-y-3` |
+| Machine action row | `flex flex-wrap items-center justify-between gap-3 border-t border-rule pt-4` |
+| Incident row on charcoal | `flex min-w-0 flex-col gap-3 border-t border-rule py-4 md:flex-row md:items-start md:justify-between` |
+| Incident summary | `min-w-0 flex-1 space-y-1` |
+| Dialog surface | `m-auto max-h-dvh w-11/12 max-w-xl overflow-y-auto rounded-md border border-control bg-surface p-6 text-ink shadow-xl backdrop:bg-canvas/80` |
+| Dialog actions | `mt-6 flex flex-wrap justify-end gap-3` |
+
+Machine cards retain washer/dryer separation, type-appropriate fields, source/freshness labels, and confirmed-versus-pending action state. Use real action buttons instead of an unlabeled clickable container. Incident rows identify the affected asset and condition with words; the action belongs next to the incident that needs attention. Descriptions and errors wrap; do not truncate essential diagnosis or service instructions.
+
+Dialog styling assumes a semantically correct modal implementation: label it, move focus into it, contain keyboard focus, support dismissal where allowed, and restore focus to its trigger. A native dialog may use `showModal()`; its open-state presentation does not establish those behaviors were tested.
+
+## 5. States and accessibility
+
+### 5.1 Required states
+
+| State | Presentation and behavior |
+|---|---|
+| Default | Readable text, stable layout, correct semantic role |
+| Hover | Subtle approved surface/border/text change; do not depend on hover to reveal the only action |
+| Focus | Visible coral outline with an offset on a permitted dark background; do not remove it without an equivalent |
+| Active | Standard pressed fill or small press translation; reduced-motion users keep the state without travel |
+| Disabled | Actual disabled behavior, readable muted text, visible reason; avoid fading the entire control |
+| Loading | Stable frame, visible pending wording and busy state, duplicate action prevented |
+| Error | Inline explanation with a retry/correction action where appropriate; retain and label previously fetched values |
+| Selected | Correct semantic attribute and distinct ink/underline/navy state; do not use color alone |
+
+Fields require error styling; selectable controls require selected styling. Apply the applicable states rather than inventing unsupported interactions. Loading placeholders use flat neutral blocks without shimmer. Color changes use `transition-colors duration-150 motion-reduce:transition-none`; press movement uses `motion-safe:enabled:active:translate-y-px`, so it is absent when reduced motion is requested. Do not rely on resetting only the transform property to cancel Tailwind v4's individual translate property. No entrance-animation requirement applies to these working dashboards.
+
+Use semantic headings, tables, labels, links, and buttons. One screen has one primary heading. Icon-only actions need accessible names; decorative icons are hidden from assistive technology. Keep touch targets at least `min-h-11`, with `min-w-11` for icon-only buttons. Provide a skip link and a reachable primary content region. Do not announce every polled metric through a live region; announce meaningful status changes without repetitive chatter.
+
+### 5.2 Truthful data presentation
+
+| Data condition | Required presentation |
+|---|---|
+| Valid zero | Show zero with its unit and normal precision |
+| Missing/invalid/unconfigured/warming | Show unavailable wording or a subdued dash with its reason; never a fabricated zero or healthy state |
+| Stale/offline | Retain last-known values when available, with timestamps and the actual freshness/connectivity label |
+| Request failure | State which request/view failed, preserve prior data with last-update context, and offer retry |
+| Simulated/estimated | Show provenance explicitly; an API failure must not switch silently to successful fixture data |
+| Pending/unknown command | Show pending/unknown wording until actual execution evidence exists |
+| Active incident during replacement | Preserve its condition and scope; this guide does not alter maintenance suppression or resolution rules |
+
+Styling does not calculate gas concentration, decide alarm thresholds, unlock machines, or define polling intervals. Use the current PRD/provider contracts. The local diagnostic monitor's capabilities are distinct from the broader target platform.
+
+### 5.3 Measured palette contrast
+
+The following ratios were calculated from the documented opaque sRGB colors using relative luminance on 2026-10-26. They describe these color pairs only, not whole-screen accessibility or browser testing. Normal text pairings must reach 4.5:1; meaningful control boundaries/focus indicators must reach 3:1 against their adjacent backgrounds.
+
+| Foreground | Canvas | Surface | Raised | Navy | Navy hover | Navy selected |
+|---|---:|---:|---:|---:|---:|---:|
+| Ink | 16.00 | 16.66 | 14.49 | 13.97 | 11.95 | 9.95 |
+| Muted | 8.68 | 9.03 | 7.86 | 7.58 | 6.48 | 5.40 |
+| Faint | 5.95 | 6.20 | 5.39 | 5.20 | 4.44 | 3.70 |
+| Accent | 5.64 | 5.87 | 5.11 | 4.93 | 4.21 | 3.51 |
+| Positive | 8.82 | 9.19 | 7.99 | 7.71 | 6.59 | 5.49 |
+| Warning | 9.25 | 9.63 | 8.37 | 8.07 | 6.90 | 5.75 |
+| Negative | 7.32 | 7.62 | 6.63 | 6.39 | 5.47 | 4.55 |
+| Control boundary | 5.26 | 5.48 | 4.76 | 4.59 | 3.93 | 3.27 |
+
+- Faint and coral text are allowed on canvas, surface, raised, and base navy. On navy hover/selected backgrounds, use ink or muted text instead. Coral remains suitable as a non-text focus indicator on the six dark backgrounds.
+- The inverted primary button uses surface text on ink: **16.66:1**. Its hover uses surface text on muted: **9.03:1**. The destructive fill uses surface text on negative: **7.62:1**.
+- Disabled muted text on raised measures **7.86:1**. Do not reduce its opacity.
+- Decorative line/rule tokens are not approved interactive boundaries. The original Pi control boundary on base navy measures **2.09:1**; the replacement control token measures **4.59:1**.
+- These results do not cover arbitrary opacity modifiers, images, gradients, mixed backgrounds, or focus clipping. Recalculate new combinations rather than assuming that a named token always passes.
+
+## 6. Developer verification and references
+
+Before adopting these recipes in an application:
+
+1. Use the shared theme once at the web root; keep standard Tailwind defaults and avoid a second per-page palette.
+2. Compile every complete recipe against the installed Tailwind version, including responsive, semantic, pseudo-element, and reduced-motion variants. Verify every used utility produces CSS.
+3. Check actual text/background, hover, active, selected, disabled, and focus pairings. Token arithmetic alone does not prove correct rendered contrast.
+4. Inspect representative views at 390px, 768px, and 1440px, plus the product's smallest supported width. Confirm no page-wide horizontal scrolling, hidden actions, clipped focus, or collapsed chips; tables scroll within their own region.
+5. Check keyboard navigation, modal focus, selected/filter behavior, loading/error recovery, meaningful data labels, and number alignment.
+6. Preserve the PRD's role, provenance, sensor quality, freshness, incident, and command semantics while changing presentation.
+7. Report only checks actually run. Document-only compilation/contrast checks do not establish that an application passed browser, hardware, or full accessibility acceptance.
+
+For this document-only change, validate theme/class consistency, generated utilities, measured opaque color pairings, links, Markdown structure, and diff scope. Rendering gates apply when these recipes are implemented in a screen; do not run a restyle or change application files merely to validate this guide.
+
+References:
+
+- [Pi gateway dashboard](../pi5/dashboard/index.html): visual source, still using its original CSS.
+- [SpinSense PRD](PRD.md): behavior, measurements, states, permissions, and acceptance.
+- [Development instructions](../AGENTS.md): commands, repository structure, and source verification.
+- [Tailwind theme variables](https://tailwindcss.com/docs/theme): centralized color/font tokens and generated utilities.
+- [Tailwind responsive design](https://tailwindcss.com/docs/responsive-design): standard mobile-first variants.
+- [Tailwind class detection](https://tailwindcss.com/docs/detecting-classes-in-source-files): complete, statically detectable class strings.

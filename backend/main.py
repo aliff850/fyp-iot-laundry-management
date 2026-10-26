@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
-from fastapi import FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -130,7 +130,17 @@ class TelemetryRecord(BaseModel):
     data: Dict[str, Any] = Field(..., description="Raw sensor dictionary from ESP32")
 
 class BatchTelemetryRequest(BaseModel):
-    batch: List[TelemetryRecord]
+    batch: List[TelemetryRecord] = Field(..., description="List of queued telemetry records")
+    branch_id: Optional[str] = Field("msu-shah-alam", description="Registered branch identifier")
+
+class BatchTelemetryResponse(BaseModel):
+    status: str = "success"
+    branch_id: str
+    processed_records: int
+    accepted_ids: List[int]
+    rejected_ids: List[int] = []
+    quarantine_reasons: Dict[int, str] = {}
+    last_edge_id: Optional[int] = None
 
 # ==========================================
 # In-Memory State & Fixtures
@@ -980,86 +990,161 @@ def get_telemetry_legacy(
 # Edge-to-Cloud Sync Worker Ingestion
 # ------------------------------------------
 
-@app.post("/api/v1/telemetry/batch", status_code=status.HTTP_200_OK)
-async def receive_batch_telemetry(payload: BatchTelemetryRequest):
+GATEWAY_TOKEN = os.getenv("SPINSENSE_GATEWAY_TOKEN", "spinsense-edge-gw-default")
+PROCESSED_EDGE_RECORD_IDS: set = set()
+
+def verify_gateway_auth(
+    authorization: Optional[str] = Header(None),
+    x_branch_id: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """
+    Validates edge gateway credentials and branch binding per PRD §4.1 and §5.3.
+    """
+    if authorization:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or token.strip() != GATEWAY_TOKEN:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid edge gateway authentication token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    branch_id = x_branch_id or "msu-shah-alam"
+    if branch_id not in BRANCHES_DB:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Branch '{branch_id}' is not registered on this cloud instance",
+        )
+    return {"branch_id": branch_id, "authenticated": bool(authorization)}
+
+@app.post("/api/v1/telemetry/batch", response_model=BatchTelemetryResponse, status_code=status.HTTP_200_OK)
+async def receive_batch_telemetry(
+    payload: BatchTelemetryRequest,
+    gw_auth: Dict[str, Any] = Depends(verify_gateway_auth),
+):
     """
     Ingests batch records forwarded by the Raspberry Pi 5 sync worker.
     Parses sensor data, updates live telemetry, and re-evaluates safety alerts.
+    Adheres to PRD §5.3 Acknowledged Protocol with per-record acceptance and quarantine.
     """
     global latest_edge_data
 
-    if not payload.batch:
-        return {"status": "success", "processed": 0}
+    branch_id = payload.branch_id or gw_auth.get("branch_id", "msu-shah-alam")
+    if branch_id not in BRANCHES_DB:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Target branch '{branch_id}' not found",
+        )
 
-    processed_count = 0
+    if not payload.batch:
+        return BatchTelemetryResponse(
+            status="success",
+            branch_id=branch_id,
+            processed_records=0,
+            accepted_ids=[],
+            rejected_ids=[],
+            quarantine_reasons={},
+            last_edge_id=None,
+        )
+
+    accepted_ids: List[int] = []
+    rejected_ids: List[int] = []
+    quarantine_reasons: Dict[int, str] = {}
 
     for item in payload.batch:
+        edge_id = item.edge_record_id
         sensor_dict = item.data
-        device_id = item.device_id
+
+        # 1. Validation check for payload integrity
+        if not isinstance(sensor_dict, dict):
+            rejected_ids.append(edge_id)
+            quarantine_reasons[edge_id] = "Payload data must be a valid JSON dictionary"
+            continue
+
+        if not item.device_id:
+            rejected_ids.append(edge_id)
+            quarantine_reasons[edge_id] = "Missing device_id"
+            continue
+
+        # 2. Idempotency Check: if previously committed, acknowledge without re-applying side effects
+        if edge_id in PROCESSED_EDGE_RECORD_IDS:
+            accepted_ids.append(edge_id)
+            continue
+
         timestamp = item.recorded_at
 
-        # 1. Update Environmental & Gas Safety (DHT22 & MQ-6)
-        if "voltage" in sensor_dict or "temperature" in sensor_dict:
-            v = float(sensor_dict.get("voltage", latest_edge_data["voltage"]))
-            t = float(sensor_dict.get("temperature", latest_edge_data["temperature"]))
-            h = float(sensor_dict.get("humidity", latest_edge_data["humidity"]))
+        try:
+            # 3. Update Environmental & Gas Safety (DHT22 & MQ-6)
+            if "voltage" in sensor_dict or "temperature" in sensor_dict:
+                v = float(sensor_dict.get("voltage", latest_edge_data["voltage"]))
+                t = float(sensor_dict.get("temperature", latest_edge_data["temperature"]))
+                h = float(sensor_dict.get("humidity", latest_edge_data["humidity"]))
 
-            is_leak = v > 1.3
-            leak_status = "CRITICAL" if v > 1.8 else ("WARNING" if v > 1.3 else "SAFE")
+                is_leak = v > 1.3
+                leak_status = "CRITICAL" if v > 1.8 else ("WARNING" if v > 1.3 else "SAFE")
 
-            latest_edge_data["voltage"] = round(v, 2)
-            latest_edge_data["temperature"] = round(t, 1)
-            latest_edge_data["humidity"] = round(h, 1)
-            latest_edge_data["received_at"] = timestamp
-            latest_edge_data["is_live_stream"] = True
-            latest_edge_data["is_leak_detected"] = is_leak
-            latest_edge_data["leak_status"] = leak_status
+                latest_edge_data["voltage"] = round(v, 2)
+                latest_edge_data["temperature"] = round(t, 1)
+                latest_edge_data["humidity"] = round(h, 1)
+                latest_edge_data["received_at"] = timestamp
+                latest_edge_data["is_live_stream"] = True
+                latest_edge_data["is_leak_detected"] = is_leak
+                latest_edge_data["leak_status"] = leak_status
 
-        # 2. Update LPG Manifold Telemetry (HX711 Load Cells)
-        if "cylinders" in sensor_dict:
-            # Format: {"cylinders": [{"cylinder_id": "CYL-01", "weight_kg": 38.5}, ...]}
-            branch = sensor_dict.get("branch_id", "msu-shah-alam")
-            if branch in lpg_manifolds_db:
-                for c_data in sensor_dict["cylinders"]:
-                    cid = c_data.get("cylinder_id")
-                    weight = float(c_data.get("weight_kg", 0.0))
-                    target = next((c for c in lpg_manifolds_db[branch] if c.cylinder_id == cid), None)
-                    if target and not target.maintenance_mode:
-                        target.weight_kg = round(weight, 2)
-                        pct = (target.weight_kg / target.max_capacity_kg) * 100.0
-                        target.capacity_percent = round(pct, 1)
-                        if pct < 5.0:
-                            target.status = "CRITICAL"
-                        elif pct < 15.0:
-                            target.status = "WARNING"
-                        else:
-                            target.status = "HEALTHY"
+            # 4. Update LPG Manifold Telemetry (HX711 Load Cells)
+            if "cylinders" in sensor_dict:
+                # Format: {"cylinders": [{"cylinder_id": "CYL-01", "weight_kg": 38.5}, ...]}
+                target_branch = sensor_dict.get("branch_id", branch_id)
+                if target_branch in lpg_manifolds_db:
+                    for c_data in sensor_dict["cylinders"]:
+                        cid = c_data.get("cylinder_id")
+                        weight = float(c_data.get("weight_kg", 0.0))
+                        target = next((c for c in lpg_manifolds_db[target_branch] if c.cylinder_id == cid), None)
+                        if target and not target.maintenance_mode:
+                            target.weight_kg = round(weight, 2)
+                            pct = (target.weight_kg / target.max_capacity_kg) * 100.0
+                            target.capacity_percent = round(pct, 1)
+                            if pct < 5.0:
+                                target.status = "CRITICAL"
+                            elif pct < 15.0:
+                                target.status = "WARNING"
+                            else:
+                                target.status = "HEALTHY"
 
-        elif "lpg_weight_kg" in sensor_dict:
-            # Single-weight payload fallback
-            weight = float(sensor_dict["lpg_weight_kg"])
-            latest_edge_data["lpg_weight_kg"] = round(weight, 2)
-            pct = (weight / latest_edge_data["lpg_max_weight_kg"]) * 100.0
-            latest_edge_data["lpg_capacity_percent"] = round(pct, 1)
+            elif "lpg_weight_kg" in sensor_dict:
+                # Single-weight payload fallback
+                weight = float(sensor_dict["lpg_weight_kg"])
+                latest_edge_data["lpg_weight_kg"] = round(weight, 2)
+                pct = (weight / latest_edge_data["lpg_max_weight_kg"]) * 100.0
+                latest_edge_data["lpg_capacity_percent"] = round(pct, 1)
 
-        # 3. Update Machine State (e.g., SCT-013 current / ADXL345 vibration)
-        machine_id = sensor_dict.get("machine_id")
-        if machine_id and machine_id in machines_db:
-            machine = machines_db[machine_id]
-            if "power_w" in sensor_dict:
-                machine.power_w = float(sensor_dict["power_w"])
-            if "drum_rpm" in sensor_dict:
-                machine.drum_rpm = int(sensor_dict["drum_rpm"])
-            if "status" in sensor_dict:
-                machine.status = sensor_dict["status"]
+            # 5. Update Machine State (e.g., SCT-013 current / ADXL345 vibration)
+            machine_id = sensor_dict.get("machine_id")
+            if machine_id and machine_id in machines_db:
+                machine = machines_db[machine_id]
+                if "power_w" in sensor_dict:
+                    machine.power_w = float(sensor_dict["power_w"])
+                if "drum_rpm" in sensor_dict:
+                    machine.drum_rpm = int(sensor_dict["drum_rpm"])
+                if "status" in sensor_dict:
+                    machine.status = sensor_dict["status"]
 
-        processed_count += 1
+            # Record successfully committed
+            PROCESSED_EDGE_RECORD_IDS.add(edge_id)
+            accepted_ids.append(edge_id)
 
-    return {
-        "status": "success",
-        "processed_records": processed_count,
-        "last_edge_id": payload.batch[-1].edge_record_id,
-    }
+        except Exception as exc:
+            rejected_ids.append(edge_id)
+            quarantine_reasons[edge_id] = f"Processing error: {str(exc)}"
+
+    return BatchTelemetryResponse(
+        status="success",
+        branch_id=branch_id,
+        processed_records=len(accepted_ids),
+        accepted_ids=accepted_ids,
+        rejected_ids=rejected_ids,
+        quarantine_reasons=quarantine_reasons,
+        last_edge_id=payload.batch[-1].edge_record_id if payload.batch else None,
+    )
 
 # ------------------------------------------
 # ESP32 Edge Ingestion & Safety Endpoints
