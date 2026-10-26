@@ -1,0 +1,1205 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="SpinSense local sensor telemetry and cloud delivery monitor.">
+    <title>Gateway overview · SpinSense</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --ground: #171719;
+            --surface: #131217;
+            --raised: #212023;
+            --border: #2c2b30;
+            --rule: #242328;
+            --control: #55545a;
+            --text: #f2f2f3;
+            --muted: #b4b4ba;
+            --faint: #94949d;
+            --accent: #ef6268;
+            --positive: #79c5a6;
+            --negative: #ef8798;
+            --warning: #dfb463;
+            --radius: 6px;
+            --gap: 24px;
+            --pad: 28px;
+            --speed: 140ms;
+            --font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            --fs-small: 13px;
+            --fs-body: 14px;
+            --fs-section: 16px;
+            --fs-title: 26px;
+            --fs-value: 36px;
+        }
+
+        * {
+            box-sizing: border-box
+        }
+
+        body {
+            margin: 0;
+            background: var(--ground);
+            color: var(--text);
+            font: var(--fs-body)/1.5 var(--font)
+        }
+
+        p,
+        h1,
+        h2,
+        dl,
+        dd {
+            margin: 0
+        }
+
+        h1 {
+            font-size: var(--fs-title);
+            font-weight: 600;
+            line-height: 1.2;
+            letter-spacing: -.025em
+        }
+
+        h2 {
+            font-size: var(--fs-section);
+            font-weight: 600
+        }
+
+        button {
+            font: inherit;
+            color: inherit;
+            cursor: pointer;
+            transition: background-color var(--speed), color var(--speed), transform var(--speed)
+        }
+
+        button:disabled {
+            cursor: wait;
+            color: var(--muted)
+        }
+
+        button:active:not(:disabled) {
+            transform: translateY(1px)
+        }
+
+        button:focus-visible,
+        a:focus-visible,
+        .table-scroll:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 4px
+        }
+
+        svg {
+            display: block;
+            flex: none
+        }
+
+        [hidden] {
+            display: none !important
+        }
+
+        .muted {
+            color: var(--muted)
+        }
+
+        .small {
+            font-size: var(--fs-small)
+        }
+
+        .num {
+            font-variant-numeric: tabular-nums
+        }
+
+        .skip {
+            position: absolute;
+            left: 16px;
+            top: -60px;
+            padding: 12px;
+            color: var(--ground);
+            background: var(--text);
+            z-index: 3
+        }
+
+        .skip:focus {
+            top: 12px
+        }
+
+        .topbar {
+            border-bottom: 1px solid var(--border)
+        }
+
+        .topbar-inner,
+        main,
+        .footer-inner {
+            width: min(100%, 1440px);
+            margin-inline: auto;
+            padding-inline: 40px
+        }
+
+        .topbar-inner {
+            min-height: 76px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: var(--gap)
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 19px;
+            font-weight: 600;
+            letter-spacing: -.025em
+        }
+
+        .brand-mark {
+            color: var(--accent)
+        }
+
+        .scope {
+            display: flex;
+            gap: 14px;
+            align-items: center;
+            color: var(--muted)
+        }
+
+        .scope-divider {
+            width: 1px;
+            height: 16px;
+            background: var(--control)
+        }
+
+        .local-label {
+            display: flex;
+            gap: 8px;
+            align-items: center
+        }
+
+        main {
+            padding-block: 36px 28px
+        }
+
+        .page-heading {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: var(--gap);
+            margin-bottom: var(--gap)
+        }
+
+        .page-heading p {
+            margin-top: 8px;
+            color: var(--muted)
+        }
+
+        .actions {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-shrink: 0
+        }
+
+        .button {
+            min-height: 40px;
+            border: 1px solid var(--control);
+            border-radius: var(--radius);
+            background: transparent;
+            padding: 8px 14px;
+            display: inline-flex;
+            gap: 8px;
+            align-items: center;
+            justify-content: center;
+            white-space: nowrap
+        }
+
+        .button-primary {
+            background: var(--text);
+            border-color: var(--text);
+            color: var(--surface);
+            font-weight: 600
+        }
+
+        .button-primary:hover {
+            background: var(--muted);
+            border-color: var(--muted)
+        }
+
+        .button-primary:disabled {
+            background: var(--raised);
+            color: var(--muted);
+            border-color: var(--control)
+        }
+
+        .connection {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--muted)
+        }
+
+        .connection::before,
+        .sync-label::before {
+            content: "";
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+            flex: none
+        }
+
+        .connection[data-state="connected"] {
+            color: var(--positive)
+        }
+
+        .connection[data-state="error"] {
+            color: var(--negative)
+        }
+
+        .reading-meta {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding-bottom: 16px;
+            font-size: var(--fs-small);
+            color: var(--muted)
+        }
+
+        .notice {
+            padding: 12px 16px;
+            border-left: 2px solid var(--warning);
+            background: var(--raised);
+            color: var(--muted);
+            margin-bottom: 16px
+        }
+
+        /* At 1440: content 1360 = 551.42 + 380.29 + 380.29 + two 24px gutters. */
+        .overview {
+            display: grid;
+            grid-template-columns: 1.45fr 1fr 1fr;
+            gap: var(--gap);
+            margin-bottom: 32px
+        }
+
+        .panel {
+            background: var(--surface);
+            border-radius: var(--radius);
+            padding: var(--pad);
+            min-width: 0
+        }
+
+        .panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 20px
+        }
+
+        .fuel-main {
+            display: flex;
+            gap: 24px;
+            align-items: center;
+            justify-content: space-between
+        }
+
+        .fuel-figures {
+            min-width: 0
+        }
+
+        .value {
+            font-size: var(--fs-value);
+            font-weight: 500;
+            line-height: 1.2;
+            letter-spacing: -.025em
+        }
+
+        .unit {
+            font-size: var(--fs-body);
+            font-weight: 400;
+            letter-spacing: 0;
+            color: var(--muted);
+            margin-left: 4px
+        }
+
+        .value .missing {
+            font-size: 24px;
+            color: var(--faint)
+        }
+
+        .metric-label {
+            color: var(--muted);
+            margin-bottom: 8px
+        }
+
+        .mass {
+            display: flex;
+            gap: 8px;
+            align-items: baseline;
+            margin-top: 16px
+        }
+
+        .mass strong {
+            font-size: 20px;
+            font-weight: 500
+        }
+
+        .cylinder {
+            width: 70px;
+            height: 116px;
+            color: var(--control);
+            flex: none
+        }
+
+        .cylinder .level {
+            fill: var(--muted)
+        }
+
+        .panel-note {
+            margin-top: 20px;
+            color: var(--faint);
+            font-size: var(--fs-small)
+        }
+
+        .environment {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px
+        }
+
+        .environment .value {
+            font-size: 24px
+        }
+
+        .environment dd {
+            white-space: nowrap
+        }
+
+        .voltage-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            border-top: 1px solid var(--rule);
+            padding-top: 16px;
+            margin-top: 20px
+        }
+
+        .voltage-row dd {
+            font-size: 18px;
+            white-space: nowrap
+        }
+
+        .sync-current {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 12px;
+            margin-bottom: 20px
+        }
+
+        .sync-current strong {
+            font-size: 20px;
+            font-weight: 500
+        }
+
+        .sync-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            white-space: nowrap
+        }
+
+        [data-sync="synced"] {
+            color: var(--positive)
+        }
+
+        [data-sync="pending"] {
+            color: var(--warning)
+        }
+
+        [data-sync="quarantined"] {
+            color: var(--negative)
+        }
+
+        [data-sync="unknown"] {
+            color: var(--muted)
+        }
+
+        .sync-counts {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px 24px
+        }
+
+        .sync-counts div {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px
+        }
+
+        .sync-counts dt {
+            color: var(--muted);
+            font-size: var(--fs-small)
+        }
+
+        .records {
+            background: var(--surface);
+            border-radius: var(--radius);
+            overflow: hidden
+        }
+
+        .records-heading {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 20px;
+            padding: 24px var(--pad) 0
+        }
+
+        .records-heading h2 {
+            display: flex;
+            gap: 10px;
+            align-items: baseline
+        }
+
+        .record-count {
+            color: var(--muted);
+            font-size: var(--fs-small);
+            font-weight: 400
+        }
+
+        .records-heading p {
+            color: var(--muted);
+            font-size: var(--fs-small);
+            margin-top: 4px
+        }
+
+        .auto-button {
+            background: none;
+            border: 0;
+            padding: 10px 0;
+            color: var(--muted);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-height: 44px;
+            white-space: nowrap
+        }
+
+        .auto-button:hover,
+        .auto-button[aria-pressed="true"] {
+            color: var(--text)
+        }
+
+        .filter-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            margin-top: 16px;
+            padding-inline: var(--pad);
+            border-bottom: 1px solid var(--border)
+        }
+
+        .filters {
+            display: flex;
+            gap: 24px
+        }
+
+        .filter {
+            background: transparent;
+            border: 0;
+            border-bottom: 1px solid transparent;
+            padding: 12px 0;
+            min-height: 44px;
+            color: var(--muted)
+        }
+
+        .filter:hover {
+            color: var(--text)
+        }
+
+        .filter[aria-pressed="true"] {
+            border-bottom-color: var(--accent);
+            color: var(--text)
+        }
+
+        .record-order {
+            font-size: var(--fs-small);
+            color: var(--faint)
+        }
+
+        .records .notice {
+            margin: 16px var(--pad) 0
+        }
+
+        .table-scroll {
+            overflow: auto;
+            max-height: 488px
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: var(--fs-body)
+        }
+
+        th {
+            font-size: var(--fs-small);
+            font-weight: 400;
+            color: var(--muted);
+            text-align: left;
+            background: var(--surface);
+            position: sticky;
+            top: 0;
+            z-index: 1
+        }
+
+        th,
+        td {
+            padding: 14px 16px;
+            white-space: nowrap
+        }
+
+        th:first-child,
+        td:first-child {
+            padding-left: var(--pad)
+        }
+
+        th:last-child,
+        td:last-child {
+            padding-right: var(--pad)
+        }
+
+        td {
+            border-top: 1px solid var(--rule)
+        }
+
+        td.num,
+        th.num {
+            text-align: right
+        }
+
+        tbody tr:hover {
+            outline: 1px solid var(--control);
+            outline-offset: -1px
+        }
+
+        td .subline {
+            display: block;
+            font-size: var(--fs-small);
+            color: var(--faint);
+            margin-top: 2px
+        }
+
+        .device {
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis
+        }
+
+        .empty-message {
+            max-width: 60ch;
+            margin-inline: auto
+        }
+
+        .empty-cell {
+            text-align: center;
+            color: var(--muted);
+            white-space: normal;
+            padding-block: 32px
+        }
+
+        .records-footer {
+            padding: 14px var(--pad);
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            color: var(--faint);
+            font-size: var(--fs-small)
+        }
+
+        .footer-inner {
+            display: flex;
+            justify-content: space-between;
+            gap: 20px;
+            padding-block: 0 28px;
+            font-size: var(--fs-small);
+            color: var(--faint)
+        }
+
+        .footer-brand {
+            color: var(--muted)
+        }
+
+        @media(max-width:1100px) {
+
+            .topbar-inner,
+            main,
+            .footer-inner {
+                padding-inline: 24px
+            }
+
+            .overview {
+                grid-template-columns: 1.2fr 1fr
+            }
+
+            .sync-panel {
+                grid-column: 1/-1;
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 0 24px
+            }
+
+            .sync-panel .panel-header {
+                margin-bottom: 12px
+            }
+
+            .sync-current {
+                grid-column: 1;
+                margin-bottom: 0;
+                justify-content: flex-start
+            }
+
+            .sync-counts {
+                grid-column: 2;
+                grid-row: 1/3;
+                align-content: center
+            }
+
+            .sync-panel .panel-note {
+                grid-column: 1/-1;
+                margin-top: 12px
+            }
+
+            .scope-divider,
+            .scope-description {
+                display: none
+            }
+        }
+
+        @media(max-width:640px) {
+            :root {
+                --pad: 20px;
+                --gap: 16px;
+                --fs-title: 24px
+            }
+
+            .topbar-inner,
+            main,
+            .footer-inner {
+                padding-inline: 16px
+            }
+
+            .topbar-inner {
+                min-height: 64px
+            }
+
+            .brand {
+                font-size: 18px;
+                gap: 8px
+            }
+
+            .brand-mark {
+                width: 26px;
+                height: 26px
+            }
+
+            .scope {
+                font-size: var(--fs-small)
+            }
+
+            main {
+                padding-top: 24px
+            }
+
+            .page-heading {
+                align-items: flex-start;
+                gap: 12px
+            }
+
+            .page-heading p {
+                font-size: var(--fs-small);
+                max-width: 22ch
+            }
+
+            .actions {
+                flex-direction: column-reverse;
+                align-items: flex-end;
+                gap: 8px
+            }
+
+            .actions .connection {
+                font-size: var(--fs-small)
+            }
+
+            .button {
+                min-height: 44px;
+                padding: 10px
+            }
+
+            .button-label {
+                display: none
+            }
+
+            .reading-meta {
+                flex-wrap: wrap;
+                gap: 4px
+            }
+
+            .panel {
+                padding-block: 16px
+            }
+
+            .panel-note {
+                margin-top: 12px
+            }
+
+            .empty-message {
+                width: calc(100vw - 88px);
+                margin: 0;
+                text-align: left
+            }
+
+            .overview {
+                grid-template-columns: 1fr;
+                margin-bottom: 24px
+            }
+
+            .panel-header {
+                margin-bottom: 16px
+            }
+
+            .fuel-main {
+                align-items: flex-start
+            }
+
+            .fuel-figures {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                column-gap: 24px;
+                flex: 1
+            }
+
+            .fuel-figures .metric-label,
+            .fuel-figures .value {
+                grid-column: 1
+            }
+
+            .mass {
+                grid-column: 2;
+                grid-row: 1/3;
+                margin: 0;
+                flex-direction: column-reverse;
+                gap: 8px
+            }
+
+            .mass strong {
+                font-size: 24px;
+                line-height: 1.8
+            }
+
+            .cylinder {
+                width: 42px;
+                height: 80px
+            }
+
+            .sync-panel {
+                display: block
+            }
+
+            .sync-current {
+                margin-bottom: 16px;
+                justify-content: space-between
+            }
+
+            .records-heading {
+                padding-top: 20px;
+                align-items: flex-start;
+                gap: 12px
+            }
+
+            .records-heading h2 {
+                display: block
+            }
+
+            .record-count {
+                display: block;
+                margin-top: 2px
+            }
+
+            .auto-button {
+                font-size: var(--fs-small);
+                gap: 6px;
+                padding-top: 0
+            }
+
+            .filter-row {
+                overflow-x: auto
+            }
+
+            .filters {
+                gap: 20px
+            }
+
+            .record-order {
+                display: none
+            }
+
+            /* Keep every diagnostic field; pin identity while the table scrolls. */
+            table {
+                min-width: 880px
+            }
+
+            th:first-child,
+            td:first-child {
+                position: sticky;
+                left: 0;
+                background: var(--surface);
+                z-index: 1
+            }
+
+            th:first-child {
+                z-index: 2
+            }
+
+            .records-footer,
+            .footer-inner {
+                flex-direction: column;
+                gap: 4px
+            }
+        }
+
+        @media(max-width:340px) {
+            .scope {
+                display: none
+            }
+
+            .fuel-figures {
+                column-gap: 12px
+            }
+
+            .cylinder {
+                display: none
+            }
+
+            .environment {
+                gap: 12px
+            }
+
+            .sync-counts {
+                gap: 10px 12px
+            }
+        }
+
+        @media(prefers-reduced-motion:reduce) {
+            button {
+                transition: none
+            }
+
+            button:active:not(:disabled) {
+                transform: none
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <a class="skip" href="#main">Skip to telemetry</a>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <div class="brand"><svg class="brand-mark" width="30" height="30" viewBox="0 0 30 30" fill="none"
+                    aria-hidden="true">
+                    <circle cx="15" cy="15" r="12" stroke="currentColor" stroke-width="2" />
+                    <path d="M8 16c2-8 12-8 14-2M22 14c-2 8-12 8-14 2" stroke="currentColor" stroke-width="2" />
+                    <path d="m8 12 0 4 4 0m10 2 0-4-4 0" stroke="currentColor" stroke-width="2" />
+                </svg>SpinSense</div>
+            <div class="scope"><span class="scope-description">Edge gateway</span><span class="scope-divider"
+                    aria-hidden="true"></span><span class="local-label"><svg width="16" height="16" viewBox="0 0 24 24"
+                        fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                        <rect x="4" y="3" width="16" height="7" rx="2" />
+                        <rect x="4" y="14" width="16" height="7" rx="2" />
+                        <path d="M8 6.5h.01M8 17.5h.01M15 6.5h2M15 17.5h2" />
+                    </svg>Local monitor</span></div>
+        </div>
+    </header>
+    <main id="main">
+        <div class="page-heading">
+            <div>
+                <h1>Gateway overview</h1>
+                <p>Local sensor readings. Confirmed cloud delivery.</p>
+            </div>
+            <div class="actions">
+                <span id="statusBadge" class="connection" role="status" data-state="loading">Connecting</span>
+                <button id="refreshButton" class="button button-primary" type="button"
+                    aria-label="Refresh telemetry"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                        <path d="M20 7v5h-5M4 17v-5h5" />
+                        <path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 17.9 17" />
+                    </svg><span class="button-label">Refresh now</span></button>
+            </div>
+        </div>
+        <div class="reading-meta"><span id="readingFreshness">Waiting for the latest local record</span><span
+                id="lastUpdated">Not yet refreshed</span></div>
+        <p id="latestNotice" class="notice" role="status" hidden></p>
+        <noscript>
+            <p class="notice">JavaScript is required to load telemetry. No live readings are displayed.</p>
+        </noscript>
+        <div class="overview">
+            <section class="panel" aria-labelledby="fuelHeading">
+                <div class="panel-header">
+                    <h2 id="fuelHeading">Fuel reading</h2><span id="deviceName" class="muted small device">No device
+                        reported</span>
+                </div>
+                <div class="fuel-main">
+                    <div class="fuel-figures">
+                        <p class="metric-label">LPG level</p>
+                        <p class="value num"><span id="lpgPercent" class="missing">—</span><span class="unit">%</span>
+                        </p>
+                        <p class="mass"><strong class="num"><span id="lpgWeight">—</span><span
+                                    class="unit">kg</span></strong><span class="muted small">Gas mass</span></p>
+                    </div>
+                    <svg class="cylinder" viewBox="0 0 70 116" fill="none" aria-hidden="true">
+                        <defs>
+                            <clipPath id="cylinderClip">
+                                <rect x="10" y="27" width="50" height="76" rx="12" />
+                            </clipPath>
+                        </defs>
+                        <path d="M24 17V7h22v10M30 7V3h10v4M24 17h22M20 109h30M22 104v5m26-5v5" stroke="currentColor"
+                            stroke-width="2" />
+                        <rect id="cylinderFill" class="level" x="10" y="103" width="50" height="0"
+                            clip-path="url(#cylinderClip)" />
+                        <rect x="8" y="23" width="54" height="82" rx="14" stroke="currentColor" stroke-width="2" />
+                        <path d="M8 47h54M8 83h54" stroke="currentColor" stroke-width="2" />
+                    </svg>
+                </div>
+                <p id="fuelNote" class="panel-note">Source and measurement quality not supplied.</p>
+            </section>
+            <section class="panel" aria-labelledby="environmentHeading">
+                <div class="panel-header">
+                    <h2 id="environmentHeading">Environment</h2><span class="muted small">DHT22 / MQ-6</span>
+                </div>
+                <dl class="environment">
+                    <div>
+                        <dt class="metric-label">Temperature</dt>
+                        <dd class="value num"><span id="ambientTemp" class="missing">—</span><span
+                                class="unit">°C</span></dd>
+                    </div>
+                    <div>
+                        <dt class="metric-label">Humidity</dt>
+                        <dd class="value num"><span id="ambientHumidity" class="missing">—</span><span
+                                class="unit">%</span></dd>
+                    </div>
+                </dl>
+                <dl class="voltage-row">
+                    <dt class="muted">MQ-6 voltage</dt>
+                    <dd class="num"><span id="gasVoltage">—</span><span class="unit">V</span></dd>
+                </dl>
+                <p class="panel-note">Reported voltage, not a calibrated gas concentration.</p>
+            </section>
+            <section class="panel sync-panel" aria-labelledby="syncHeading">
+                <div class="panel-header">
+                    <h2 id="syncHeading">Cloud delivery</h2>
+                </div>
+                <div class="sync-current"><span class="muted small">Latest record</span><strong id="syncStatus"
+                        class="sync-label" data-sync="unknown">Unknown</strong></div>
+                <dl class="sync-counts">
+                    <div>
+                        <dt>Synced</dt>
+                        <dd id="syncedCount" class="num">—</dd>
+                    </div>
+                    <div>
+                        <dt>Pending</dt>
+                        <dd id="pendingCount" class="num">—</dd>
+                    </div>
+                    <div>
+                        <dt>Quarantined</dt>
+                        <dd id="quarantinedCount" class="num">—</dd>
+                    </div>
+                    <div>
+                        <dt>Unknown</dt>
+                        <dd id="unknownCount" class="num">—</dd>
+                    </div>
+                </dl>
+                <p class="panel-note">Counts cover recent records, not the full backlog.</p>
+            </section>
+        </div>
+        <section class="records" aria-labelledby="recordsHeading">
+            <div class="records-heading">
+                <div>
+                    <h2 id="recordsHeading">Recent telemetry <span id="rowCountBadge" class="record-count">Waiting for
+                            records</span></h2>
+                    <p>Observations saved to the local MariaDB store</p>
+                </div>
+                <button id="autoButton" class="auto-button" type="button" aria-pressed="false"
+                    aria-label="Pause automatic refresh"><svg width="14" height="14" viewBox="0 0 20 20" fill="none"
+                        stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                        <path d="M7 4v12M13 4v12" />
+                    </svg><span id="autoLabel">Live · 3s</span></button>
+            </div>
+            <div class="filter-row">
+                <div class="filters" role="group" aria-label="Filter recent records by cloud delivery"><button
+                        class="filter" type="button" data-filter="all" aria-pressed="true">All records</button><button
+                        class="filter" type="button" data-filter="pending" aria-pressed="false">Pending</button><button
+                        class="filter" type="button" data-filter="quarantined" aria-pressed="false">Quarantined</button>
+                </div><span class="record-order">Newest local ID first</span>
+            </div>
+            <p id="historyNotice" class="notice" role="status" hidden></p>
+            <div class="table-scroll" role="region"
+                aria-label="Recent telemetry table. Scroll horizontally for all sensor fields." tabindex="0">
+                <table>
+                    <thead>
+                        <tr>
+                            <th scope="col">Record / device</th>
+                            <th scope="col">Recorded at (UTC)</th>
+                            <th scope="col" class="num">Gas · kg</th>
+                            <th scope="col" class="num">Level · %</th>
+                            <th scope="col" class="num">MQ-6 · V</th>
+                            <th scope="col" class="num">Temp · °C</th>
+                            <th scope="col" class="num">RH · %</th>
+                            <th scope="col">Cloud delivery</th>
+                        </tr>
+                    </thead>
+                    <tbody id="historyTable">
+                        <tr>
+                            <td class="empty-cell" colspan="8">Connecting to the local telemetry store…</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="records-footer"><span id="displayedCount">Up to 20 recent records</span><span
+                    id="historyUpdated">No history loaded yet</span></div>
+        </section>
+    </main>
+    <footer>
+        <div class="footer-inner"><span><span class="footer-brand">SpinSense</span> · Raspberry Pi edge
+                monitor</span><span>Local observations · Measurement quality may be unavailable.</span></div>
+    </footer>
+    <script>
+        const el = id => document.getElementById(id);
+        const state = { latest: null, rows: null, latestError: false, historyError: false, busy: false, paused: false, filter: 'all', latestChecked: null, historyChecked: null };
+        const finite = value => typeof value === 'number' && Number.isFinite(value);
+        const format = (value, places) => finite(value) ? value.toLocaleString('en-GB', { minimumFractionDigits: places, maximumFractionDigits: places }) : '—';
+        const percent = data => finite(data.lpg_percent) ? data.lpg_percent : data.percentage;
+        const syncInfo = value => value === 1 ? ['synced', 'Synced'] : value === 0 ? ['pending', 'Pending'] : value === -1 ? ['quarantined', 'Quarantined'] : ['unknown', 'Unknown'];
+        const clock = date => date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        function notice(id, message) { el(id).textContent = message; el(id).hidden = !message; }
+        function validRecord(record) {
+            return record && typeof record === 'object' && (finite(record.id) || (typeof record.id === 'string' && record.id.length > 0))
+                && record.data && typeof record.data === 'object' && !Array.isArray(record.data);
+        }
+        function recordDate(value) {
+            if (typeof value !== 'string') return null;
+            // The gateway's current API returns UTC MariaDB DATETIME without an offset.
+            const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(value) ? value.replace(' ', 'T') + 'Z' : value;
+            if (!/(Z|[+-]\d{2}:\d{2})$/.test(normalized)) return null;
+            const date = new Date(normalized);
+            return Number.isNaN(date.getTime()) ? null : date;
+        }
+        function renderFreshness() {
+            if (!state.latest) { el('readingFreshness').textContent = state.latestError ? 'No current reading available' : 'No local readings yet'; return; }
+            const date = recordDate(state.latest.recorded_at);
+            const seconds = date ? Math.floor((Date.now() - date.getTime()) / 1000) : -1;
+            const age = seconds < 0 ? 'Record time uncertain' : 'Record is ' + (seconds < 60 ? seconds + 's' : seconds < 3600 ? Math.floor(seconds / 60) + 'm' : Math.floor(seconds / 3600) + 'h') + ' old';
+            el('readingFreshness').textContent = age + ' · Sensor freshness unknown';
+        }
+        function renderLatest() {
+            const item = state.latest, data = item?.data || {};
+            for (const [id, value, places] of [['lpgPercent', percent(data), 1], ['lpgWeight', data.lpg_weight_kg, 2], ['gasVoltage', data.voltage, 2], ['ambientTemp', data.temperature, 1], ['ambientHumidity', data.humidity, 1]]) {
+                el(id).textContent = format(value, places); el(id).classList.toggle('missing', !finite(value));
+            }
+            el('deviceName').textContent = item ? (typeof item.device_id === 'string' ? item.device_id : 'Device unknown') : 'No device reported';
+            el('deviceName').title = el('deviceName').textContent;
+            const [sync, label] = syncInfo(item?.is_synced);
+            el('syncStatus').textContent = label; el('syncStatus').dataset.sync = sync;
+            const fill = percent(data), bounded = finite(fill) && fill >= 0 && fill <= 100;
+            el('cylinderFill').setAttribute('y', bounded ? 103 - 76 * fill / 100 : 103);
+            el('cylinderFill').setAttribute('height', bounded ? 76 * fill / 100 : 0);
+            const source = item?.source_kind ?? data.source_kind, quality = item?.quality ?? data.quality;
+            const knownSource = ['physical', 'simulated', 'vendor'].includes(source) ? source : 'not supplied';
+            el('fuelNote').textContent = 'Source: ' + knownSource + ' · Quality: ' + (typeof quality === 'string' ? quality : 'not supplied') + (finite(fill) && !bounded ? ' · Level outside 0–100%; gauge unavailable.' : '');
+            renderFreshness();
+        }
+        function cell(text, className = '') {
+            const td = document.createElement('td'); td.className = className; td.textContent = text; return td;
+        }
+        function renderHistory() {
+            const rows = state.rows || [];
+            for (const [kind, id] of [['synced', 'syncedCount'], ['pending', 'pendingCount'], ['quarantined', 'quarantinedCount'], ['unknown', 'unknownCount']]) {
+                el(id).textContent = state.rows === null ? '—' : String(rows.filter(row => syncInfo(row.is_synced)[0] === kind).length);
+            }
+            const shown = rows.filter(row => state.filter === 'all' || syncInfo(row.is_synced)[0] === state.filter);
+            el('rowCountBadge').textContent = state.rows === null ? 'Records unavailable' : rows.length + ' records';
+            el('displayedCount').textContent = state.rows === null ? 'Up to 20 recent records' : shown.length + ' of ' + rows.length + ' recent records shown';
+            const body = el('historyTable'); body.replaceChildren();
+            if (!shown.length) {
+                const row = document.createElement('tr');
+                const message = state.rows === null ? 'Could not load telemetry. Use Refresh now to retry.' : rows.length ? 'No ' + state.filter + ' records in the recent window.' : 'No telemetry saved locally yet.';
+                const td = cell('', 'empty-cell'), description = document.createElement('p'); description.className = 'empty-message'; description.textContent = message; td.append(description); td.setAttribute('colspan', '8'); row.append(td); body.append(row); return;
+            }
+            for (const record of shown) {
+                const data = record.data, row = document.createElement('tr'), identity = cell('#' + record.id);
+                const device = document.createElement('span'); device.className = 'subline device';
+                device.textContent = typeof record.device_id === 'string' ? record.device_id : 'Device unknown'; device.title = device.textContent; identity.append(device);
+                const date = recordDate(record.recorded_at), timestamp = date ? date.toISOString().replace('T', ' ').slice(0, 19) : 'Time uncertain';
+                const delivery = cell(''), badge = document.createElement('span'), [kind, label] = syncInfo(record.is_synced);
+                badge.className = 'sync-label small'; badge.dataset.sync = kind; badge.textContent = label; delivery.append(badge);
+                row.append(identity, cell(timestamp, 'muted num'), cell(format(data.lpg_weight_kg, 2), 'num'), cell(format(percent(data), 1), 'num'), cell(format(data.voltage, 2), 'num muted'), cell(format(data.temperature, 1), 'num muted'), cell(format(data.humidity, 1), 'num muted'), delivery);
+                body.append(row);
+            }
+        }
+        async function request(path, allowEmpty = false) {
+            const response = await fetch(path, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+            if (allowEmpty && response.status === 404) { const body = await response.json(); if (body?.error === 'No records found') return null; throw new Error('Telemetry route unavailable'); }
+            if (!response.ok) throw new Error('Telemetry request failed');
+            return response.json();
+        }
+        async function updateDashboard() {
+            if (state.busy) return;
+            if (window.location.protocol === 'file:') {
+                el('statusBadge').textContent = 'API unavailable'; el('statusBadge').dataset.state = 'error';
+                notice('latestNotice', 'Open this monitor through the local gateway server to load telemetry.');
+                state.latestError = true; state.historyError = true; renderLatest(); renderHistory(); return;
+            }
+            state.busy = true; el('refreshButton').disabled = true; el('refreshButton').setAttribute('aria-busy', 'true');
+            const [latest, history] = await Promise.allSettled([request('/api/telemetry/latest', true), request('/api/telemetry/history')]);
+            const latestValid = latest.status === 'fulfilled' && (latest.value === null || validRecord(latest.value));
+            state.latestError = !latestValid;
+            if (latestValid) { state.latest = latest.value; state.latestChecked = new Date(); renderLatest(); }
+            notice('latestNotice', latestValid ? '' : 'Could not refresh the latest reading.' + (state.latestChecked ? ' Last reading retained from ' + clock(state.latestChecked) + '.' : ' No current reading available.') + ' Use Refresh now to retry.');
+            const historyValid = history.status === 'fulfilled' && Array.isArray(history.value) && history.value.every(validRecord);
+            state.historyError = !historyValid;
+            if (historyValid) { state.rows = history.value; state.historyChecked = new Date(); }
+            notice('historyNotice', historyValid ? '' : 'Could not refresh recent telemetry.' + (state.historyChecked ? ' Last history retained from ' + clock(state.historyChecked) + '.' : '') + ' Use Refresh now to retry.');
+            renderHistory();
+            el('historyUpdated').textContent = state.historyChecked ? (historyValid ? 'History checked ' : 'Last history check ') + clock(state.historyChecked) : 'History unavailable';
+            const badge = el('statusBadge');
+            badge.textContent = !latestValid || !historyValid ? 'API unavailable' : state.latest ? 'API reachable' : 'No readings yet';
+            badge.dataset.state = !latestValid || !historyValid ? 'error' : state.latest ? 'connected' : 'empty';
+            el('lastUpdated').textContent = 'Refresh attempted ' + clock(new Date());
+            state.busy = false; el('refreshButton').disabled = false; el('refreshButton').removeAttribute('aria-busy'); renderFreshness();
+        }
+        el('refreshButton').addEventListener('click', updateDashboard);
+        el('autoButton').addEventListener('click', () => {
+            state.paused = !state.paused;
+            el('autoButton').setAttribute('aria-pressed', String(state.paused));
+            el('autoButton').setAttribute('aria-label', state.paused ? 'Resume automatic refresh' : 'Pause automatic refresh');
+            el('autoLabel').textContent = state.paused ? 'Paused · Resume' : 'Live · 3s';
+            if (!state.paused) updateDashboard();
+        });
+        document.querySelectorAll('[data-filter]').forEach(button => button.addEventListener('click', () => {
+            state.filter = button.dataset.filter;
+            document.querySelectorAll('[data-filter]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+            renderHistory();
+        }));
+        updateDashboard();
+        setInterval(() => { if (!state.paused) updateDashboard(); }, 3000);
+        setInterval(renderFreshness, 1000);
+    </script>
+</body>
+
+</html>

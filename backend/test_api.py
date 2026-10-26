@@ -98,4 +98,88 @@ if __name__ == "__main__":
     assert r8.status_code == 200
     print("PASS: /machines/W-04/maintenance-log successfully recorded")
 
+    # 9. Test /api/v1/telemetry/batch with Bearer auth & X-Branch-ID (PRD §5.3 & TI-03)
+    batch_payload = {
+        "branch_id": "msu-shah-alam",
+        "batch": [
+            {
+                "edge_record_id": 501,
+                "device_id": "ESP32-ENV",
+                "recorded_at": "2026-10-23T00:10:00Z",
+                "data": {"voltage": 0.95, "temperature": 27.2, "humidity": 68.0}
+            },
+            {
+                "edge_record_id": 502,
+                "device_id": "ESP32-LPG",
+                "recorded_at": "2026-10-23T00:10:00Z",
+                "data": {
+                    "cylinders": [
+                        {"cylinder_id": "CYL-01", "weight_kg": 42.0}
+                    ]
+                }
+            }
+        ]
+    }
+    r9 = client.post(
+        "/api/v1/telemetry/batch",
+        headers={"Authorization": "Bearer spinsense-edge-gw-default", "X-Branch-ID": "msu-shah-alam"},
+        json=batch_payload
+    )
+    assert r9.status_code == 200, f"Batch sync failed: {r9.status_code} {r9.text}"
+    b_res = r9.json()
+    assert b_res["status"] == "success"
+    assert b_res["processed_records"] == 2
+    assert 501 in b_res["accepted_ids"] and 502 in b_res["accepted_ids"]
+    assert b_res["rejected_ids"] == []
+    print("PASS: /api/v1/telemetry/batch accepted and acknowledged 2 records")
+
+    # 10. Test Idempotency: re-sending the same batch returns accepted_ids without duplicate errors
+    r10 = client.post(
+        "/api/v1/telemetry/batch",
+        headers={"Authorization": "Bearer spinsense-edge-gw-default", "X-Branch-ID": "msu-shah-alam"},
+        json=batch_payload
+    )
+    assert r10.status_code == 200
+    assert 501 in r10.json()["accepted_ids"] and 502 in r10.json()["accepted_ids"]
+    print("PASS: /api/v1/telemetry/batch idempotency verified (re-sent IDs acknowledged)")
+
+    # 11. Test Quarantine & Partial Rejection: malformed data payload
+    malformed_payload = {
+        "branch_id": "msu-shah-alam",
+        "batch": [
+            {
+                "edge_record_id": 503,
+                "device_id": "ESP32-ENV",
+                "recorded_at": "2026-10-23T00:11:00Z",
+                "data": {"voltage": 1.0}
+            },
+            {
+                "edge_record_id": 504,
+                "device_id": "",  # Missing device_id -> should be rejected/quarantined
+                "recorded_at": "2026-10-23T00:11:00Z",
+                "data": {"voltage": 1.0}
+            }
+        ]
+    }
+    r11 = client.post(
+        "/api/v1/telemetry/batch",
+        headers={"Authorization": "Bearer spinsense-edge-gw-default", "X-Branch-ID": "msu-shah-alam"},
+        json=malformed_payload
+    )
+    assert r11.status_code == 200
+    r11_json = r11.json()
+    assert 503 in r11_json["accepted_ids"]
+    assert 504 in r11_json["rejected_ids"]
+    assert "504" in r11_json["quarantine_reasons"]
+    print("PASS: /api/v1/telemetry/batch partial rejection & quarantine verified")
+
+    # 12. Test Gateway Authentication Failure: invalid Bearer token
+    r12 = client.post(
+        "/api/v1/telemetry/batch",
+        headers={"Authorization": "Bearer invalid-token", "X-Branch-ID": "msu-shah-alam"},
+        json=batch_payload
+    )
+    assert r12.status_code == 401, f"Expected 401, got {r12.status_code}"
+    print("PASS: /api/v1/telemetry/batch rejected invalid gateway credentials (401)")
+
     print("\nALL BACKEND API TESTS PASSED SUCCESSFULLY!")
