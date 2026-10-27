@@ -1,10 +1,12 @@
 # SpinSense Dark Interface Design Guide
 
-**Revision:** 2026-10-26
+**Revision:** 2026-10-27
 
 This guide defines the target visual language for SpinSense web dashboards and the operator PWA. Its reference is the [Pi gateway dashboard](../pi5/dashboard/index.html): charcoal surfaces, restrained coral, system typography, small corners, readable measurements, and quiet data tables. Navy is an approved addition for structural regions.
 
 This is a documentation specification, not evidence that the applications have adopted the theme. The Pi reference currently uses custom CSS; future web implementations translate its appearance into Tailwind utilities. Native Flutter implementation is outside this styling contract.
+
+**Current adoption:** The Phase 1 web landing and authentication screens now implement this shared theme with Tailwind utilities and the native system-font stack. Operational web screens remain prototype code behind a temporary access gate. This partial adoption does not establish full application accessibility, PWA or hardware acceptance.
 
 The [PRD](PRD.md) owns permissions, behavior, measurements, thresholds, and data semantics. [AGENTS.md](../AGENTS.md) owns development workflow. This guide must not introduce alternate business rules, simulated success paths, or new runtime APIs.
 
@@ -24,7 +26,7 @@ Navy supplements the reference in selected structural regions. Preserve the refe
 
 ### 2.1 Allowed customization
 
-Component presentation must use Tailwind utility classes and standard variants. A single shared Tailwind v4 theme defines **colors and font families only**. Preserve Tailwind's default spacing, sizing, font-size, weight, radius, breakpoint, shadow, and motion scales.
+Application-owned component presentation must use Tailwind utility classes and standard variants. The isolated Leaflet renderer has the narrowly scoped vendor exception in Section 2.4. A single shared Tailwind v4 theme defines **colors and font families only**. Preserve Tailwind's default spacing, sizing, font-size, weight, radius, breakpoint, shadow, and motion scales.
 
 The following is a documented target for the shared web stylesheet, not an instruction to change application files as part of this documentation update:
 
@@ -58,7 +60,7 @@ The following is a documented target for the shared web stylesheet, not an instr
 }
 ```
 
-Do not reset the entire theme namespace: standard Tailwind scales remain available. Do not add custom typography sizes, radii, spacing, breakpoints, durations, or keyframes. The only project CSS authoring exception is this shared import/theme definition; there are no custom component selectors, global body rules, or utility aliases.
+Do not reset the entire theme namespace: standard Tailwind scales remain available. Do not add custom typography sizes, radii, spacing, breakpoints, durations, or keyframes. The only application-authored CSS exception is this shared import/theme definition; there are no custom component selectors, global body rules, or utility aliases. Section 2.4 separately permits unmodified library-owned map styles.
 
 Use semantic utilities generated from these tokens, such as `bg-canvas`, `bg-surface`, `bg-navy`, `text-ink`, `border-control`, and `font-sans`. Define palette values once rather than repeating raw colors in component markup.
 
@@ -80,11 +82,23 @@ Primary buttons invert the dark theme: `bg-ink text-surface`. Secondary controls
 
 ### 2.3 Styling restrictions
 
-- No inline styles, arbitrary-value utilities, arbitrary-property utilities, custom selectors, component CSS, or `@apply`.
+- No application-authored inline styles, arbitrary-value utilities, arbitrary-property utilities, custom selectors, component CSS, or `@apply`. The Leaflet vendor-rendering exception below does not authorize application overrides.
 - Do not recreate the Pi's class names as CSS rules. Express layout, border, focus, selection, motion, and responsiveness directly through utilities.
 - Use complete literal class strings in state maps. Do not construct color, span, or size classes from fragments at runtime.
 - For dynamic visualizations, SVG drawing attributes such as path coordinates and bar geometry may describe data. Use utilities for color, stroke appearance, layout, and sizing; do not write inline CSS to set a percentage width.
 - Keep SVG icons on `currentColor` using `fill-none stroke-current` or `fill-current` as appropriate. Use the existing outline icon set; do not add a new icon dependency for a visual refresh.
+
+### 2.4 Isolated Leaflet vendor-style exception
+
+The approved interactive map uses Leaflet. Its unmodified vendor stylesheet and library-generated tile/pane/marker positioning are allowed **only for the map renderer**. Those library-owned classes and generated positioning styles are not an application component styling pattern.
+
+- Keep Leaflet's vendor stylesheet unmodified and its rendered DOM within the map integration; do not repurpose vendor classes elsewhere.
+- App-owned map containers, surrounding panels, filters, branch lists, buttons, accessible names, typography and colors still use the theme and standard Tailwind utilities.
+- Do not add custom CSS overrides, arbitrary-value classes, hand-written inline styles or a second palette for app-owned map UI under this exception.
+- Provider tiles and library controls need their own rendered accessibility/contrast review; the palette measurements in Section 5.3 do not cover map imagery or vendor internals.
+- Preserve required attribution. Follow the PRD's online tile and submitted-search restrictions; do not cache/prefetch map tiles in the PWA for offline use.
+
+Leaflet's [official setup](https://leafletjs.com/examples/quick-start/) requires its stylesheet. This exception documents that integration requirement; it does not install Leaflet or change the Pi dashboard.
 
 ## 3. Typography, spacing, and responsive layout
 

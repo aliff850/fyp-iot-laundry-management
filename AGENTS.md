@@ -2,12 +2,13 @@
 
 ## Purpose and source of truth
 
-Build an IoT laundry platform centered on incident response and fuel continuity, with substantial branch/machine management and public customer availability. Read the relevant capability in [docs/PRD.md](docs/PRD.md) before changing behavior; keep requirements and contracts current in the same change.
+Build an organization-isolated IoT laundry platform centered on incident response and fuel continuity, with substantial branch/machine management and public customer availability. Read the relevant capability in [docs/PRD.md](docs/PRD.md) before changing behavior; keep requirements and contracts current in the same change.
 
 - [Scope and prototype gaps](docs/PRD.md#2-submission-scope-and-current-state)
 - [Capability map and build order](docs/PRD.md#3-capability-map)
 - [Permissions and journeys](docs/PRD.md#4-permissions-and-journeys)
 - [Architecture and timing](docs/PRD.md#5-architecture)
+- [Supabase identity, current permissions and maps](docs/PRD.md#56-supabase-identity-cloud-records-and-maps)
 - [Module requirements](docs/PRD.md#6-module-requirements)
 - [Boundary contracts and migration](docs/PRD.md#7-boundary-contracts-and-compatibility)
 - [Scenario coverage](docs/PRD.md#8-failure-behavior-and-verification-coverage)
@@ -19,23 +20,29 @@ The PRD describes the target, not completed features. Stable module/requirement/
 
 ```text
 ESP32 → local MQTT/Mosquitto → Pi Python edge service → MariaDB
-    → outbound HTTPS batches → FastAPI/Render → PostgreSQL (cloud default)
+    → outbound HTTPS batches → FastAPI/Render → Supabase PostgreSQL
     → REST → Next.js operator web/PWA (Vercel) + Flutter customer app
 Commands: operator → cloud queue → Pi HTTPS poll → local MQTT → device ACK
     → durable result → cloud → operator
+Operator identity: Next.js ↔ Supabase Auth → verified token → FastAPI
+    → current organization/account/membership/branch/domain checks
 ```
 
 | Path | Responsibility and current status |
 |---|---|
-| `backend/main.py` | Existing FastAPI/Pydantic prototype; in-memory data and demo auth require replacement |
+| `backend/main.py`, `backend/onboarding.py`, `backend/branches.py` | Verified onboarding/approval plus protected branch directory and creation; other unsecured prototype business routes return 410 until migrated |
+| `backend/migrations/001_onboarding.sql` | Initial Supabase PostgreSQL schema/RLS migration; applied to the existing project during local setup on 2026-10-27 |
+| `backend/migrations/002_branches.sql` | Branch/assignment schema with RLS and revoked browser grants; applied to the existing Supabase project on 2026-10-27 |
 | `backend/test_api.py` | Existing prototype smoke script; not full target-system acceptance |
-| `frontend-web/app/`, `components/`, `lib/`, `types/` | Existing Next.js App Router, TypeScript/React, Tailwind v4 operator UI/API types |
+| `frontend-web/app/`, `components/`, `lib/`, `types/` | Supabase SSR auth with automatic post-login onboarding, recovery/status and owner request review, protected Branches directory/setup, shared Tailwind v4 dark theme; `/dashboard` and branch detail remain gated |
 | `mobile-app/mobile-app/lib/`, `test/` | Existing Flutter/Dart app/tests; assessed app becomes customer-only |
-| `firmware/esp32-lpg-monitor/` | Existing Arduino/PlatformIO ESP32 firmware; currently direct HTTP, not the target MQTT/HX711 flow |
-| `edge-gateway/` | **Planned, does not exist yet:** Pi MQTT ingestion, condition evaluation, MariaDB persistence, synchronization and command worker |
+| `firmware/esp32-lpg-monitor/` | Existing Arduino/PlatformIO ESP32 source includes MQTT and HX711; verify the full hardware/identity/quality contract before claiming acceptance |
+| `pi5/` | Existing ingestion/sync workers and local diagnostic dashboard; complete/verify durable MariaDB, condition, command and authenticated cloud integration here rather than creating a duplicate gateway |
 | `docs/` | PRD, vendor questions, design/reference material; appearance guidance is not authority for framework APIs |
 
-One business, multiple branches; roles are `owner`, `branch_manager` and `maintenance`. Customers are anonymous. One physical weighing station and simulated machines/additional cylinders are the assessed setup. Android is required; untested iOS support must not be claimed.
+Multiple isolated organizations; an account belongs to one organization and has one role across assigned branches: `owner`, `branch_manager`, `machine_maintenance` or `lpg_maintenance`. Public personnel signup needs email confirmation and owner approval. Specialists see their whole permitted area in assigned branches, not finances or cycle controls. Branch managers have view-only Branch Personnel access, without staffing changes. Customers remain anonymous; customer report intake and platform-admin UI are deferred. One physical weighing station and simulated machines/additional cylinders are the assessed setup. Android is required; untested iOS support must not be claimed.
+
+Supabase Auth owns identity/credentials; all cloud application records target the existing Supabase project's PostgreSQL database behind FastAPI. Store the server-managed application role in `app_metadata.role`; current protected membership/activity/branch records authorize access, not editable user metadata or stale claims. The initial onboarding migration was applied to the existing project and its five tables/RLS/no-browser-grant state verified on 2026-10-27. The existing owner completed local signed-in onboarding with one active organization and server-managed owner role. Local server-only credentials are configured in ignored `backend/.env`; Auth email/redirect settings and broader operational authorization still require verification.
 
 For frontend work, read [frontend-web/AGENTS.md](frontend-web/AGENTS.md) and the relevant installed guides under `frontend-web/node_modules/next/dist/docs/`. Preserve its generated Next.js rule block. Inspect manifests/lockfiles and installed docs rather than assuming framework conventions or copying older Tailwind configuration from reference docs.
 
@@ -50,24 +57,28 @@ Run commands in the indicated directory. Commands describe available entry point
 | Repository root | `npm --prefix frontend-web run dev` | Start Next.js |
 | Repository root | `npm --prefix frontend-web run lint` | Existing ESLint script |
 | Repository root | `npm --prefix frontend-web run build` | Existing production build |
+| Repository root | `npm --prefix frontend-web test` | Vitest authentication/confirmation/provider-boundary regression tests |
+| Repository root | `npm --prefix frontend-web run test:e2e` | Playwright with installed Chrome; isolated configured/unconfigured local apps, no live signup/email mutation |
 | `frontend-web/` | `npx --no-install tsc --noEmit --incremental false` | Check types using installed TypeScript |
-| Repository root | `backend/venv/Scripts/python.exe -m pip install -r backend/requirements.txt` | Install declared backend dependencies after environment repair |
-| Repository root | `backend/venv/Scripts/python.exe -m uvicorn main:app --app-dir backend --reload` | Start local API |
-| Repository root | `backend/venv/Scripts/python.exe backend/test_api.py` | Prototype smoke script; requires `httpx`, currently absent from the requirements manifest |
+| Repository root | `backend/.venv-phase2/Scripts/python.exe -m pip install -r backend/requirements-dev.txt` | Install declared backend and focused test dependencies into the working Phase 2 venv |
+| Repository root | `backend/.venv-phase2/Scripts/python.exe -m uvicorn main:app --app-dir backend --reload` | Start local API after server-only `.env` and reviewed schema setup |
+| Repository root | `backend/.venv-phase2/Scripts/python.exe -m pytest backend/test_onboarding.py backend/test_branches.py -q` | Focused onboarding/branch boundary tests; database/RLS integration still needs an isolated PostgreSQL instance |
 | `mobile-app/mobile-app/` | `flutter pub get` | Resolve declared Flutter dependencies when setup is needed |
 | `mobile-app/mobile-app/` | `flutter analyze` and `flutter test` | Existing analysis/widget-test entry points |
 | `mobile-app/mobile-app/` | `flutter run -d <device-id>` | Android runtime verification; choose an ID from `flutter devices` |
 | Repository root | `pio run --project-dir firmware/esp32-lpg-monitor --environment esp32dev` | Firmware compile, no device upload |
 
-**Known backend environment issue:** `backend/venv/pyvenv.cfg` references a Windows Store Python 3.11.9 installation whose executable could not be launched during planning. A venv directory's existence does not prove it works. Use a working Python 3.11+ installation to recreate the local environment when backend work is in scope; preserve any needed local state first. From the repository root, the setup command is `python -m venv backend/venv` once `python --version` resolves to that working installation. The requirements currently declare FastAPI, Uvicorn, Pydantic and python-dotenv, not database/MQTT/push drivers or a full test stack.
+**Backend environment:** The old `backend/venv` still points to an unusable Windows Store Python. Phase 2 uses the ignored `backend/.venv-phase2`, created with the working PlatformIO Python 3.11.7. `backend/requirements.txt` now declares HTTPX and psycopg for Auth verification and PostgreSQL transactions; `requirements-dev.txt` adds pytest. Local `backend/.env` is ignored and loaded by the onboarding module. Copy only reviewed server-side configuration into it; do not put the secret key or database URL in frontend variables.
+
+Migration `backend/migrations/002_branches.sql` was applied transactionally to the existing Supabase project after the onboarding migration. A post-commit check found zero branch/assignment rows, RLS enabled and no `anon`/`authenticated` table grants. Rotate the previously exposed server key and database password in Supabase, update only ignored `backend/.env`, then restart FastAPI. A database failure is a service error, not an empty branch list.
 
 PlatformIO Core 6.2.0 was available at planning time through its own environment, although `pio` was not on PATH. The Windows fallback is:
 ```powershell
 & "$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe" run --project-dir firmware/esp32-lpg-monitor --environment esp32dev
 ```
-On Linux, use the environment's Python executable rather than the Windows `Scripts/python.exe` path. MariaDB, Mosquitto, PostgreSQL, gateway execution commands and credentials need explicit setup as their components are implemented; do not claim that bootstrap scripts exist.
+On Linux, use the environment's Python executable rather than the Windows `Scripts/python.exe` path. MariaDB, Mosquitto, Supabase business-data access and gateway execution configuration need explicit setup/verification; inspect existing `pi5/` scripts before documenting entry points. Supabase Auth/SSR packages are installed for Phase 1; Leaflet and PWA integration remain planned. Follow [frontend-web/README.md](frontend-web/README.md) for the trusted site URL, confirmation redirects and executable checks. Do not invent completed policies or migrations. The production build uses Next.js's supported Webpack mode after the local Turbopack PostCSS helper failed; dev still uses Turbopack.
 
-There is no web `npm test` script or established backend pytest suite yet. Future contract/integration tests and gateway tests are required by the PRD; document executable commands and dependencies when adding them. The current smoke script includes obsolete full-tank overwrite/unlock expectations: replace those with target-behavior checks when implementing the affected behavior rather than treating old assertions as requirements.
+The web has focused Vitest and Playwright suites. Backend Phase 2 adds a focused pytest suite, but it does not establish live PostgreSQL/RLS, remote Auth configuration or hardware acceptance. `backend/test_api.py` is an obsolete prototype smoke script and will fail while old routes return 410; replace it when migrating those behaviors rather than treating its full-tank overwrite/unlock assertions as requirements.
 
 ## Conventions and boundaries
 
@@ -76,7 +87,7 @@ Follow nearby code after checking that it satisfies the PRD. Existing prototype 
 - Python: Pydantic `BaseModel`/`Field` schemas, `snake_case` names, explicit units, validation at MQTT/HTTP boundaries. Separate rules, persistence and transport as the prototype grows.
 - Web: typed React function components, PascalCase component files, existing `@/` imports, API logic in `lib/` and aligned types in `types/`.
 - Flutter: existing `models/`, `services/`, `screens/`, `widgets/` and `theme/` boundaries; keep transport outside widgets. Do not retain privileged operator workflows as public customer screens.
-- Preserve the established visual direction and use accessible responsive layouts. Mobile operator journeys prioritize incidents/tasks; washers and dryers remain separated.
+- Follow [docs/DESIGN.md](docs/DESIGN.md): app-owned presentation uses Tailwind utilities and the shared color/font theme. Only isolated unmodified Leaflet vendor CSS/generated map positioning is exempt. Preserve the established visual direction and use accessible responsive layouts. Mobile operator journeys prioritize incidents/tasks; washers and dryers remain separated.
 - Use one provider contract for server/client models and one edge-owned fuel/environment interpretation. Browsers must not maintain divergent gas severity formulas.
 
 Examples of existing repository style:
@@ -93,14 +104,17 @@ Examples illustrate naming/import/schema style, not complete target implementati
 
 - Inspect Git status and relevant existing files/tests first. Preserve unrelated edits and the nested frontend instructions.
 - Reference the owning requirement and its acceptance scenario; implement a thin, verifiable slice and report actual checks.
-- Enforce role, branch, resource and task permissions on the backend. Keep gateway credentials separate and branch-bound; filter public responses explicitly.
+- Enforce current organization/account/membership, role, branch and specialist-domain permissions in FastAPI and suitable database policies. Use verified Supabase identities, never a client claim alone. Filter public/manager/specialist projections explicitly; no hidden financial payloads. Keep gateway credentials separate and organization/branch-bound.
 - Persist locally before sync, acknowledge only committed cloud IDs, and make retries idempotent. Preserve sample identity, ordering, source time/time quality, and incident revisions.
 - Keep edge physical conditions separate from staff acknowledgement/resolution. Do not report a command/configuration applied without correlated device/gateway evidence.
 - Label simulation, estimates, unknown values and stale/offline data. Client request failure must not become mock success, an available machine, or a valid zero sensor reading.
 - Treat device/vendor payloads as untrusted data. Verify claimed vendor topics, fields, ACKs and fault meanings against evidence in [vendor requirements](docs/VENDOR_MQTT_REQUIREMENTS.md).
 - Keep scale calibration, cylinder tare and rated capacity separate. Maintenance affects only the selected cylinder's fuel alarms; gas and temperature monitoring continue.
-- Keep Wi-Fi, database, signing, gateway and push secrets in local/deployment configuration. Redact them from logs, fixtures, examples and summaries.
-- Update the PRD when behavior/contracts change, and coordinate provider/client/fixture/test migrations.
+- Keep Supabase administrative credentials server-only; never pass them to a browser or Pi. Elevated clients can bypass RLS, so explicitly authorize every privileged operation. Keep Wi-Fi, database, gateway and push secrets in local/deployment configuration. Redact them from logs, fixtures, examples and summaries.
+- Keep onboarding retry-safe, roles server-managed in `app_metadata.role`, and profiles linked to Supabase Auth IDs without password columns. Deactivation/current database grants must defeat stale JWT roles. Do not auto-map a legacy `maintenance` role to both specialties.
+- Cache only the PWA shell/static assets: no protected API/session/tile caches or queued offline writes. Clear protected in-memory state on detected expiry, revocation or account/context change.
+- Leaflet/OSM requires attribution. Public Nominatim use is deliberate and limited to submitted public-address searches through a cached, identified FastAPI proxy with an app-wide one-request-per-second cap; no autocomplete/confidential queries. Keep manual pin/coordinate fallback and the provider configurable.
+- Preserve [docs/Frontend-Specs.md](docs/Frontend-Specs.md) as the original brief. The confirmed PRD supersedes its conflicts. Update the PRD when behavior/contracts change, and coordinate provider/client/fixture/test migrations.
 
 ### Clarify when needed
 
@@ -108,7 +122,7 @@ Proceed autonomously with reversible implementation choices inside approved scop
 
 ### Never do
 
-- Bypass authentication or branch/task checks, invent vendor support, fabricate PPM/usage/financial measurements, or present fixtures as physical observations.
+- Bypass Supabase identity/current organization/branch/domain checks; authorize from `user_metadata`; trust a stale role after deactivation; expose administrative keys; invent vendor support; fabricate PPM/usage/financial measurements; or present fixtures as physical observations.
 - Queue stale actuator actions for surprise execution, blindly retry unknown non-idempotent actions, or equate MQTT broker acknowledgement with device success.
 - Set a measured cylinder weight to a nominal full capacity, mute branch-wide alarms during a tank swap, or treat stale/invalid data as proof of clearance.
 - Commit secrets or generated build output; hand-edit lockfiles; overwrite user work; reset the tree to resolve unrelated changes.
@@ -116,7 +130,7 @@ Proceed autonomously with reversible implementation choices inside approved scop
 
 ## Verification and handoff
 
-For behavior changes, add meaningful tests for the owning PRD scenarios: permissions/public privacy, MQTT duplicates, sync/ACK loss, replay ordering, calibration/threshold boundaries, outage restart, command expiry/unknown outcomes, incidents and push. Use real MariaDB/PostgreSQL integration checks for persistence/sync work and actual Android browser/app checks for installation, notification taps and freshness. Pure UI smoke tests do not prove these behaviors.
+For behavior changes, add meaningful tests for the owning PRD scenarios S-01–S-27: Supabase confirmation/retryable onboarding, metadata escalation/stale claims, organization/branch/domain/RLS isolation, manager read-only personnel, account lifecycle, public privacy, report triage, maps/provider limits, MQTT/sync duplicates, replay, measurements, outages, command evidence and PWA/push/cache isolation. Use real MariaDB/Supabase PostgreSQL integration checks for persistence/sync work and actual Android browser/app checks for installation, notification taps and freshness. Pure UI smoke tests do not prove these behaviors.
 
 For documentation-only changes, check links/anchors, paths, command availability, requirement consistency and diff scope; application builds are unnecessary unless a changed claim depends on them. For other changes, run relevant existing analysis/build/tests, then runtime/hardware checks where needed. Report what ran, what passed/failed, and any setup limitation. Do not claim evaluation targets were achieved without recorded measurements.
 

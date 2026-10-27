@@ -1,28 +1,29 @@
 @import "tailwindcss";
 
 @theme {
-  --color-msu: #8B0000;
-  --color-msu-dark: #660000;
-  --color-msu-light: #FDF2F2;
-  --color-msu-border: #F87171;
-  --color-msu-gold: #D4AF37;
-  --color-canvas: #F8FAFC;
-  --font-sans: var(--font-inter), 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-}
+  --color-canvas: #171719;
+  --color-surface: #131217;
+  --color-raised: #212023;
+  --color-navy: #14243a;
+  --color-navy-hover: #1b304b;
+  --color-navy-selected: #223d5b;
+  --color-ink: #f2f2f3;
+  --color-muted: #b4b4ba;
+  --color-faint: #94949d;
+  --color-line: #2c2b30;
+  --color-rule: #242328;
+  --color-control: #8c8a93;
+  --color-accent: #ef6268;
+  --color-positive: #79c5a6;
+  --color-warning: #dfb463;
+  --color-negative: #ef8798;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
 
-:root {
-  --background: #F8FAFC;
-  --foreground: #0F172A;
-  --font-inter: 'Inter', system-ui, sans-serif;
-}
-
-body {
-  font-family: var(--font-inter), 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background-color: var(--background);
-  color: var(--foreground);
-  min-height: 100vh;
-}
-
-h1, h2, h3, h4, h5, h6 {
-  font-family: var(--font-inter), 'Inter', system-ui, sans-serif;
+  /* Compatibility aliases for prototype components awaiting their own phase. */
+  --color-msu: var(--color-navy);
+  --color-msu-dark: var(--color-navy-hover);
+  --color-msu-light: var(--color-raised);
+  --color-msu-border: var(--color-control);
+  --color-msu-gold: var(--color-accent);
 }

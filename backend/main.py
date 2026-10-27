@@ -5,6 +5,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
+from onboarding import router as onboarding_router
+from branches import router as branches_router
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -16,34 +18,29 @@ app = FastAPI(
     version="1.1.0",
 )
 
-# Enable CORS for Next.js operator dashboard and edge nodes
+# Only explicitly configured operator origins may use cross-origin API requests.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[origin.strip() for origin in os.getenv("OPERATOR_ORIGINS", "http://localhost:3000").split(",") if origin.strip()],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(onboarding_router)
+app.include_router(branches_router)
+
+@app.middleware("http")
+async def retire_unsecured_prototype(request, call_next):
+    path = request.url.path
+    allowed = path in {"/api", "/api/status", "/public/organizations", "/me", "/onboarding", "/join-requests", "/branches", "/branches/manager-options"} or path.startswith("/join-requests/")
+    if not allowed:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"detail": "Prototype route retired pending authorized migration"}, status_code=410)
+    return await call_next(request)
 
 # ==========================================
 # Data Models
 # ==========================================
-
-class OperatorRegisterRequest(BaseModel):
-    name: str = Field(..., description="Operator full name")
-    email: str = Field(..., description="Operator email address")
-    password: str = Field(..., min_length=4, description="Account password")
-    company: str = Field("MSU Laundry Services", description="Operating company / facility")
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    operator_name: str
-    role: str
 
 class BranchCreateRequest(BaseModel):
     name: str = Field(..., description="Branch title, e.g., MSU Shah Alam")
@@ -145,10 +142,6 @@ class BatchTelemetryResponse(BaseModel):
 # ==========================================
 # In-Memory State & Fixtures
 # ==========================================
-
-registered_operators = [
-    {"name": "MSU Laundry Supervisor", "email": "supervisor@msu.edu.my", "password": "admin", "company": "MSU Facilities"}
-]
 
 BRANCHES_DB: Dict[str, dict] = {
     "msu-shah-alam": {
@@ -547,88 +540,24 @@ def api_status():
         "service": "MSU SpinSense Operator API",
         "version": "1.1.0",
         "endpoints": [
-            "/auth/register",
-            "/auth/token",
+            "/public/organizations",
+            "/onboarding",
+            "/me",
+            "/join-requests",
+            "/join-requests/{id}/decision",
             "/branches",
-            "/branches/{id}/dashboard",
-            "/branches/{id}/machines",
-            "/branches/{id}/lpg",
-            "/branches/{id}/safety",
-            "/branches/{id}/analytics",
-            "/branches/{id}/availability",
-            "/machines/{id}",
-            "/machines/{id}/commands",
-            "/machines/{id}/parameters",
-            "/machines/{id}/maintenance-log",
-            "/api/latest",
-            "/api/data",
-            "/api/update",
+            "/branches/manager-options",
         ],
     }
-
-# ------------------------------------------
-# Auth Endpoints (FR-W1, FR-W2)
-# ------------------------------------------
-
-@app.post("/auth/register")
-def register_operator(payload: OperatorRegisterRequest):
-    """Registers a new operator account per FR-W2"""
-    for op in registered_operators:
-        if op["email"] == payload.email:
-            raise HTTPException(status_code=400, detail="Operator with this email already registered")
-    
-    new_op = {
-        "name": payload.name,
-        "email": payload.email,
-        "password": payload.password,
-        "company": payload.company,
-    }
-    registered_operators.append(new_op)
-    
-    return {
-        "message": "Operator registered successfully",
-        "access_token": f"msu-token-{abs(hash(payload.email))}",
-        "token_type": "bearer",
-        "operator_name": payload.name,
-        "role": "Branch Operator",
-    }
-
-@app.post("/auth/token", response_model=TokenResponse)
-def login_operator(payload: LoginRequest):
-    """Authenticates operator per FR-W2"""
-    matched = next((op for op in registered_operators if op["email"] == payload.username and op["password"] == payload.password), None)
-    if matched:
-        return TokenResponse(
-            access_token=f"msu-jwt-token-{abs(hash(matched['email']))}",
-            operator_name=matched["name"],
-            role="Branch Operator",
-        )
-    
-    # Default fallback for admin or prototype demo
-    if payload.username == "admin" and payload.password == "admin":
-        return TokenResponse(
-            access_token="msu-mock-jwt-token-998877",
-            operator_name="MSU Laundry Supervisor",
-            role="Branch Supervisor",
-        )
-    
-    # Permissive fallback for seamless testing
-    return TokenResponse(
-        access_token=f"msu-token-{abs(hash(payload.username))}",
-        operator_name=payload.username.capitalize() or "Operator",
-        role="Operator",
-    )
 
 # ------------------------------------------
 # Multi-Branch Endpoints (FR-W3, FR-W4)
 # ------------------------------------------
 
-@app.get("/branches")
 def list_branches():
     """Returns all registered branches enriched with machine counts, LPG status, and coordinates"""
     return [get_branch_summary(b_id) for b_id in BRANCHES_DB.keys()]
 
-@app.post("/branches", status_code=status.HTTP_201_CREATED)
 def create_branch(payload: BranchCreateRequest):
     """Registers a new branch per FR-W4"""
     branch_id = payload.name.lower().replace(" ", "-").replace("&", "and")

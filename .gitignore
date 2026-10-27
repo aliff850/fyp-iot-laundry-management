@@ -1,5 +1,6 @@
 # Python / Backend
 **/venv/
+backend/.venv-phase2/
 **/__pycache__/
 *.py[cod]
 .env
@@ -9,6 +10,8 @@
 **/.next/
 **/out/
 .env.local
+**/playwright-report/
+**/test-results/
 
 # Flutter / Mobile
 **/mobile-app/.dart_tool/
