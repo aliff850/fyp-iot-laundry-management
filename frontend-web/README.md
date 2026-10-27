@@ -1,10 +1,10 @@
 # SpinSense operator web — authentication and onboarding
 
-Next.js 16, React and Tailwind v4. Public entry and Supabase authentication are implemented. Phase 2 adds FastAPI onboarding/status and owner request review; migrations must be applied separately before it can use the existing Supabase project. See [PRD](../docs/PRD.md), [design guide](../docs/DESIGN.md) and [phase tasks](../tasks/todo.md).
+Next.js 16, React and Tailwind v4. Public entry, Supabase authentication, FastAPI onboarding and the protected Branches directory are implemented. Onboarding and branch migrations have been applied to the existing Supabase project. See the [monorepo run command](../README.md), [PRD](../docs/PRD.md), [design guide](../docs/DESIGN.md) and [phase tasks](../tasks/todo.md).
 
 ## Local setup
 
-Use Node 22.12+ (verified here with 22.17) and install the locked dependencies:
+Use Node 22.12+ (verified here with 22.17) and install the locked dependencies. From the repository root, `npm run dev` starts this app and FastAPI together and stops both with Ctrl+C. To run only the frontend from this directory:
 
 ```powershell
 npm ci --ignore-scripts
@@ -26,10 +26,10 @@ The default PKCE confirmation redirect (`code`) and the documented email-token c
 ## Available flow
 
 - `/` → Log in or Register; `/register` → owner or personnel.
-- Owner signup → check email → confirmation → login → verified workspace-setup screen.
+- Owner signup → check email → confirmation → login → automatic idempotent onboarding → Branches.
 - Personnel signup displays the real organization directory or an honest unavailable/empty state. Submission is disabled without an available organization.
-- Successful identity verification reaches `/membership-status`, which reads canonical FastAPI state. A confirmed user completes or retries onboarding there; an owner can review join requests at `/personnel`.
-- `/branches` and `/dashboard` are temporarily fenced by Proxy and server layouts. Their prototype source is retained for later migration.
+- Pending, rejected, unassigned and unavailable users reach `/membership-status`; an active owner goes directly to `/branches` and can review join requests at `/personnel`.
+- `/branches` uses protected FastAPI data and shows a genuine empty state before the first branch. `/dashboard` and branch operational detail remain gated for later migration.
 - Sign-out uses Supabase; demo-auth helpers and localStorage grants are retired. Operational routes stay fenced until their own current-permission APIs are migrated.
 
 Signup metadata contains only personal details and an untrusted `onboarding_intent`. FastAPI validates it, freezes the accepted intent and provisions idempotently. No frontend writes `app_metadata.role` or application password records.
