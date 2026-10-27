@@ -50,9 +50,12 @@ For frontend work, read [frontend-web/AGENTS.md](frontend-web/AGENTS.md) and the
 
 Run commands in the indicated directory. Commands describe available entry points; they are not evidence that a check passed. Do not install, upgrade, deploy or upload firmware merely to validate documentation.
 
+**Server cleanup after edits:** Stop every development server and background helper running for this repository before ending a task, including Next.js/npm, FastAPI/Uvicorn, Playwright web servers and any gateway service started for verification. This applies to servers left running from earlier work as well as ones started in the current turn, unless the user explicitly asks to keep them running. Verify the process command line and workspace path before stopping a process; never kill by executable name or port alone. Check that the relevant local ports no longer have listeners, and report any process that could not be stopped. Do not stop unrelated services.
+
 | Working directory | Command | Purpose / limit |
 |---|---|---|
 | Repository root | `git status --short` and `git diff --check` | Inspect local work and whitespace |
+| Repository root | `npm run dev` | Start local FastAPI and Next.js together; Ctrl+C stops both process trees |
 | Repository root | `npm --prefix frontend-web ci` | Install locked web dependencies when setup is needed |
 | Repository root | `npm --prefix frontend-web run dev` | Start Next.js |
 | Repository root | `npm --prefix frontend-web run lint` | Existing ESLint script |
@@ -134,4 +137,4 @@ For behavior changes, add meaningful tests for the owning PRD scenarios S-01–S
 
 For documentation-only changes, check links/anchors, paths, command availability, requirement consistency and diff scope; application builds are unnecessary unless a changed claim depends on them. For other changes, run relevant existing analysis/build/tests, then runtime/hardware checks where needed. Report what ran, what passed/failed, and any setup limitation. Do not claim evaluation targets were achieved without recorded measurements.
 
-Leave the accepted scope, affected requirements, files, verification evidence and next task clear enough to resume later. Do not deploy, publish, upload firmware or commit changes without task authorization.
+Leave the accepted scope, affected requirements, files, verification evidence and next task clear enough to resume later. Complete the server cleanup above and report the result. Do not deploy, publish, upload firmware or commit changes without task authorization.
