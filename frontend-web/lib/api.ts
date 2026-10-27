@@ -387,44 +387,6 @@ export async function fetchWithFallback<T>(
 // Operator Authentication
 // ------------------------------------------
 
-export async function loginOperator(username: string, password: string) {
-  try {
-    const res = await fetch(`${API_BASE}/auth/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
-    });
-    if (res.ok) return { success: true, data: await res.json() };
-  } catch {}
-  return {
-    success: true,
-    data: {
-      access_token: `mock-token-${Date.now()}`,
-      operator_name: username === "admin" ? "MSU Supervisor" : username.toUpperCase(),
-      role: "Branch Operator",
-    },
-  };
-}
-
-export async function registerOperator(payload: { name: string; email: string; password: string; company: string }) {
-  try {
-    const res = await fetch(`${API_BASE}/auth/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (res.ok) return { success: true, data: await res.json() };
-  } catch {}
-  return {
-    success: true,
-    data: {
-      access_token: `mock-reg-token-${Date.now()}`,
-      operator_name: payload.name,
-      role: "Branch Operator",
-    },
-  };
-}
-
 // ------------------------------------------
 // Multi-Branch Operations
 // ------------------------------------------

@@ -1,30 +1,16 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
 import "./globals.css";
-
-const inter = Inter({
-  variable: "--font-inter",
-  subsets: ["latin"],
-  display: "swap",
-});
+import { SessionCleanup } from "@/components/auth/SessionCleanup";
 
 export const metadata: Metadata = {
-  title: "MSU SpinSense — Operator Web Dashboard",
-  description: "IoT-Enabled Laundry Management and Performance Monitoring System for Management & Science University",
+  title: { default: "SpinSense", template: "%s · SpinSense" },
+  description: "Laundry operations, fuel monitoring and incident response for your team.",
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${inter.variable} h-full antialiased`}>
-      <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-      </head>
-      <body className="min-h-full flex flex-col font-sans bg-slate-50 text-slate-900">{children}</body>
+    <html lang="en" className="h-full scheme-dark">
+      <body className="min-h-screen bg-canvas font-sans text-sm leading-normal text-ink antialiased"><SessionCleanup />{children}</body>
     </html>
   );
 }

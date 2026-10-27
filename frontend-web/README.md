@@ -1,36 +1,59 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SpinSense operator web — authentication and onboarding
 
-## Getting Started
+Next.js 16, React and Tailwind v4. Public entry and Supabase authentication are implemented. Phase 2 adds FastAPI onboarding/status and owner request review; migrations must be applied separately before it can use the existing Supabase project. See [PRD](../docs/PRD.md), [design guide](../docs/DESIGN.md) and [phase tasks](../tasks/todo.md).
 
-First, run the development server:
+## Local setup
 
-```bash
+Use Node 22.12+ (verified here with 22.17) and install the locked dependencies:
+
+```powershell
+npm ci --ignore-scripts
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [localhost:3000](http://localhost:3000). The app uses the system font and does not fetch Google Fonts.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Keep local values in the ignored `.env.local`; [.env.example](.env.example) contains placeholders. Existing local credentials must not be overwritten.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`: public project configuration, never administrative credentials.
+- `NEXT_PUBLIC_SITE_URL`: trusted application origin without a path. Development defaults to `http://localhost:3000`; set it explicitly before production builds/deployment and use HTTPS outside loopback development.
+- `NEXT_PUBLIC_API_URL`: FastAPI base URL for the public directory and protected onboarding APIs. The verified Supabase access token is forwarded only by server-side code to protected FastAPI endpoints.
 
-## Learn More
+In the existing Supabase project, independently verify email signup/confirmation, email delivery and allowed redirect URLs. For local confirmation the redirect is `http://localhost:3000/auth/confirm`; configure the equivalent trusted URL for another origin. This change does not update the remote project.
 
-To learn more about Next.js, take a look at the following resources:
+The default PKCE confirmation redirect (`code`) and the documented email-token callback (`token_hash` with `type=email`) are supported. The latter requires an appropriately configured confirmation email template if selected. Confirmation returns to login and does not provision a business. See [Supabase SSR setup](https://supabase.com/docs/guides/auth/server-side/creating-a-client) and [email templates](https://supabase.com/docs/guides/auth/auth-email-templates).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Available flow
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `/` → Log in or Register; `/register` → owner or personnel.
+- Owner signup → check email → confirmation → login → verified workspace-setup screen.
+- Personnel signup displays the real organization directory or an honest unavailable/empty state. Submission is disabled without an available organization.
+- Successful identity verification reaches `/membership-status`, which reads canonical FastAPI state. A confirmed user completes or retries onboarding there; an owner can review join requests at `/personnel`.
+- `/branches` and `/dashboard` are temporarily fenced by Proxy and server layouts. Their prototype source is retained for later migration.
+- Sign-out uses Supabase; demo-auth helpers and localStorage grants are retired. Operational routes stay fenced until their own current-permission APIs are migrated.
 
-## Deploy on Vercel
+Signup metadata contains only personal details and an untrusted `onboarding_intent`. FastAPI validates it, freezes the accepted intent and provisions idempotently. No frontend writes `app_metadata.role` or application password records.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The public directory uses `GET /public/organizations` returning `{ organizations: [{ id, name }] }`. Malformed, failed or absent integration is not an empty list. FastAPI exposes only active public identifiers, never private business/staff fields.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Checks
+
+Run from this directory:
+
+```powershell
+npm test
+npm run test:e2e
+npm run lint
+npx --no-install tsc --noEmit --incremental false
+npm run build
+```
+
+Vitest covers validation, authentication failures, metadata, confirmation callbacks, provider payloads and refreshed-cookie/cache handling. Playwright requires installed Google Chrome and uses isolated local servers on ports 3100/3101, with desktop/mobile and unconfigured-project checks. It sends no live signup or confirmation emails. Mobile emulation does not establish Android PWA acceptance. Browser artifacts are ignored under `test-results/`.
+
+The focused Phase 2 check is `node node_modules/vitest/vitest.mjs run tests/unit/business-onboarding.test.ts`. It covers verified-token forwarding, confirmation gating, unavailable/forbidden states and malformed business responses. Backend tests run from the repository root with `backend/.venv-phase2/Scripts/python.exe -m pytest backend/test_onboarding.py -q`.
+
+Production builds use Next.js's supported `--webpack` option: Turbopack's production PostCSS helper exited before connecting on this Windows environment, including outside the sandbox. Development Turbopack and the Webpack build were verified separately. Type checking is retained.
+
+The pre-change lint baseline was 16 errors/14 warnings; the Phase 1 full-app result was 15 errors/13 warnings in retained prototype files. The new Phase 2 web files pass focused lint. Remaining prototype failures must not be suppressed or treated as authentication requirements. Live signup, mailbox delivery, confirmation allowlists and PostgreSQL/RLS behavior need their own integration evidence.
+
+The Phase 2 migration in `backend/migrations/001_onboarding.sql` was applied to the existing Supabase project during local setup on 2026-10-27. All five tables, enabled RLS and absent direct `anon`/`authenticated` table grants were verified. Ignored `backend/.env` and `frontend-web/.env.local` connect the local app to local FastAPI; `backend/.env.example` contains placeholders only. The existing owner completed signed-in onboarding and one active organization/owner role was observed. Email delivery, redirect settings and a second live idempotent write remain unverified. Render remains unchanged.
