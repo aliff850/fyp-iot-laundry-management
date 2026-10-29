@@ -3,7 +3,14 @@ import { NextRequest } from "next/server";
 import { getPublicOrganizations } from "@/lib/auth/organizations";
 
 const createServerClient = vi.hoisted(() => vi.fn());
+const mockCookiesStore = vi.hoisted(() => ({
+  getAll: vi.fn().mockReturnValue([]),
+  set: vi.fn().mockImplementation(() => {
+    throw new Error("Cookies can only be modified in a Server Action or Route Handler");
+  }),
+}));
 vi.mock("@supabase/ssr", () => ({ createServerClient }));
+vi.mock("next/headers", () => ({ cookies: vi.fn().mockImplementation(async () => mockCookiesStore) }));
 import { proxy } from "@/proxy";
 
 beforeEach(() => {
@@ -51,9 +58,34 @@ describe("session refresh and temporary operational gate", () => {
     expect(response.headers.get("pragma")).toBe("no-cache");
   });
 
-  it("holds branch routes before rendering or accepting any claimed role", async () => {
-    const response = await proxy(new NextRequest("http://localhost:3000/branches/branch-a?tab=machines"));
-    expect(response.headers.get("location")).toBe("http://localhost:3000/membership-status?next=%2Fbranches%2Fbranch-a%3Ftab%3Dmachines");
+  it("holds unmigrated dashboard routes before rendering or accepting any claimed role", async () => {
+    const response = await proxy(new NextRequest("http://localhost:3000/dashboard?tab=analytics"));
+    expect(response.headers.get("location")).toBe("http://localhost:3000/membership-status?next=%2Fdashboard%3Ftab%3Danalytics");
     expect(createServerClient).not.toHaveBeenCalled();
+  });
+
+  it("allows migrated branch routes to pass through to authorized server components", async () => {
+    const response = await proxy(new NextRequest("http://localhost:3000/branches/branch-a"));
+    expect(response.headers.get("location")).toBeNull();
+  });
+});
+
+describe("server component supabase client cookies", () => {
+  it("provides setAll that safely catches Server Component cookie write attempts", async () => {
+    const { createClient } = await import("@/lib/supabase/server");
+    let capturedOptions: any;
+    createServerClient.mockImplementation((_url, _key, options) => {
+      capturedOptions = options;
+      return {};
+    });
+
+    const client = await createClient();
+    expect(client).toBeDefined();
+    expect(typeof capturedOptions?.cookies?.setAll).toBe("function");
+
+    // setAll must not throw even if store.set throws (e.g. Server Component limitation)
+    expect(() => {
+      capturedOptions.cookies.setAll([{ name: "test", value: "val", options: {} }]);
+    }).not.toThrow();
   });
 });

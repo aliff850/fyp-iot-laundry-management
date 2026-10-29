@@ -15,14 +15,12 @@ export async function completeOnboarding(): Promise<BusinessActionState> {
 export async function decideJoinRequest(_state: BusinessActionState, form: FormData): Promise<BusinessActionState> {
   const id = form.get("requestId");
   const decision = form.get("decision");
-  const role = form.get("role");
-  if (typeof id !== "string" || !/^[0-9a-fA-F-]{36}$/.test(id) || (decision !== "approve" && decision !== "reject") ||
-    (decision === "approve" && !["branch_manager", "machine_maintenance", "lpg_maintenance"].includes(String(role)))) {
-    return { message: "Select a valid decision and role." };
+  if (typeof id !== "string" || !/^[0-9a-fA-F-]{36}$/.test(id) || (decision !== "approve" && decision !== "reject")) {
+    return { message: "Select a valid decision." };
   }
-  const result = await businessRequest<{ state: string }>(`/join-requests/${id}/decision`, "POST", { decision, role: decision === "approve" ? role : null });
+  const result = await businessRequest<{ state: string }>(`/join-requests/${id}/decision`, "POST", { decision, role: null });
   if (!result.ok) return { message: result.message };
   if (result.value?.state !== (decision === "approve" ? "approved_unassigned" : "rejected")) return { message: "The business service returned an invalid decision." };
   revalidatePath("/personnel");
-  return { success: true, message: result.value.state === "rejected" ? "Request rejected." : "Request approved without branch assignments." };
+  return { success: true, message: result.value.state === "rejected" ? "Request rejected." : "Request approved. Member added to organization." };
 }

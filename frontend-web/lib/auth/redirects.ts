@@ -5,7 +5,7 @@ export function safeReturnTo(value: unknown): string | null {
     const decoded = decodeURIComponent(value);
     if (/[\\\u0000-\u001f\u007f]/.test(decoded) || decoded.startsWith("//") || /%2f|%5c/i.test(value)) return null;
     const url = new URL(value, "https://internal.invalid");
-    if (url.origin !== "https://internal.invalid" || !/^\/(branches|dashboard)(\/|$)/.test(url.pathname)) return null;
+    if (url.origin !== "https://internal.invalid" || !/^\/(branches|dashboard|personnel|account)(\/|$)/.test(url.pathname)) return null;
     return `${url.pathname}${url.search}`;
   } catch {
     return null;

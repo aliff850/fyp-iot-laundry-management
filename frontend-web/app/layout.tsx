@@ -5,6 +5,7 @@ import { SessionCleanup } from "@/components/auth/SessionCleanup";
 export const metadata: Metadata = {
   title: { default: "SpinSense", template: "%s · SpinSense" },
   description: "Laundry operations, fuel monitoring and incident response for your team.",
+  referrer: "strict-origin-when-cross-origin",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

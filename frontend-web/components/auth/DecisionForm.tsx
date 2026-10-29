@@ -1,24 +1,56 @@
 "use client";
 
 import { useActionState } from "react";
+import { Check, X } from "lucide-react";
 import { decideJoinRequest } from "@/app/membership-status/actions";
 import { Notice } from "@/components/auth/AuthForm";
-import { inputClass, primaryButton, secondaryButton } from "@/lib/auth/styles";
+import { inputClass } from "@/lib/auth/styles";
 
-export function DecisionForm({ requestId, retryRole }: { requestId: string; retryRole?: string | null }) {
+export function DecisionForm({
+  requestId,
+}: {
+  requestId: string;
+  retryRole?: string | null;
+}) {
   const [state, action, pending] = useActionState(decideJoinRequest, {});
-  return <form action={action} className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto_auto]">
-    <input type="hidden" name="requestId" value={requestId} />
-    <label className="grid gap-1 text-sm">Role
-      {retryRole && <input type="hidden" name="role" value={retryRole} />}
-      <select name={retryRole ? undefined : "role"} defaultValue={retryRole ?? "branch_manager"} className={inputClass} disabled={pending || Boolean(retryRole)}>
-        <option value="branch_manager">Branch manager</option>
-        <option value="machine_maintenance">Machine maintenance</option>
-        <option value="lpg_maintenance">LPG maintenance</option>
-      </select>
-    </label>
-    <button name="decision" value="approve" disabled={pending} className={primaryButton}>Approve</button>
-    {!retryRole && <button name="decision" value="reject" disabled={pending} className={secondaryButton}>Reject</button>}
-    {state.message && <div className="sm:col-span-3"><Notice kind={state.success ? "success" : "error"}>{state.message}</Notice></div>}
-  </form>;
+
+  const approveButtonClass =
+    "inline-flex min-h-10 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-ink bg-ink px-4 py-2 text-xs font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted motion-reduce:transition-none";
+
+  const rejectButtonClass =
+    "inline-flex min-h-10 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-control bg-surface px-3 py-2 text-xs font-medium text-muted transition-colors duration-150 enabled:hover:border-negative enabled:hover:bg-negative/15 enabled:hover:text-negative focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted motion-reduce:transition-none";
+
+  return (
+    <form action={action} className="mt-3 flex flex-wrap items-center gap-2.5" aria-busy={pending}>
+      <input type="hidden" name="requestId" value={requestId} />
+
+      <button
+        type="submit"
+        name="decision"
+        value="approve"
+        disabled={pending}
+        className={approveButtonClass}
+      >
+        <Check className="size-3.5" aria-hidden="true" />
+        {pending ? "Approving…" : "Approve"}
+      </button>
+
+      <button
+        type="submit"
+        name="decision"
+        value="reject"
+        disabled={pending}
+        className={rejectButtonClass}
+      >
+        <X className="size-3.5" aria-hidden="true" />
+        {pending ? "Rejecting…" : "Reject"}
+      </button>
+
+      {state.message && (
+        <div className="w-full mt-2">
+          <Notice kind={state.success ? "success" : "error"}>{state.message}</Notice>
+        </div>
+      )}
+    </form>
+  );
 }

@@ -10,8 +10,16 @@ export async function createClient(writable = false) {
     cookieOptions: { sameSite: "lax", secure: getSiteUrl()?.startsWith("https:") ?? false },
     cookies: {
       getAll: () => store.getAll(),
-      // Server Components cannot write cookies; Proxy refreshes before rendering.
-      setAll: writable ? (values) => { for (const { name, value, options } of values) store.set(name, value, options); } : undefined,
+      // Server Components cannot write cookies; proxy refreshes sessions before rendering.
+      // Providing setAll avoids 'originalSetAll is not a function' in @supabase/ssr.
+      setAll: (values) => {
+        try {
+          for (const { name, value, options } of values) store.set(name, value, options);
+        } catch {
+          // Cookie writes are not permitted in Next.js Server Components.
+          // Ignored safely as proxy refreshes tokens before rendering.
+        }
+      },
     },
   });
 }

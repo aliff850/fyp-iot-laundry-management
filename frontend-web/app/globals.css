@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@200..800&display=swap');
 @import "tailwindcss";
 
 @theme {
@@ -17,7 +18,7 @@
   --color-positive: #79c5a6;
   --color-warning: #dfb463;
   --color-negative: #ef8798;
-  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+  --font-sans: "Manrope", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
 
   /* Compatibility aliases for prototype components awaiting their own phase. */
@@ -26,4 +27,24 @@
   --color-msu-light: var(--color-raised);
   --color-msu-border: var(--color-control);
   --color-msu-gold: var(--color-accent);
+}
+
+body {
+  font-family: var(--font-sans);
+  font-optical-sizing: auto;
+  font-weight: 400;
+  font-style: normal;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+[role="heading"] {
+  font-family: var(--font-sans);
+  font-optical-sizing: auto;
+  font-weight: 800 !important;
+  font-style: normal;
 }
