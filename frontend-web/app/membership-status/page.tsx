@@ -36,7 +36,7 @@ export default async function MembershipStatusPage({ searchParams }: { searchPar
       {membership?.state === "approved_unassigned" && <Notice kind="info">Your role is approved, but no branch is assigned. Branch operations are unavailable.</Notice>}
       {membership?.state === "deactivated" && <Notice>Your account or organization is inactive. Contact the organization owner.</Notice>}
       <RefreshButton>Check again</RefreshButton>
-      <SignOutButton />
+      <SignOutButton variant="button" />
     </div>
   </AuthShell>;
 }

@@ -87,5 +87,5 @@ process.on("exit", () => { for (const child of [...children].reverse()) stopChil
 
 console.log("Starting FastAPI at http://127.0.0.1:8000 and Next.js at http://localhost:3000");
 console.log("Press Ctrl+C to stop both services.");
-start("FastAPI", python, ["-m", "uvicorn", "main:app", "--app-dir", "backend", "--host", "127.0.0.1", "--port", "8000"], root);
+start("FastAPI", python, ["-m", "uvicorn", "main:app", "--app-dir", "backend", "--reload", "--host", "127.0.0.1", "--port", "8000"], root);
 start("Next.js", process.execPath, [next, "dev", "--port", "3000"], web);

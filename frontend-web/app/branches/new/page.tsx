@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { Notice } from "@/components/auth/AuthForm";
-import { WorkspaceShell } from "@/components/workspace/WorkspaceShell";
-import { BranchCreateForm } from "@/components/workspace/BranchCreateForm";
+import { WorkspaceShell } from "@/components/workspace/layout/WorkspaceShell";
+import { BranchCreateForm } from "@/components/workspace/branches/BranchCreateForm";
 import { getManagerOptions, getMembership } from "@/lib/auth/business";
 
 export const metadata: Metadata = { title: "Create branch" };

@@ -50,7 +50,7 @@ For frontend work, read [frontend-web/AGENTS.md](frontend-web/AGENTS.md) and the
 
 Run commands in the indicated directory. Commands describe available entry points; they are not evidence that a check passed. Do not install, upgrade, deploy or upload firmware merely to validate documentation.
 
-**Server cleanup after edits:** Stop every development server and background helper running for this repository before ending a task, including Next.js/npm, FastAPI/Uvicorn, Playwright web servers and any gateway service started for verification. This applies to servers left running from earlier work as well as ones started in the current turn, unless the user explicitly asks to keep them running. Verify the process command line and workspace path before stopping a process; never kill by executable name or port alone. Check that the relevant local ports no longer have listeners, and report any process that could not be stopped. Do not stop unrelated services.
+**HYPER-STRICT MANDATORY RULE — Complete Process & Port Teardown:** After performing ANY changes, verification, test runs, or commands, you MUST immediately stop and kill ALL background tasks, development servers, and spawned child processes for this repository before concluding the turn. This includes Next.js (`node.exe`), FastAPI/Uvicorn (`python.exe` parent processes and all multiprocessing workers such as `spawn_main`), Playwright, Vite, and test helpers. On Windows, stopping parent processes alone frequently leaves spawned Python multiprocessing children (`spawn_main`) orphan-holding port 8000; you MUST inspect the entire process tree and terminate all associated child workers. Never leave ports 8000 or 3000 occupied. Always explicitly verify using `netstat -ano | findstr 8000` and `netstat -ano | findstr 3000` that no listeners or orphaned sockets remain. If any process or listener remains, you are NOT done.
 
 | Working directory | Command | Purpose / limit |
 |---|---|---|
@@ -90,7 +90,7 @@ Follow nearby code after checking that it satisfies the PRD. Existing prototype 
 - Python: Pydantic `BaseModel`/`Field` schemas, `snake_case` names, explicit units, validation at MQTT/HTTP boundaries. Separate rules, persistence and transport as the prototype grows.
 - Web: typed React function components, PascalCase component files, existing `@/` imports, API logic in `lib/` and aligned types in `types/`.
 - Flutter: existing `models/`, `services/`, `screens/`, `widgets/` and `theme/` boundaries; keep transport outside widgets. Do not retain privileged operator workflows as public customer screens.
-- Follow [docs/DESIGN.md](docs/DESIGN.md): app-owned presentation uses Tailwind utilities and the shared color/font theme. Only isolated unmodified Leaflet vendor CSS/generated map positioning is exempt. Preserve the established visual direction and use accessible responsive layouts. Mobile operator journeys prioritize incidents/tasks; washers and dryers remain separated.
+- Follow [docs/DESIGN.md](docs/DESIGN.md) strictly: whatever visual design, UI component layout, typography, palette, or spacing is implemented must refer STRICTLY to [docs/DESIGN.md](docs/DESIGN.md). Never introduce extraneous decorative text, redundant placeholder messages, or unneeded nested elements in tight containers (such as table cells) that disrupt layout alignment or row height uniformity. App-owned presentation uses Tailwind utilities and the shared color/font theme. Only isolated unmodified Leaflet vendor CSS/generated map positioning is exempt. Preserve the established visual direction and use accessible responsive layouts. Mobile operator journeys prioritize incidents/tasks; washers and dryers remain separated.
 - Use one provider contract for server/client models and one edge-owned fuel/environment interpretation. Browsers must not maintain divergent gas severity formulas.
 
 Examples of existing repository style:
@@ -130,6 +130,7 @@ Proceed autonomously with reversible implementation choices inside approved scop
 - Set a measured cylinder weight to a nominal full capacity, mute branch-wide alarms during a tank swap, or treat stale/invalid data as proof of clearance.
 - Commit secrets or generated build output; hand-edit lockfiles; overwrite user work; reset the tree to resolve unrelated changes.
 - Skip/delete meaningful failing tests, weaken thresholds, or add suppressions to manufacture a passing result. Explain genuine pre-existing failures and fix task-related defects.
+- Leave background processes, dev servers, or orphaned child workers (e.g. Uvicorn multiprocessing `spawn_main` holding port 8000 or Next.js holding port 3000) running after executing tasks or modifying code. Always verify port release.
 
 ## Verification and handoff
 

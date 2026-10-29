@@ -32,7 +32,12 @@ app.include_router(branches_router)
 @app.middleware("http")
 async def retire_unsecured_prototype(request, call_next):
     path = request.url.path
-    allowed = path in {"/api", "/api/status", "/public/organizations", "/me", "/onboarding", "/join-requests", "/branches", "/branches/manager-options"} or path.startswith("/join-requests/")
+    allowed = (
+        path in {"/api", "/api/status", "/public/organizations", "/me", "/onboarding", "/join-requests", "/branches", "/branches/manager-options", "/personnel"}
+        or path.startswith("/join-requests/")
+        or path.startswith("/branches/")
+        or path.startswith("/personnel/")
+    )
     if not allowed:
         from fastapi.responses import JSONResponse
         return JSONResponse({"detail": "Prototype route retired pending authorized migration"}, status_code=410)
@@ -547,6 +552,8 @@ def api_status():
             "/join-requests/{id}/decision",
             "/branches",
             "/branches/manager-options",
+            "/personnel",
+            "/personnel/{id}/role",
         ],
     }
 
@@ -738,55 +745,8 @@ def get_maintenance_logs(machine_id: str):
     return [l for l in maintenance_logs_db if l.machine_id == machine_id]
 
 # ------------------------------------------
-# Multi-Cylinder LPG Management (FR-W10, FR-W11)
+# Multi-Cylinder LPG Management (FR-W10, FR-W11) - Migrated to branches.py
 # ------------------------------------------
-
-@app.get("/branches/{branch_id}/lpg", response_model=List[LpgCylinder])
-def get_branch_lpg(branch_id: str):
-    """Returns multi-cylinder manifold rack telemetry per FR-W10"""
-    if branch_id not in lpg_manifolds_db:
-        raise HTTPException(status_code=404, detail="Branch LPG manifold not found")
-    return lpg_manifolds_db[branch_id]
-
-@app.post("/branches/{branch_id}/lpg/{cylinder_id}/maintenance")
-def toggle_cylinder_maintenance(branch_id: str, cylinder_id: str, req: LpgMaintenanceRequest):
-    """Toggles tank swap maintenance mode and performs tare recalibration per FR-W11"""
-    if branch_id not in lpg_manifolds_db:
-        raise HTTPException(status_code=404, detail="Branch LPG manifold not found")
-    
-    cylinders = lpg_manifolds_db[branch_id]
-    target = next((c for c in cylinders if c.cylinder_id == cylinder_id), None)
-    if not target:
-        raise HTTPException(status_code=404, detail="Cylinder not found in branch manifold")
-    
-    target.maintenance_mode = req.enabled
-    
-    if req.action == "tare_full":
-        target.weight_kg = 50.0
-        target.capacity_percent = 100.0
-        target.status = "HEALTHY"
-    elif req.action == "tare_empty":
-        target.weight_kg = 0.0
-        target.capacity_percent = 0.0
-        target.status = "CRITICAL"
-    else:
-        # Re-evaluate status based on weight
-        if target.maintenance_mode:
-            target.status = "MAINTENANCE"
-        else:
-            pct = (target.weight_kg / target.max_capacity_kg) * 100.0
-            target.capacity_percent = round(pct, 1)
-            if pct < 5.0:
-                target.status = "CRITICAL"
-            elif pct < 15.0:
-                target.status = "WARNING"
-            else:
-                target.status = "HEALTHY"
-
-    return {
-        "message": f"Cylinder {cylinder_id} maintenance updated",
-        "cylinder": target,
-    }
 
 # ------------------------------------------
 # Environmental Safety Endpoints (FR-W12, FR-W13)

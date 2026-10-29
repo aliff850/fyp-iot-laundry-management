@@ -194,3 +194,28 @@ def test_prepared_migration_declares_denied_browser_access():
         assert f"alter table public.{table} enable row level security" in sql
     assert "public.join_request_decisions from anon, authenticated" in sql
     assert "grant all" not in sql.lower()
+
+
+def test_decide_approval_without_role_succeeds(monkeypatch):
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.side_effect = [
+        {"organization_id": ORG_ID},  # _owner_organization
+        {"id": REQUEST_ID, "user_id": UUID(OTHER_ID), "state": "pending"},  # join_request row
+        None,  # previous decision
+    ]
+    @contextmanager
+    def database():
+        yield conn
+    monkeypatch.setattr(onboarding, "_database", database)
+    monkeypatch.setattr(onboarding, "_admin_user", lambda uid: user())
+    synced = []
+    def fake_role_metadata(uid, role, u):
+        synced.append((uid, role))
+    monkeypatch.setattr(onboarding, "_role_metadata", fake_role_metadata)
+
+    result = onboarding.decide(REQUEST_ID, onboarding.Decision(decision="approve"), user())
+    assert result == {"id": str(REQUEST_ID), "state": "approved_unassigned"}
+    assert synced == [(str(UUID(OTHER_ID)), None)]
+    sql = [call.args[0] for call in conn.execute.call_args_list]
+    assert any("insert into public.join_request_decisions" in s for s in sql)
+    assert any("state='approved_unassigned'" in s for s in sql)

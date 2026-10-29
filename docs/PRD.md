@@ -156,7 +156,7 @@ Personnel membership states are pending, rejected, approved-unassigned and appro
 | `/branches/{branchId}/machines/{machineId}` | Machine detail; `tab=state`, `tab=programs` or `tab=parameters`; permitted machine readers only |
 | `/branches/{branchId}/lpg` | Owner, assigned manager and assigned LPG specialist |
 | `/branches/{branchId}/analytics` | Analytics & Revenue; owner/assigned manager |
-| `/branches/{branchId}/customer-reports`; `/branches/{branchId}/customer-reports/{reportId}` | Owner/assigned manager report list/detail |
+| `/branches/{branchId}/customer-reports`; `/branches/{branchId}/customer-reports/{reportId}` | Owner, assigned manager and assigned maintenance crew (`machine_maintenance`, `lpg_maintenance`) report list/detail |
 | `/branches/{branchId}/personnel` | Owner manage; assigned manager view-only |
 | `/branches/{branchId}/details` | Owner-only branch details/hardware configuration |
 | `/branches/{branchId}/incidents/{incidentId}` | Permission/domain-aware incident detail entered from notifications/push/work links |
@@ -179,7 +179,7 @@ State includes supported phase/time/temperature/RPM plus usage/cycle history; in
 
 **LPG & Safety.** Show area-specific incidents, per-position fuel/status/replacement cards, and shared gas/temperature/humidity readings separately. Default to four commissioned positions, configurable only through owner hardware setup; there is no casual operational Add Tank action. If an aggregate fuel percentage is supplied, weight it by valid corresponding capacities and state the measurement coverage; do not sum percentages. Do not sum PPM or imply per-cylinder leak localization from a shared sensor. Preserve measured gross/tare/net distinctions, source/quality labels and the gateway-confirmed replacement workflow.
 
-**Customer reports.** Owner/manager selects a report, investigates with notes, links an existing relevant incident or creates eligible maintenance work as needed, and resolves or dismisses with a reason. Status is received → investigating → resolved/dismissed; work assignment is recorded separately. A report is an unverified service observation, not an edge-detected physical condition. Specialists receive sanitized relevant work context inside their permitted area, not the reports page or reporter contact details. The intake producer/customer submission is a separate scope; unavailable integration is not an empty queue, and test reports must be labeled simulated.
+**Customer reports.** Owner, assigned branch manager, and assigned maintenance crew (`machine_maintenance`, `lpg_maintenance`) can open the branch Reports portal, structured into two distinct sections: **Ongoing Reports** (`received`, `investigating`) and **Report History / Resolved Reports** (`resolved`, `dismissed`). Staff select a report, investigate with notes, flag or coordinate specialist maintenance work as needed, and resolve or dismiss with a reason. Status is received → investigating → resolved/dismissed; work assignment is recorded separately. A report is an unverified service observation, not an edge-detected physical condition. The intake producer/customer submission is a separate scope; unavailable integration is not an empty queue, and test reports must be labeled simulated.
 
 ### 4.5 Personnel, Account and organization lifecycle
 
@@ -414,10 +414,10 @@ A condition detected during WAN loss is recorded locally. No remote push is prom
 
 | ID | Requirement and acceptance condition |
 |---|---|
-| CR-01 | Owner/assigned manager lists/opens only reports for their organization/branches, with received/investigating/resolved/dismissed status, source, asset, description and history. Missing integration, empty queue and request failure differ. |
-| CR-02 | Investigation records actor/time/notes and may link an existing incident or create work for eligible branch specialists. Avoid duplicate work on repeated submissions; report text alone is not evidence of an active/cleared physical condition. |
+| CR-01 | Owner, assigned manager, and assigned maintenance crew (`machine_maintenance`, `lpg_maintenance`) list/open only reports for their organization/branches, organized into Ongoing Reports (`received`, `investigating`) and Report History (`resolved`, `dismissed`), with source, asset, description and history. Missing integration, empty queue and request failure differ. |
+| CR-02 | Investigation records actor/time/notes and may link an existing incident or flag work for eligible branch specialists. Avoid duplicate work on repeated submissions; report text alone is not evidence of an active/cleared physical condition. |
 | CR-03 | Resolve/dismiss with a reason and history. A report transition cannot clear an edge condition or close an active/unknown physical incident. Linked work/incident progress remains independently visible. |
-| CR-04 | Reporter contact/full report details are owner/manager-only. Specialists receive sanitized relevant work context inside their permitted area, not report-list permission. Customer submission/intake is a separate scope; test reports are labeled simulated. |
+| CR-04 | Unassigned personnel and foreign organizations are rejected from branch report access. Customer submission/intake is a separate scope; test reports are labeled simulated. |
 
 ## 7. Boundary contracts and compatibility
 

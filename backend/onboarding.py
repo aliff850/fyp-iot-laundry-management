@@ -107,7 +107,7 @@ def _intent(user):
     raise HTTPException(422, "Registration intent is invalid")
 
 
-def _role_metadata(user_id: str, role: str, user: dict):
+def _role_metadata(user_id: str, role: str | None, user: dict):
     url, _, _ = _configuration()
     key = os.getenv("SUPABASE_SECRET_KEY", "")
     if not key:
@@ -130,7 +130,7 @@ def _role_metadata(user_id: str, role: str, user: dict):
     try:
         updated = response.json()
         updated = updated.get("user", updated)
-        if updated["app_metadata"]["role"] != role:
+        if updated["app_metadata"].get("role") != role:
             raise KeyError("role")
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise HTTPException(503, "Role synchronization could not be confirmed; retry") from exc
@@ -271,8 +271,8 @@ class Decision(BaseModel):
 
 @router.post("/join-requests/{request_id}/decision")
 def decide(request_id: UUID, payload: Decision, user=Depends(_user)):
-    if (payload.decision == "approve" and payload.role not in PERSONNEL_ROLES) or (payload.decision == "reject" and payload.role is not None):
-        raise HTTPException(422, "Select a personnel role only when approving")
+    if (payload.decision == "approve" and payload.role is not None and payload.role not in PERSONNEL_ROLES) or (payload.decision == "reject" and payload.role is not None):
+        raise HTTPException(422, "Select a valid personnel role or leave unassigned when approving")
     with _database() as conn:
         organization = _owner_organization(conn, user["id"])
         row = conn.execute(
@@ -323,11 +323,11 @@ def decide(request_id: UUID, payload: Decision, user=Depends(_user)):
         _role_metadata(str(row["user_id"]), payload.role, target)
         with _database() as conn:
             conn.execute(
-                "update public.memberships set state='approved_unassigned', updated_at=now() where user_id=%s and state='approval_pending' and role=%s",
+                "update public.memberships set state='approved_unassigned', updated_at=now() where user_id=%s and state='approval_pending' and (role is not distinct from %s)",
                 (row["user_id"], payload.role),
             )
             conn.execute(
-                "update public.join_requests set state='approved' where id=%s and state='approval_pending' and decision_role=%s",
+                "update public.join_requests set state='approved' where id=%s and state='approval_pending' and (decision_role is not distinct from %s)",
                 (request_id, payload.role),
             )
     return {"id": str(request_id), "state": "approved_unassigned" if payload.decision == "approve" else "rejected"}

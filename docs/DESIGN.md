@@ -121,6 +121,8 @@ Use the same precision and unit conventions for the same metric. Numeric zero is
 
 The Pi's 26px title maps to `text-2xl`, and its 13px metadata maps to `text-xs` or `text-sm` according to purpose. These are deliberate standard-scale adaptations. The 36px leading reading maps to `text-4xl`. Do not introduce custom font sizes to reproduce every pixel.
 
+The web application uses the **Manrope** geometric sans-serif variable typeface (`wght@200..800`) across all workspace views. Titles (`h1`–`h6`, `[role="heading"]`) receive the heaviest font weight (`800` / ExtraBold), while body copy, metadata, and general content use normal/light weights (`400`).
+
 ### 3.2 Shell and panel recipes
 
 | Element | Complete class recipe |
@@ -145,6 +147,103 @@ The seven-track desktop grid approximates the reference's leading-panel proporti
 The maximum content width is 1440px at Tailwind's default spacing scale. Mobile side padding is 16px, tablet padding 24px, and large-screen padding 40px. Panel padding becomes 28px on larger screens; mobile panels use 20px horizontal and 16px vertical padding. The previous guide's blanket prohibition on larger padding and 24px gaps is retired.
 
 Use standard mobile-first `sm`, `md`, `lg`, and `xl` variants, not the Pi's custom 1100px/340px media queries. The documented overview changes at `md` and `xl`. At intermediate widths, wrap controls and metadata before they collide. If a product screen has sidebar navigation, fold it on small screens; the Pi's top-bar layout does not require introducing a sidebar.
+
+### 3.3 Primary layout margins, padding, and spacing system
+
+Extracted directly from the established workspace implementations in `frontend-web/app/branches/page.tsx` and `frontend-web/app/personnel/page.tsx`, the following spacing, margins, and padding rules constitute the authoritative standard across all operator views in the web workspace.
+
+#### Layout Spacing Reference Table
+
+| Structural Layer | Element / Role | Tailwind Utility Recipe | Visual Purpose & Proportions |
+|---|---|---|---|
+| **Viewport & Shell** | Max Content Constraint | `mx-auto w-full max-w-360` | Centers content up to 1440px desktop ceiling |
+| | Horizontal Gutter | `px-4 md:px-6 xl:px-10` | Responsive gutters: 16px (mobile), 24px (tablet), 40px (desktop) |
+| | Shell Vertical Spacing | `py-6 md:pt-9 md:pb-7` | 24px mobile vertical rhythm, 36px top / 28px bottom on larger screens |
+| | Header Layout Bounds | `min-h-16 md:min-h-19` | 64px mobile header, 76px tablet/desktop header with 16px row gap (`gap-4`) |
+| | Footer Layout Bounds | `px-4 py-6 md:px-6 xl:px-10` | 24px vertical padding with border-t line separator |
+| **Page-Level Rhythm** | Primary Section Stack | `space-y-8` | 32px vertical gap separating page header and top-level sections |
+| | Context / Breadcrumb Bar | `mb-6 flex items-center gap-2 text-xs` | 24px bottom margin preceding page content |
+| | Page Heading Row | `flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between` | Responsive header row stacking on mobile and bottom-aligning on tablet/desktop |
+| | Page Title Typography | `text-2xl font-semibold tracking-tight text-ink` | Standalone primary page or view heading (no eyebrow kicker or narrative blurb) |
+| **Sections & Panels** | Standard Section Card | `rounded-md border border-line bg-surface p-5 md:p-6` | Primary surface panel with 20px mobile / 24px tablet+ desktop padding |
+| | Narrative / Reading Card | `rounded-md border border-line bg-surface px-5 py-4 md:p-7` | Spacious card for high-level operations or empty state messaging |
+| | Section Header Row | `flex flex-wrap items-center justify-between gap-2 border-b border-rule pb-3` | Divided card title row with 12px bottom padding before the divider |
+| | Section Header Title | `text-base font-semibold text-ink` | Primary section label (standalone, without explanatory subtitle paragraphs) |
+| | Section Content Offset | `mt-4` | 16px top margin establishing consistent spacing from section header to body |
+| **Nested Wells & Cards** | Compact Metric Stat Tile | `flex flex-col justify-between rounded-md border border-line bg-surface p-3` | 12px padding for dense grid metrics |
+| | Metric Grid Spacing | `grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6` | 10px grid gap for quick numerical KPI scannability |
+| | Entity / Request Well | `flex flex-col justify-between rounded-md border border-line bg-raised/40 p-4 transition-colors hover:bg-raised/60` | 16px padding within nested wells and secondary cards |
+| | Nested Card Grid Spacing | `grid gap-3 md:grid-cols-2` | 12px grid gap between sibling entity cards |
+| **Data Tables & Rows** | Table Container | `overflow-x-auto rounded-md border border-rule` | Responsive scroll container with 1px outer rule border |
+| | Table Header Cell | `px-4 py-3 border-b border-rule bg-raised/30 text-xs font-normal text-muted` | 16px horizontal, 12px vertical padding on subdued header row |
+| | Table Body Cell | `px-4 py-3.5` | 16px horizontal, 14px vertical cell rhythm |
+| | Numeric Table Cell | `px-4 py-3.5 text-right tabular-nums whitespace-nowrap` | Right-aligned numeric data cells |
+| | Divided List Row | `divide-y divide-rule py-3` | 12px vertical padding on divided list items |
+
+#### Spacing Implementation Rules
+
+1. **Page Containers Must Not Artificially Restrict Width**: Pages hosted within `<WorkspaceShell>` must use `<div className="space-y-8">` without introducing arbitrary narrow wrappers (e.g. `max-w-3xl`) unless explicitly designed for focused single-column wizards (such as auth forms). Full-width structured layouts allow multi-column responsive scaling (`lg:grid-cols-2` or `lg:grid-cols-4`).
+2. **Clean Standalone Page Headings**: Top-level page and view headers must render only the primary heading (`text-2xl font-semibold tracking-tight text-ink`) and any relevant action controls—never prepend an eyebrow kicker span above the title or append an instructional narrative paragraph below it.
+3. **Divided Section Headers**: When a section contains a title and filter/action controls, wrap them in a flex container without adding filler subtitle descriptions below the section title.
+4. **Nested Wells Use `bg-raised/40`**: Nested wells and detail cards within a `bg-surface` panel use `rounded-md border border-line bg-raised/40 p-4 transition-colors hover:bg-raised/60`.
+
+### 3.4 Strictly excluded design elements (never include when implementing pages)
+
+Whenever implementing or modifying any page, view, card, or modal, **strictly exclude** all of the following visual clutter and boilerplate text patterns:
+
+1. **No Page Eyebrow / Kicker Labels Above Page Titles**:
+   - Never place a small category/context span above the primary page or view heading.
+   - **Prohibited pattern**:
+     ```tsx
+     // ❌ NEVER DO THIS
+     <span className="text-xs font-medium text-muted">
+       Customer Support &amp; Maintenance Portal
+     </span>
+     ```
+2. **No Verbose Explanatory / Narrative Paragraphs Below Page Titles**:
+   - Never add multi-clause instructional descriptions explaining what a page is for below the page heading.
+   - **Prohibited pattern**:
+     ```tsx
+     // ❌ NEVER DO THIS
+     <p className="mt-1 max-w-2xl text-sm text-muted">
+       Review customer-submitted machine and facility observations, log investigation notes, coordinate maintenance crew action, and inspect resolved report history.
+     </p>
+     ```
+3. **No Section Header Subtitles / Filler Descriptions (or Redundant Section Count Pills)**:
+   - Never add explanatory subtitle paragraphs underneath section titles (e.g., under `Ongoing Reports` or `Report History`), and do not attach redundant count pills next to section headings when filter buttons or KPI cards already convey counts.
+   - **Prohibited patterns**:
+     ```tsx
+     // ❌ NEVER DO THIS
+     <span className="rounded border border-rule bg-raised px-2 py-0.5 text-xs font-semibold text-ink tabular-nums">
+       {allOngoingReports.length}
+     </span>
+     <p className="text-xs text-muted">
+       Active customer issues requiring initial triage or ongoing maintenance investigation.
+     </p>
+     <p className="text-xs text-muted">
+       Completed support tickets, recorded maintenance outcomes, and dismissed reports.
+     </p>
+     ```
+4. **No Inline Dot-Separated Timestamps or Redundant `Simulated` Badges in Card Metadata Rows**:
+   - Do not append inline middle-dot timestamps (`· {formatDate(...)}`) or `Simulated` badges to card status/badge headers.
+   - **Prohibited patterns**:
+     ```tsx
+     // ❌ NEVER DO THIS
+     <span className="rounded border border-rule bg-raised px-2 py-0.5 text-[11px] font-medium text-muted">
+       Simulated
+     </span>
+     <span className="text-faint tabular-nums">
+       · {formatDate(isHistory ? report.updated_at : report.created_at)}
+     </span>
+     ```
+5. **No Internal PRD / Spec Requirement IDs in UI Markup**:
+   - Never display internal specification or requirement codes (such as `CR-02`, `CR-03`, `FM-01`, `FE-04`, `S-27`, etc.) inside cards, form headers, or modals. Requirement IDs belong in code comments, tests, and documentation—never in user-facing JSX.
+   - **Prohibited patterns**:
+     ```tsx
+     // ❌ NEVER DO THIS
+     <span className="text-[11px] text-faint">CR-02</span>
+     <span className="text-[11px] text-faint">CR-03</span>
+     ```
 
 ## 4. Component recipes
 
@@ -252,7 +351,7 @@ These are filter buttons, not ARIA tabs. A true tabbed interface must implement 
 
 Every mark has words: for example, Synced, Pending, Quarantined, Unknown, Offline, or Simulated. These are separate meanings, not interchangeable states. Do not color normal zero counts as warnings or render a failure label merely because a machine is offline. Running/paused labels use their actual state wording; the design does not infer machine state from a palette color.
 
-### 4.6 Tables
+### 4.6 Tables and tight container restraint
 
 - Wrapper: `max-h-120 w-full overflow-auto rounded-md bg-surface focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent`. Give an independently keyboard-scrollable wrapper an accessible name and a keyboard focus stop where needed.
 - Long diagnostic table: `w-full min-w-220 border-collapse text-sm`. Ordinary short tables use `w-full border-collapse text-sm` instead.
@@ -264,6 +363,11 @@ Every mark has words: for example, Synced, Pending, Quarantined, Unknown, Offlin
 - Footer: `flex flex-wrap justify-between gap-3 border-t border-line px-5 py-3.5 text-xs text-faint md:px-7`.
 
 Keep headers on the same surface as rows: no zebra stripes or saturated header bands. Numerical headers and values share the same right edge. Pin identity only where horizontal scrolling is genuinely needed, and keep all required diagnostic fields available. A selectable row uses `bg-navy-selected` with `text-ink` or `text-muted` throughout; replace faint sublines in that selected state.
+
+**Tight container restraint and cell alignment:**
+- **No redundant placeholder messages**: Never clutter tight elements (such as table cells or compact controls) with redundant placeholder text or italic messages (e.g. do not add `"No branch assigned yet"` or `"None"` next to interactive buttons). When an interactive trigger already displays an informative placeholder (such as `"Assign branches…"`), any additional message is redundant, bloats vertical cell height, and causes row misalignment across sibling columns.
+- **Single-purpose, vertically aligned cells**: Keep table cells compact and focused. When a cell hosts an interactive control (such as a dropdown), maintain a single uniform baseline matching neighboring action cells.
+- **Portaling for dropdowns & floating menus in scrollable tables**: Any dropdown menu, popover, or floating select rendered inside an `overflow-x-auto` or `overflow-auto` table container must be portaled to `document.body` (using React Portals) with fixed viewport positioning. Never allow dropdown popovers to render inline within scrollable table containers, as CSS overflow clipping will cut them off or trap them inside the table boundary.
 
 ### 4.7 Fuel, environment, and delivery panels
 

@@ -52,4 +52,21 @@ describe("FastAPI onboarding boundary", () => {
     expect(result).toMatchObject({ ok: false, status: 503 });
     if (!result.ok) expect(result.message).toContain("may have completed");
   });
+
+  it("accepts approved_unassigned state with null operational role", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      state: "approved_unassigned",
+      role: null,
+      organization: { id: "00000000-0000-0000-0000-000000000001", name: "Test Org" },
+    })));
+    const result = await getMembership("/me");
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        state: "approved_unassigned",
+        role: null,
+        organization: { id: "00000000-0000-0000-0000-000000000001", name: "Test Org" },
+      },
+    });
+  });
 });

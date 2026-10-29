@@ -146,35 +146,19 @@ Any personnel under an organization will be removed and deactivated too (need to
 
 \-- The Branch Overview --
 
-
-
 The branch overview provides all details regarding a specific branch.
-
-
 
 Top of page shows branch name and address.
 
-
-
 Beneath this, is notifications section that shows notifications for this specific branch, once again could be a machine breakdown, machine maintenance, low LPG gas warning, gas leak warning etc.
-
-
 
 Beneath this section, there will once again be some basic number stats; number of machines, number of machines active, machines down, personnel assigned to this branch, number of customer reports received.
 
-
-
 Below that will be visuals and charts; cumulative water usage, cumulative gas usage, cumulative machine usage (cycles), cumulative revenue.
-
-
 
 The branch overview has multiple different views. The first page would be an overview page showing the specific branch metrics such as for example maybe number of machines, number of gas tanks, number of employees. Then below that will be statistics, such as for example water usage, gas usage, and revenue.
 
-
-
 Owner and Branch manager (employee assigned to manage branch) will be able to see these statistics. However, maintenance personnel (laundry machine \& gas company employees) would not be able to see this they only have access to specific pages which will be detailed further.
-
-
 
 On left side of page, would be a navigation menu which has multiple different items;
 
@@ -194,36 +178,27 @@ On left side of page, would be a navigation menu which has multiple different it
 
 The machine overview page provides an overview of all machines within a specific branch.
 
-
-
 Top of page will have notifications; showing specific messages for each machine (for example: dryer #1 down, washer #1 undergoing maintenance).
 
 &#x20;
 
 Beneath notifications will be basic statistics; machines in branch, machines running, machines down.
 
-
-
 Beneath this section, a grid with cards for each machine in the branch. The grid responds to screen size; for large screens (laptops/PCs) it would have four columns.
 
-
-
 Above the grid, there will be options to display dryers, washers, or washer/dryer combos.
-
-
 
 Each machine card would have:
 
 A title showing machine name (Washer #1, Dryer #1 etc)
 
-An SVG image that represents the machine
+A full sized SVG image that represents the machine.
 
 A section beneath that showing machine status (idle, running, error)
 
 A section showing remaining cycle time
 
 Section showing three buttons to start pause or stop a machine.
-
 
 
 When a card is clicked, it would open a almost full-page modal. The modal would have three different views. 
