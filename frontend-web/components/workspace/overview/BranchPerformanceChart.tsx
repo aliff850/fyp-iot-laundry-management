@@ -5,6 +5,7 @@ import Chart from "chart.js/auto";
 import type { ChartConfiguration } from "chart.js";
 import {
   BarChart3,
+  Building2,
   DollarSign,
   Droplets,
   Flame,
@@ -24,15 +25,22 @@ export interface BranchPerformanceDataPoint {
   gas_kg?: number;
 }
 
+export interface BranchPerformanceSummary {
+  today_revenue_myr: number | null;
+  today_cycles: number | null;
+  fleet_utilization_rate: number | null;
+  lpg_consumed_kg: number | null;
+}
+
 export interface BranchPerformanceChartProps {
-  branch: Pick<BranchDetail, "id" | "name">;
-  performance?: {
-    today_revenue_myr: number | null;
-    today_cycles: number | null;
-    fleet_utilization_rate: number | null;
-    lpg_consumed_kg: number | null;
-  } | null;
+  /** Single-branch mode: statistics scoped strictly to one specific branch */
+  branch?: Pick<BranchDetail, "id" | "name">;
+  /** Multi-branch mode: statistics across multiple branches on /branches */
+  branches?: Array<Pick<BranchDetail, "id" | "name">>;
+  performance?: BranchPerformanceSummary | null;
+  performanceByBranch?: Record<string, BranchPerformanceSummary | null | undefined>;
   data?: BranchPerformanceDataPoint[];
+  dataByBranch?: Record<string, BranchPerformanceDataPoint[] | undefined>;
 }
 
 interface MetricConfig {
@@ -45,10 +53,19 @@ interface MetricConfig {
   icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" | "false" }>;
   getValue: (
     timeframe: BranchTimeframeMode,
-    performance?: BranchPerformanceChartProps["performance"],
+    performance?: BranchPerformanceSummary | null,
     data?: BranchPerformanceDataPoint[]
   ) => { value: string; isReal: boolean };
 }
+
+const BRANCH_SERIES_COLORS = [
+  "#79c5a6",
+  "#ef6268",
+  "#5ea1e0",
+  "#dfb463",
+  "#a78bfa",
+  "#f472b6",
+];
 
 const METRICS: Record<BranchMetricKey, MetricConfig> = {
   revenue: {
@@ -120,17 +137,108 @@ const METRICS: Record<BranchMetricKey, MetricConfig> = {
   },
 };
 
+function extractPointMetric(
+  pt: BranchPerformanceDataPoint | undefined,
+  activeMetric: BranchMetricKey
+): number | null {
+  if (!pt) return null;
+  if (activeMetric === "revenue") return pt.revenue_myr ?? null;
+  if (activeMetric === "cycles") return pt.cycle_count ?? null;
+  if (activeMetric === "water") return pt.water_l ?? null;
+  if (activeMetric === "gas") return pt.gas_kg ?? null;
+  return null;
+}
+
 export function BranchPerformanceChart({
   branch,
+  branches,
   performance,
+  performanceByBranch,
   data = [],
+  dataByBranch,
 }: BranchPerformanceChartProps) {
+  const isMultiBranchMode = Array.isArray(branches) && !branch;
+  const branchList = useMemo(() => branches ?? (branch ? [branch] : []), [branches, branch]);
+
   const [timeframe, setTimeframe] = useState<BranchTimeframeMode>("daily");
   const [activeMetric, setActiveMetric] = useState<BranchMetricKey>("revenue");
+  const [selectedBranchId, setSelectedBranchId] = useState<string>("all");
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartInstanceRef = useRef<Chart | null>(null);
 
   const chartTitleId = useId();
+  const branchFilterId = useId();
+
+  // Active scope label (single branch vs all branches vs filtered branch in multi-branch view)
+  const activeScopeLabel = useMemo(() => {
+    if (!isMultiBranchMode) {
+      return branch?.name ?? "this branch";
+    }
+    if (selectedBranchId === "all") {
+      return branchList.length > 1
+        ? `all ${branchList.length} branches`
+        : branchList[0]?.name ?? "all branches";
+    }
+    const found = branchList.find(b => b.id === selectedBranchId);
+    return found ? found.name : "all branches";
+  }, [isMultiBranchMode, branch, branchList, selectedBranchId]);
+
+  // Effective performance summary for the currently active scope
+  const effectivePerformance = useMemo<BranchPerformanceSummary | null | undefined>(() => {
+    if (!isMultiBranchMode) {
+      return performance;
+    }
+    if (selectedBranchId !== "all") {
+      if (performanceByBranch && selectedBranchId in performanceByBranch) {
+        return performanceByBranch[selectedBranchId];
+      }
+      return performance;
+    }
+    if (performanceByBranch) {
+      const summaries = branchList
+        .map(b => performanceByBranch[b.id])
+        .filter((s): s is BranchPerformanceSummary => s != null);
+      if (summaries.length === 0) return performance ?? null;
+
+      const sumNullable = (
+        getter: (s: BranchPerformanceSummary) => number | null
+      ): number | null => {
+        const vals = summaries.map(getter).filter((v): v is number => v != null);
+        return vals.length > 0 ? vals.reduce((acc, v) => acc + v, 0) : null;
+      };
+
+      const utilVals = summaries
+        .map(s => s.fleet_utilization_rate)
+        .filter((v): v is number => v != null);
+
+      return {
+        today_revenue_myr: sumNullable(s => s.today_revenue_myr),
+        today_cycles: sumNullable(s => s.today_cycles),
+        fleet_utilization_rate:
+          utilVals.length > 0
+            ? utilVals.reduce((acc, v) => acc + v, 0) / utilVals.length
+            : null,
+        lpg_consumed_kg: sumNullable(s => s.lpg_consumed_kg),
+      };
+    }
+    return performance;
+  }, [isMultiBranchMode, selectedBranchId, performance, performanceByBranch, branchList]);
+
+  // Effective series data
+  const effectiveData = useMemo<BranchPerformanceDataPoint[]>(() => {
+    if (!isMultiBranchMode) {
+      return data;
+    }
+    if (selectedBranchId !== "all" && dataByBranch) {
+      return dataByBranch[selectedBranchId] ?? [];
+    }
+    return data;
+  }, [isMultiBranchMode, selectedBranchId, data, dataByBranch]);
+
+  const hasMultiBranchSeries = useMemo(() => {
+    if (!isMultiBranchMode || selectedBranchId !== "all" || !dataByBranch) return false;
+    return branchList.some(b => (dataByBranch[b.id]?.length ?? 0) > 0);
+  }, [isMultiBranchMode, selectedBranchId, dataByBranch, branchList]);
 
   // Timeline labels per timeframe
   const timelineLabels = useMemo(() => {
@@ -157,7 +265,7 @@ export function BranchPerformanceChart({
   }, [timeframe]);
 
   const metric = METRICS[activeMetric];
-  const hasData = data.length > 0;
+  const hasData = effectiveData.length > 0 || hasMultiBranchSeries;
 
   // Mount and update Chart.js instance
   useEffect(() => {
@@ -170,44 +278,68 @@ export function BranchPerformanceChart({
       chartInstanceRef.current = null;
     }
 
-    const dataPoints = timelineLabels.map((label, idx) => {
-      if (!hasData) return null;
-      const pt = data[idx];
-      if (!pt) return null;
-      if (activeMetric === "revenue") return pt.revenue_myr ?? null;
-      if (activeMetric === "cycles") return pt.cycle_count ?? null;
-      if (activeMetric === "water") return pt.water_l ?? null;
-      if (activeMetric === "gas") return pt.gas_kg ?? null;
-      return null;
-    });
+    const datasets =
+      hasMultiBranchSeries && dataByBranch
+        ? branchList.map((b, branchIdx) => {
+            const branchSeries = dataByBranch[b.id] ?? [];
+            const color =
+              BRANCH_SERIES_COLORS[branchIdx % BRANCH_SERIES_COLORS.length];
+            return {
+              label: `${b.name} — ${metric.shortLabel}`,
+              data: timelineLabels.map((_, idx) =>
+                extractPointMetric(branchSeries[idx], activeMetric)
+              ),
+              borderColor: color,
+              backgroundColor: "transparent",
+              borderWidth: 2,
+              tension: 0.35,
+              fill: false,
+              pointBackgroundColor: color,
+              pointBorderColor: "#131217",
+              pointBorderWidth: 2,
+              pointRadius: branchSeries.length > 0 ? 4 : 0,
+              pointHoverRadius: 6,
+            };
+          })
+        : [
+            {
+              label: metric.label,
+              data: timelineLabels.map((_, idx) =>
+                hasData ? extractPointMetric(effectiveData[idx], activeMetric) : null
+              ),
+              borderColor: metric.color,
+              backgroundColor: metric.bgColor,
+              borderWidth: 2,
+              tension: 0.35,
+              fill: true,
+              pointBackgroundColor: metric.color,
+              pointBorderColor: "#131217",
+              pointBorderWidth: 2,
+              pointRadius: hasData ? 4 : 0,
+              pointHoverRadius: 6,
+            },
+          ];
 
     const chartConfig: ChartConfiguration<"line"> = {
       type: "line",
       data: {
         labels: timelineLabels,
-        datasets: [
-          {
-            label: metric.label,
-            data: dataPoints,
-            borderColor: metric.color,
-            backgroundColor: metric.bgColor,
-            borderWidth: 2,
-            tension: 0.35,
-            fill: true,
-            pointBackgroundColor: metric.color,
-            pointBorderColor: "#131217",
-            pointBorderWidth: 2,
-            pointRadius: hasData ? 4 : 0,
-            pointHoverRadius: 6,
-          },
-        ],
+        datasets,
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         plugins: {
           legend: {
-            display: false,
+            display: hasMultiBranchSeries,
+            labels: {
+              color: "#b4b4ba",
+              boxWidth: 10,
+              font: {
+                family: "ui-sans-serif, system-ui, sans-serif",
+                size: 11,
+              },
+            },
           },
           tooltip: {
             enabled: hasData,
@@ -273,48 +405,90 @@ export function BranchPerformanceChart({
       newChart.destroy();
       chartInstanceRef.current = null;
     };
-  }, [timelineLabels, activeMetric, metric, hasData, data]);
+  }, [
+    timelineLabels,
+    activeMetric,
+    metric,
+    hasData,
+    effectiveData,
+    hasMultiBranchSeries,
+    dataByBranch,
+    branchList,
+  ]);
 
   return (
     <section
       className="rounded-md border border-line bg-surface p-5 md:p-6"
       aria-labelledby={chartTitleId}
     >
-      {/* Header Row: Title, Subtitle, and Timeframe Selector */}
+      {/* Header Row: Title and Controls */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-rule pb-3">
         <div>
           <h2 id={chartTitleId} className="text-base font-semibold text-ink">
             Branch Performance & Resource Analytics
           </h2>
           <p className="mt-0.5 text-xs text-muted">
-            Telemetry and resource consumption for {branch.name} across revenue, cycles, water and LPG fuel
+            {isMultiBranchMode
+              ? `Multi-branch telemetry and resource consumption across ${activeScopeLabel}`
+              : `Telemetry and resource consumption for ${activeScopeLabel} across revenue, cycles, water and LPG fuel`}
           </p>
         </div>
 
-        {/* Timeframe Filter (Daily, Weekly, Monthly) */}
-        <div
-          className="inline-flex items-center gap-1 rounded-md border border-line bg-navy p-1 text-xs"
-          role="group"
-          aria-label="Select analytics timeframe"
-        >
-          {(["daily", "weekly", "monthly"] as const).map(tf => {
-            const isSelected = timeframe === tf;
-            return (
-              <button
-                key={tf}
-                type="button"
-                onClick={() => setTimeframe(tf)}
-                aria-pressed={isSelected}
-                className={`inline-flex min-h-7 items-center rounded px-2.5 py-1 text-xs capitalize transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none ${
-                  isSelected
-                    ? "border border-line bg-navy-selected font-semibold text-ink"
-                    : "text-muted hover:text-ink"
-                }`}
-              >
-                {tf}
-              </button>
-            );
-          })}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Multi-Branch Filter Selector (only rendered in multi-branch mode when >1 branch exists) */}
+          {isMultiBranchMode && branchList.length > 1 && (
+            <div className="flex items-center gap-1.5">
+              <label htmlFor={branchFilterId} className="sr-only">
+                Filter by branch
+              </label>
+              <div className="relative inline-flex items-center">
+                <Building2
+                  className="pointer-events-none absolute left-2.5 size-3.5 text-faint"
+                  aria-hidden="true"
+                />
+                <select
+                  id={branchFilterId}
+                  aria-label="Filter by branch"
+                  value={selectedBranchId}
+                  onChange={e => setSelectedBranchId(e.target.value)}
+                  className="min-h-8 rounded-md border border-line bg-navy pl-8 pr-6 py-1 text-xs text-ink transition-colors hover:border-control focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                >
+                  <option value="all">All branches ({branchList.length})</option>
+                  {branchList.map(b => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+
+          {/* Timeframe Filter (Daily, Weekly, Monthly) */}
+          <div
+            className="inline-flex items-center gap-1 rounded-md border border-line bg-navy p-1 text-xs"
+            role="group"
+            aria-label="Select analytics timeframe"
+          >
+            {(["daily", "weekly", "monthly"] as const).map(tf => {
+              const isSelected = timeframe === tf;
+              return (
+                <button
+                  key={tf}
+                  type="button"
+                  onClick={() => setTimeframe(tf)}
+                  aria-pressed={isSelected}
+                  className={`inline-flex min-h-7 items-center rounded px-2.5 py-1 text-xs capitalize transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none ${
+                    isSelected
+                      ? "border border-line bg-navy-selected font-semibold text-ink"
+                      : "text-muted hover:text-ink"
+                  }`}
+                >
+                  {tf}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -327,7 +501,7 @@ export function BranchPerformanceChart({
           const cfg = METRICS[key];
           const Icon = cfg.icon;
           const isActive = activeMetric === key;
-          const reading = cfg.getValue(timeframe, performance, data);
+          const reading = cfg.getValue(timeframe, effectivePerformance, effectiveData);
 
           return (
             <button
@@ -403,7 +577,7 @@ export function BranchPerformanceChart({
                 No {metric.shortLabel.toLowerCase()} records recorded yet
               </h3>
               <p className="mt-1 text-xs leading-relaxed text-muted">
-                Aggregated {timeframe} metrics for {metric.label.toLowerCase()} across {branch.name} will appear once physical gateway telemetry or machine service syncs are active.
+                Aggregated {timeframe} metrics for {metric.label.toLowerCase()} across {activeScopeLabel} will appear once physical gateway telemetry or machine service syncs are active.
               </p>
             </div>
           </div>

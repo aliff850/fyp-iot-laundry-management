@@ -73,7 +73,7 @@ describe("BranchWorkspaceShell component", () => {
     expect(text).toContain("Details &amp; Setup");
   });
 
-  it("renders manager subnav tabs without owner-only Details tab", () => {
+  it("renders manager subnav tabs including Details & Setup tab", () => {
     const raw = renderToString(
       React.createElement(
         BranchWorkspaceShell,
@@ -90,7 +90,7 @@ describe("BranchWorkspaceShell component", () => {
     expect(text).toContain("Machines");
     expect(text).toContain("LPG &amp; Safety");
     expect(text).toContain("Branch Personnel");
-    expect(text).not.toContain("Details & Setup");
+    expect(text).toContain("Details &amp; Setup");
   });
 
   it("restricts machine maintenance specialist to permitted domain and Reports tabs only", () => {

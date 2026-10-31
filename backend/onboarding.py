@@ -2,6 +2,9 @@
 
 import os
 import re
+import threading
+import time
+from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +23,36 @@ router = APIRouter()
 PERSONNEL_ROLES = {"branch_manager", "machine_maintenance", "lpg_maintenance"}
 PHONE = re.compile(r"^[+()0-9 .-]{7,32}$")
 
+_DEFAULT_HTTPX_GET = httpx.get
+_DEFAULT_HTTPX_PUT = httpx.put
+_DEFAULT_PSYCOPG_CONNECT = psycopg.connect
+
+_HTTP_CLIENT = httpx.Client(
+    timeout=5,
+    limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
+)
+
+_TOKEN_CACHE_TTL_SECONDS = 5.0
+_TOKEN_CACHE_LOCK = threading.Lock()
+_TOKEN_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+
+_DB_POOL_MAX_IDLE = 8
+_DB_IDLE_CHECK_SECONDS = 15.0
+_DB_POOL_LOCK = threading.Lock()
+_DB_IDLE_POOL: dict[str, deque[tuple[psycopg.Connection, float]]] = {}
+
+
+def _http_get(url: str, **kwargs):
+    if httpx.get is not _DEFAULT_HTTPX_GET:
+        return httpx.get(url, **kwargs)
+    return _HTTP_CLIENT.get(url, **kwargs)
+
+
+def _http_put(url: str, **kwargs):
+    if httpx.put is not _DEFAULT_HTTPX_PUT:
+        return httpx.put(url, **kwargs)
+    return _HTTP_CLIENT.put(url, **kwargs)
+
 
 def _configuration():
     url = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -30,14 +63,108 @@ def _configuration():
     return url, key, database
 
 
-@contextmanager
-def _database():
-    _, _, dsn = _configuration()
+def _checkout_db_connection(dsn: str) -> psycopg.Connection:
+    now = time.monotonic()
+    with _DB_POOL_LOCK:
+        bucket = _DB_IDLE_POOL.get(dsn)
+        while bucket:
+            conn, returned_at = bucket.pop()
+            if getattr(conn, "closed", False) or getattr(conn, "broken", False):
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                continue
+            if (now - returned_at) > _DB_IDLE_CHECK_SECONDS:
+                try:
+                    conn.execute("SELECT 1")
+                    conn.rollback()
+                except Exception:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    continue
+            return conn
+    return psycopg.connect(dsn, row_factory=dict_row, connect_timeout=5)
+
+
+def _return_db_connection(dsn: str, conn: psycopg.Connection) -> None:
+    if getattr(conn, "closed", False) or getattr(conn, "broken", False):
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return
+    with _DB_POOL_LOCK:
+        bucket = _DB_IDLE_POOL.setdefault(dsn, deque())
+        if len(bucket) < _DB_POOL_MAX_IDLE:
+            bucket.append((conn, time.monotonic()))
+            return
     try:
-        with psycopg.connect(dsn, row_factory=dict_row, connect_timeout=5) as conn:
+        conn.close()
+    except Exception:
+        pass
+
+
+@contextmanager
+def _database(read_only: bool = False, **_kwargs):
+    _, _, dsn = _configuration()
+    if psycopg.connect is not _DEFAULT_PSYCOPG_CONNECT:
+        try:
+            with psycopg.connect(dsn, row_factory=dict_row, connect_timeout=5) as conn:
+                if read_only:
+                    try:
+                        conn.read_only = True
+                    except Exception:
+                        pass
+                yield conn
+        except psycopg.Error as exc:
+            raise HTTPException(503, "Onboarding database is unavailable") from exc
+        return
+
+    conn: psycopg.Connection | None = None
+    try:
+        conn = _checkout_db_connection(dsn)
+        if read_only:
+            try:
+                conn.read_only = True
+            except Exception:
+                pass
+        try:
             yield conn
+            if not read_only:
+                conn.commit()
+            else:
+                conn.rollback()
+        except Exception:
+            if not getattr(conn, "closed", False):
+                try:
+                    conn.rollback()
+                except psycopg.Error:
+                    pass
+            raise
     except psycopg.Error as exc:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = None
         raise HTTPException(503, "Onboarding database is unavailable") from exc
+    finally:
+        if conn is not None:
+            if read_only:
+                try:
+                    conn.read_only = False
+                except Exception:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = None
+            if conn is not None:
+                _return_db_connection(dsn, conn)
 
 
 def _user(authorization: str | None = Header(default=None)):
@@ -47,8 +174,22 @@ def _user(authorization: str | None = Header(default=None)):
     token = authorization[7:]
     if not token or any(c.isspace() for c in token):
         raise HTTPException(401, "A valid Supabase session is required")
+
+    use_cache = httpx.get is _DEFAULT_HTTPX_GET
+    cache_key = (url, token)
+    if use_cache:
+        now = time.monotonic()
+        with _TOKEN_CACHE_LOCK:
+            cached = _TOKEN_CACHE.get(cache_key)
+            if cached and cached[0] > now:
+                user_copy = dict(cached[1])
+                _assert_confirmed_active(user_copy)
+                return user_copy
+            if cached:
+                _TOKEN_CACHE.pop(cache_key, None)
+
     try:
-        response = httpx.get(
+        response = _http_get(
             f"{url}/auth/v1/user",
             headers={"apikey": key, "Authorization": f"Bearer {token}"},
             timeout=5,
@@ -65,6 +206,11 @@ def _user(authorization: str | None = Header(default=None)):
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(503, "Identity response is invalid") from exc
     _assert_confirmed_active(user)
+    if use_cache:
+        with _TOKEN_CACHE_LOCK:
+            if len(_TOKEN_CACHE) > 256:
+                _TOKEN_CACHE.clear()
+            _TOKEN_CACHE[cache_key] = (time.monotonic() + _TOKEN_CACHE_TTL_SECONDS, dict(user))
     return user
 
 
@@ -117,7 +263,7 @@ def _role_metadata(user_id: str, role: str | None, user: dict):
         raise HTTPException(503, "Identity metadata is invalid")
     # Preserve Supabase's system/provider metadata and change only our role key.
     try:
-        response = httpx.put(
+        response = _http_put(
             f"{url}/auth/v1/admin/users/{user_id}",
             headers={"apikey": key},
             json={"app_metadata": {**metadata, "role": role}},
@@ -134,6 +280,8 @@ def _role_metadata(user_id: str, role: str | None, user: dict):
             raise KeyError("role")
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise HTTPException(503, "Role synchronization could not be confirmed; retry") from exc
+    with _TOKEN_CACHE_LOCK:
+        _TOKEN_CACHE.clear()
 
 
 def _status(conn, user_id: str):
@@ -339,7 +487,7 @@ def _admin_user(user_id):
     if not key:
         raise HTTPException(503, "Role administration is not configured")
     try:
-        response = httpx.get(
+        response = _http_get(
             f"{url}/auth/v1/admin/users/{user_id}",
             headers={"apikey": key}, timeout=5,
         )

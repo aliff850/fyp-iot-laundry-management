@@ -9,6 +9,11 @@ const mockBranch: Pick<BranchDetail, "id" | "name"> = {
   name: "MSU Shah Alam",
 };
 
+const mockBranches: Array<Pick<BranchDetail, "id" | "name">> = [
+  { id: "branch-test-1", name: "MSU Shah Alam" },
+  { id: "branch-test-2", name: "Subang Jaya SS15" },
+];
+
 describe("BranchPerformanceChart component", () => {
   it("renders the branch performance panel with title and the 4 core metric definitions", () => {
     const raw = renderToString(
@@ -101,6 +106,50 @@ describe("BranchPerformanceChart component", () => {
     const lineController = Chart.registry.getController("line");
     expect(lineController).toBeDefined();
     expect(typeof lineController).toBe("function");
+  });
+
+  it("renders multi-branch mode with branch filter selector and aggregated stats across multiple branches", () => {
+    const raw = renderToString(
+      React.createElement(BranchPerformanceChart, {
+        branches: mockBranches,
+        performanceByBranch: {
+          "branch-test-1": {
+            today_revenue_myr: 300.0,
+            today_cycles: 40,
+            fleet_utilization_rate: 75.0,
+            lpg_consumed_kg: 12.0,
+          },
+          "branch-test-2": {
+            today_revenue_myr: 200.5,
+            today_cycles: 25,
+            fleet_utilization_rate: 85.0,
+            lpg_consumed_kg: 8.5,
+          },
+        },
+      })
+    );
+    const text = raw.replace(/<!--.*?-->/g, "");
+    expect(text).toContain("All branches (2)");
+    expect(text).toContain("MSU Shah Alam");
+    expect(text).toContain("Subang Jaya SS15");
+    expect(text).toContain("Multi-branch telemetry and resource consumption across all 2 branches");
+    // Aggregated daily values across both branches (300 + 200.50 = 500.50, 40 + 25 = 65, 12 + 8.5 = 20.5)
+    expect(text).toContain("RM 500.50");
+    expect(text).toContain("65");
+    expect(text).toContain("20.5 kg");
+  });
+
+  it("omits the multi-branch filter selector in single-branch mode", () => {
+    const raw = renderToString(
+      React.createElement(BranchPerformanceChart, {
+        branch: mockBranch,
+        performance: null,
+      })
+    );
+    const text = raw.replace(/<!--.*?-->/g, "");
+    expect(text).not.toContain("Filter by branch");
+    expect(text).not.toContain("All branches (");
+    expect(text).toContain("Telemetry and resource consumption for MSU Shah Alam");
   });
 });
 

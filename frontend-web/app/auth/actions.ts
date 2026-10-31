@@ -26,10 +26,21 @@ export async function signIn(_state: AuthFormState, form: FormData): Promise<Aut
   try {
     const client = await createClient(true);
     if (!client) return failure();
-    const { error } = await client.auth.signInWithPassword(input.value);
+    const { data: signInData, error } = await client.auth.signInWithPassword(input.value);
     if (error) return failure(error);
-    const { data, error: identityError } = await client.auth.getUser();
-    if (identityError || !data.user?.email_confirmed_at) {
+    let confirmedAt =
+      signInData?.user && "email_confirmed_at" in signInData.user
+        ? signInData.user.email_confirmed_at
+        : undefined;
+    if (confirmedAt === undefined) {
+      const { data, error: identityError } = await client.auth.getUser();
+      if (identityError) {
+        await client.auth.signOut({ scope: "local" });
+        return failure({ code: "email_not_confirmed" });
+      }
+      confirmedAt = data.user?.email_confirmed_at;
+    }
+    if (!confirmedAt) {
       await client.auth.signOut({ scope: "local" });
       return failure({ code: "email_not_confirmed" });
     }

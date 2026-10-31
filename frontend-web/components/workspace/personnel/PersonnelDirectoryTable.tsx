@@ -1,8 +1,7 @@
 import React from "react";
+import { PersonnelBranchSelect } from "@/components/workspace/personnel/PersonnelBranchSelect";
 import { PersonnelRoleSelect } from "@/components/workspace/personnel/PersonnelRoleSelect";
-import { PersonnelSelectionDropdown } from "@/components/workspace/personnel/PersonnelSelectionDropdown";
 import { RemoveFromBranchButton } from "@/components/workspace/personnel/RemoveFromBranchButton";
-import { updatePersonnelBranches } from "@/app/personnel/actions";
 import type {
   OrganizationPersonnel,
   WorkspaceBranch,
@@ -23,12 +22,6 @@ export function PersonnelDirectoryTable({
   branchId = "",
   canManage = true,
 }: PersonnelDirectoryTableProps) {
-  const branchOptions = branches.map(b => ({
-    value: b.id,
-    label: b.name,
-    description: b.address,
-  }));
-
   if (personnel.length === 0) {
     return (
       <div className="mt-4 rounded-md border border-rule bg-raised/20 p-6 text-center">
@@ -91,30 +84,17 @@ export function PersonnelDirectoryTable({
                 </td>
                 <td className="px-4 py-3 text-xs text-muted">
                   {variant === "organization" ? (
-                    person.role === "owner" ? (
-                      <span className="text-faint">All locations (Owner)</span>
-                    ) : canManage ? (
-                      <PersonnelSelectionDropdown
-                        mode="checkbox"
+                    canManage ? (
+                      <PersonnelBranchSelect
                         userId={person.user_id}
-                        options={branchOptions}
-                        currentValues={
-                          person.assigned_branch_ids &&
-                          person.assigned_branch_ids.length > 0
-                            ? person.assigned_branch_ids
-                            : branches
-                                .filter(b =>
-                                  (person.assigned_branches ?? []).includes(
-                                    b.name
-                                  )
-                                )
-                                .map(b => b.id)
-                        }
-                        fieldName="branchIds"
-                        buttonPlaceholder="Assign branches…"
-                        ariaLabel={`Assign branches for ${person.full_name}`}
-                        serverAction={updatePersonnelBranches}
+                        fullName={person.full_name}
+                        branches={branches}
+                        assignedBranchIds={person.assigned_branch_ids}
+                        assignedBranchNames={person.assigned_branches}
+                        isOwnerRow={person.role === "owner"}
                       />
+                    ) : person.role === "owner" ? (
+                      <span className="text-faint">All locations (Owner)</span>
                     ) : (
                       <span>
                         {person.assigned_branches &&

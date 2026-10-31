@@ -69,4 +69,103 @@ describe("FastAPI onboarding boundary", () => {
       },
     });
   });
+
+  it("coalesces concurrent in-flight token verification calls across parallel business requests", async () => {
+    const getUserSpy = vi.fn().mockResolvedValue({
+      data: { user: { email_confirmed_at: "2026-10-27" } },
+      error: null,
+    });
+    const getSessionSpy = vi.fn().mockResolvedValue({
+      data: { session: { access_token: "coalesced-token" } },
+      error: null,
+    });
+    createClient.mockResolvedValue({
+      auth: {
+        getUser: getUserSpy,
+        getSession: getSessionSpy,
+      },
+    });
+    const fetcher = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        Response.json({
+          state: "active",
+          role: "owner",
+          organization: { id: "org-1", name: "Org 1" },
+        })
+      )
+    );
+    vi.stubGlobal("fetch", fetcher);
+
+    const [res1, res2] = await Promise.all([
+      businessRequest("/me"),
+      businessRequest("/branches"),
+    ]);
+
+    expect(res1.ok).toBe(true);
+    expect(res2.ok).toBe(true);
+    expect(getUserSpy).toHaveBeenCalledTimes(1);
+    expect(getSessionSpy).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("surfaces string error detail from backend 422 HTTPException responses", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: "Select an active owner, branch manager, or unassigned personnel in this organization" }), {
+        status: 422,
+        headers: { "Content-Type": "application/json" },
+      })
+    ));
+    const result = await businessRequest("/branches", "POST", { name: "Test Branch" });
+    expect(result).toMatchObject({
+      ok: false,
+      status: 422,
+      message: "Select an active owner, branch manager, or unassigned personnel in this organization",
+    });
+  });
+
+  it("surfaces structured field-level validation errors from backend 422 Pydantic responses", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        detail: [
+          { loc: ["body", "contact_phone"], msg: "String should match pattern '^[+()0-9 .-]+$'" },
+        ],
+      }), {
+        status: 422,
+        headers: { "Content-Type": "application/json" },
+      })
+    ));
+    const result = await businessRequest("/branches", "POST", { name: "Test Branch" });
+    expect(result).toMatchObject({
+      ok: false,
+      status: 422,
+      message: "contact_phone: String should match pattern '^[+()0-9 .-]+$'",
+    });
+  });
+
+  it("surfaces backend 409 conflict detail rather than generic fallback", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: "A branch with this name already exists" }), {
+        status: 409,
+        headers: { "Content-Type": "application/json" },
+      })
+    ));
+    const result = await businessRequest("/branches", "POST", { name: "Duplicate Branch" });
+    expect(result).toMatchObject({
+      ok: false,
+      status: 409,
+      message: "A branch with this name already exists",
+    });
+  });
+
+  it("falls back to generic status code message when error body is not JSON or has no detail", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response("Internal Server Error", { status: 503 })
+    ));
+    const result = await businessRequest("/branches", "POST");
+    expect(result).toMatchObject({
+      ok: false,
+      status: 503,
+      message: "Business setup is temporarily unavailable. Please retry.",
+    });
+  });
 });

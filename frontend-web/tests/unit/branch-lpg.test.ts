@@ -253,7 +253,7 @@ describe("LpgWorkspaceView orchestrator component", () => {
     const text = raw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
 
     // Shared Climate Atmosphere Header
-    expect(text).toContain("Shared Environmental Atmosphere");
+    expect(text).toContain("Environmental Atmosphere");
     expect(text).toContain("28.5");
     expect(text).toContain("62.0");
 

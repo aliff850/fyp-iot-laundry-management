@@ -24,11 +24,17 @@ interface MachineCardProps {
 /**
  * Simple, Clean Mono-Colored SVG Illustration for Commercial Front-Load Washers
  */
-function SimpleWasherSvg({ status }: { status: MachineItem["status"] }) {
+export function SimpleWasherSvg({
+  status,
+  className = "size-28",
+}: {
+  status: MachineItem["status"];
+  className?: string;
+}) {
   return (
     <svg
       viewBox="0 0 100 100"
-      className="size-28 text-muted transition-colors group-hover:text-ink select-none"
+      className={`${className} text-muted transition-colors group-hover:text-ink select-none`.trim()}
       fill="none"
       stroke="currentColor"
       strokeWidth="2.5"
@@ -58,11 +64,17 @@ function SimpleWasherSvg({ status }: { status: MachineItem["status"] }) {
 /**
  * Simple, Clean Mono-Colored SVG Illustration for Commercial Gas-Heated Dryers
  */
-function SimpleDryerSvg({ status }: { status: MachineItem["status"] }) {
+export function SimpleDryerSvg({
+  status,
+  className = "size-28",
+}: {
+  status: MachineItem["status"];
+  className?: string;
+}) {
   return (
     <svg
       viewBox="0 0 100 100"
-      className="size-28 text-muted transition-colors group-hover:text-ink select-none"
+      className={`${className} text-muted transition-colors group-hover:text-ink select-none`.trim()}
       fill="none"
       stroke="currentColor"
       strokeWidth="2.5"
@@ -232,7 +244,7 @@ export function MachineCard({
         </div>
 
         {/* 2. FULL SIZED MONO-COLORED SVG IMAGE (Frontend-Specs.md Line 213) */}
-        <div className="relative flex h-36 w-full items-center justify-center rounded-md border border-rule/60 bg-raised/20 p-3 transition-transform duration-200 group-hover:scale-[1.01]">
+        <div className="relative flex h-36 w-full items-center justify-center rounded-md border border-rule/60 bg-raised/20 p-3">
           {isWasher ? (
             <SimpleWasherSvg status={machine.status} />
           ) : (
@@ -242,7 +254,7 @@ export function MachineCard({
           {/* Fault Indicator Overlay if ERROR */}
           {machine.status === "ERROR" && (
             <div className="absolute inset-x-2 bottom-2 rounded bg-negative/90 px-2.5 py-1 text-center backdrop-blur-xs">
-              <span className="text-[11px] font-semibold text-surface">
+              <span className="text-xs font-semibold text-surface">
                 {machine.fault_code ? `Fault: ${machine.fault_code}` : "Safety Fault"}
               </span>
             </div>
@@ -250,65 +262,89 @@ export function MachineCard({
         </div>
 
         {/* 3. MACHINE STATUS SECTION (Frontend-Specs.md Line 215) */}
-        <div className="flex flex-col gap-1.5 rounded-md border border-rule bg-raised/30 p-2.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[11px] font-medium text-muted">Operational Status</span>
+        <div className="flex flex-col gap-2.5 rounded-md border border-rule bg-raised/30 p-3">
+          {/* Operational Status (Flex Column) */}
+          <div className="flex flex-col gap-1 items-start">
+            <span className="text-xs text-muted">Operational Status</span>
             <span
-              className={`inline-flex shrink-0 items-center gap-1.5 rounded border px-2 py-0.5 text-xs font-medium ${status.wrapper}`}
+              className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-1 text-sm font-medium ${status.wrapper}`}
             >
-              <span className={`size-1.5 rounded-full ${status.dot}`} aria-hidden="true" />
+              <span className={`size-2 rounded-full ${status.dot}`} aria-hidden="true" />
               <span>{status.label}</span>
             </span>
           </div>
 
-          <div className="flex items-center justify-between text-xs text-muted">
-            <span>Cycle Program</span>
-            <span className="font-semibold text-ink truncate max-w-[140px]">
+          {/* Cycle Program (Flex Column) */}
+          <div className="flex flex-col gap-0.5 border-t border-rule/60 pt-2.5">
+            <span className="text-xs text-muted">Cycle Program</span>
+            <span className="text-sm font-semibold text-ink truncate">
               {machine.current_cycle || (machine.status === "IDLE" ? "Standby" : "—")}
             </span>
           </div>
         </div>
 
         {/* 4. REMAINING CYCLE TIME & RATE SECTION (Frontend-Specs.md Line 217) */}
-        <div className="space-y-2 rounded-md border border-rule bg-raised/30 p-2.5">
-          {/* Cycle Time Row */}
-          <div className="flex items-center justify-between text-xs">
-            <div className="flex items-center gap-1.5 text-muted">
+        <div className="flex flex-col gap-2.5 rounded-md border border-rule bg-raised/30 p-3">
+          {/* Cycle Time (Flex Column) */}
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-1.5 text-xs text-muted">
               <Clock className="size-3.5 text-faint" aria-hidden="true" />
               <span>Cycle Time</span>
             </div>
-            <span className="font-semibold text-ink tabular-nums">
+            <span className="text-sm font-semibold text-ink tabular-nums">
               {getRemainingTimeText()}
             </span>
           </div>
 
-          {/* Progress Bar for Running Cycle */}
+          {/* Progress Bar for Running Cycle (native SVG per DESIGN.md Section 2.3) */}
           {machine.status === "RUNNING" && (
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-raised">
-              <div
-                className="h-full bg-accent transition-all duration-500 rounded-full"
-                style={{
-                  width: `${Math.max(
+            <svg
+              viewBox="0 0 100 4"
+              preserveAspectRatio="none"
+              className="h-1.5 w-full overflow-hidden rounded-full bg-raised"
+              role="progressbar"
+              aria-valuenow={Math.round(
+                Math.max(
+                  15,
+                  Math.min(
+                    100,
+                    ((machine.parameters.duration_mins - machine.remaining_time) /
+                      (machine.parameters.duration_mins || 35)) *
+                      100
+                  )
+                )
+              )}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label="Cycle progress"
+            >
+              <rect
+                x="0"
+                y="0"
+                width={Math.round(
+                  Math.max(
                     15,
                     Math.min(
                       100,
                       ((machine.parameters.duration_mins - machine.remaining_time) /
                         (machine.parameters.duration_mins || 35)) *
-                      100
+                        100
                     )
-                  )}%`,
-                }}
+                  )
+                )}
+                height="4"
+                className="fill-accent"
               />
-            </div>
+            </svg>
           )}
 
-          {/* Rate Row Positioned Directly Below Cycle Time Matching Its Styling */}
-          <div className="flex items-center justify-between text-xs border-t border-rule/60 pt-2">
-            <div className="flex items-center gap-1.5 text-muted">
+          {/* Cycle Rate (Flex Column) */}
+          <div className="flex flex-col gap-1 border-t border-rule/60 pt-2.5">
+            <div className="flex items-center gap-1.5 text-xs text-muted">
               <Tag className="size-3.5 text-faint" aria-hidden="true" />
               <span>Cycle Rate</span>
             </div>
-            <span className="font-semibold text-ink tabular-nums">
+            <span className="text-sm font-semibold text-ink tabular-nums">
               {machine.parameters.price !== null && machine.parameters.price !== undefined
                 ? `RM ${machine.parameters.price.toFixed(2)}`
                 : "—"}
@@ -371,9 +407,9 @@ export function MachineCard({
             </button>
           </div>
         ) : (
-          <div className="flex items-center justify-between py-1 text-xs text-muted">
-            <span className="text-[11px] text-faint">Diagnostics only</span>
-            <span className="text-[11px] text-faint">Operator controls restricted</span>
+          <div className="flex flex-col gap-0.5 py-1 text-xs text-faint">
+            <span>Diagnostics only</span>
+            <span>Operator controls restricted</span>
           </div>
         )}
 
@@ -384,7 +420,7 @@ export function MachineCard({
               type="button"
               disabled={isPending}
               onClick={e => handleCommand(e, "unlock")}
-              className="inline-flex items-center gap-1 text-[11px] font-medium text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+              className="inline-flex items-center gap-1 text-xs font-medium text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
               title="Unlock door interlock"
             >
               <Unlock className="size-3" aria-hidden="true" />

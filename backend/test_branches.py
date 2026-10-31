@@ -42,7 +42,7 @@ def test_personnel_directory_filters_by_assignment(monkeypatch):
     conn.execute.return_value.fetchone.return_value = member("machine_maintenance", "active")
     conn.execute.return_value.fetchall.return_value = []
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     result = branches.list_branches({"id": USER})
@@ -57,7 +57,7 @@ def test_owner_directory_is_organization_scoped(monkeypatch):
     conn.execute.return_value.fetchone.side_effect = [member(), {"personnel_count": 0, "pending_request_count": 0}]
     conn.execute.return_value.fetchall.return_value = []
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     result = branches.list_branches({"id": USER})
@@ -70,7 +70,7 @@ def test_approved_unassigned_has_no_branch_access_even_if_assignment_exists(monk
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = member("branch_manager", "approved_unassigned")
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     assert branches.list_branches({"id": USER}) == {"branches": [], "summary": None}
@@ -81,7 +81,7 @@ def test_creation_rejects_ineligible_manager(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.side_effect = [member(), None, None]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     with pytest.raises(HTTPException) as exc:
@@ -97,7 +97,7 @@ def test_creation_retry_reuses_same_record(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.side_effect = [member(), row]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     result = branches.create_branch(p, {"id": USER})
@@ -112,7 +112,7 @@ def test_creation_writes_branch_and_assignment_together(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.side_effect = [member(), None, {"role": "owner", "state": "active"}, None, row]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     result = branches.create_branch(p, {"id": USER})
@@ -129,7 +129,7 @@ def test_approved_manager_becomes_active_only_with_assignment(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.side_effect = [member(), None, {"role": "branch_manager", "state": "approved_unassigned"}, None, row]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     branches.create_branch(p, {"id": USER})
@@ -142,7 +142,7 @@ def test_delete_branch_requires_owner(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = member("branch_manager", "active")
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     with pytest.raises(HTTPException) as exc:
@@ -154,7 +154,7 @@ def test_delete_branch_not_found(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.side_effect = [member("owner", "active"), None]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     with pytest.raises(HTTPException) as exc:
@@ -170,7 +170,7 @@ def test_delete_branch_success(monkeypatch):
         {"id": branch_id, "name": "Campus One"},
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     result = branches.delete_branch(branch_id, {"id": USER})
@@ -184,7 +184,7 @@ def test_list_personnel_requires_owner(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = member("branch_manager", "active")
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     with pytest.raises(HTTPException) as exc:
@@ -209,7 +209,7 @@ def test_list_personnel_success(monkeypatch):
         }
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     result = branches.list_personnel({"id": USER})
@@ -228,7 +228,7 @@ def test_manager_options_includes_unassigned_personnel(monkeypatch):
         {"user_id": UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), "full_name": "Unassigned Member", "role": None},
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     result = branches.manager_options({"id": USER})
@@ -256,7 +256,7 @@ def test_create_branch_with_unassigned_personnel_promotes_role(monkeypatch):
          "service_status": "closed", "created_at": "2026-10-27T00:00:00Z"},  # insert returning
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     monkeypatch.setattr(branches, "_admin_user", lambda uid: {"id": str(candidate_id), "email_confirmed_at": "2026-10-27T00:00:00Z"})
@@ -280,7 +280,7 @@ def test_update_personnel_role_by_owner(monkeypatch):
         {"user_id": target_id, "role": None, "state": "approved_unassigned", "active": True},  # target member
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     monkeypatch.setattr(branches, "_admin_user", lambda uid: {"id": str(target_id), "email_confirmed_at": "2026-10-27T00:00:00Z"})
@@ -308,7 +308,7 @@ def test_update_personnel_role_blocks_active_branch_manager_demotion(monkeypatch
         {"?column?": 1},  # assigned branch found
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -327,7 +327,7 @@ def test_update_personnel_role_cannot_change_owner(monkeypatch):
         {"user_id": UUID(USER), "role": "owner", "state": "active", "active": True},  # target member
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -346,7 +346,7 @@ def test_update_personnel_role_clearing_role_transitions_to_approved_unassigned(
         {"user_id": target_id, "role": "machine_maintenance", "state": "active", "active": True},  # target member
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     monkeypatch.setattr(branches, "_admin_user", lambda uid: {"id": str(target_id), "email_confirmed_at": "2026-10-27T00:00:00Z"})
@@ -373,7 +373,7 @@ def test_update_personnel_branches_requires_owner(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = member("branch_manager", "active")
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -391,7 +391,7 @@ def test_update_personnel_branches_cannot_modify_owner(monkeypatch):
         {"user_id": UUID(USER), "role": "owner", "state": "active", "active": True},
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -412,7 +412,7 @@ def test_update_personnel_branches_blocks_removing_primary_manager(monkeypatch):
         {"name": "Subang SS15"},  # primary manager assigned to unassigned branch
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -434,7 +434,7 @@ def test_update_personnel_branches_success_and_state_transition(monkeypatch):
         {"count": 1},  # branches exist in org
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -473,7 +473,7 @@ def test_get_branch_owner_success(monkeypatch):
         },
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -491,7 +491,7 @@ def test_get_branch_personnel_unassigned_forbidden(monkeypatch):
         None,  # not assigned
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -534,7 +534,7 @@ def test_get_branch_overview_owner_success(monkeypatch):
         }
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -552,7 +552,7 @@ def test_get_branch_overview_maintenance_forbidden(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = member("machine_maintenance", "active")
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -569,7 +569,7 @@ def test_get_branch_machines_owner_success(monkeypatch):
         {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},  # branch lookup
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -590,7 +590,7 @@ def test_get_branch_machines_maintenance_projection(monkeypatch):
         {"exists": 1},  # assignment check
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -605,7 +605,7 @@ def test_get_branch_machines_lpg_specialist_forbidden(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = member("lpg_maintenance", "active")
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -624,7 +624,7 @@ def test_issue_machine_command_lifecycle(monkeypatch):
         member("owner", "active"), member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -652,7 +652,7 @@ def test_issue_machine_command_maintenance_forbidden(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = member("machine_maintenance", "active")
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -671,7 +671,7 @@ def test_issue_machine_command_invalid_transition(monkeypatch):
         member("owner", "active"), member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -691,7 +691,7 @@ def test_update_machine_parameters_idle_only(monkeypatch):
         member("owner", "active"), member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -720,7 +720,7 @@ def test_get_branch_lpg_owner_success(monkeypatch):
         {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},  # branch lookup
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -741,7 +741,7 @@ def test_get_branch_lpg_machine_specialist_forbidden(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = member("machine_maintenance", "active")
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -760,7 +760,7 @@ def test_get_branch_lpg_tech_assigned_success(monkeypatch):
         {"exists": 1},  # assignment check
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -777,7 +777,7 @@ def test_lpg_cylinder_replacement_lifecycle(monkeypatch):
         member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -810,7 +810,7 @@ def test_lpg_emergency_shutoff(monkeypatch):
         member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -848,7 +848,7 @@ def test_get_branch_customer_reports_owner_manager_and_maintenance_access(monkey
         {"?column?": 1},  # assigned check for lpg_maintenance
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -881,7 +881,7 @@ def test_get_branch_customer_reports_unassigned_personnel_forbidden(monkeypatch)
         None,  # unassigned lpg_maintenance
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -905,7 +905,7 @@ def test_customer_report_investigate_and_resolve_lifecycle(monkeypatch):
         {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -965,7 +965,7 @@ def test_list_branch_personnel_owner_and_manager_access(monkeypatch):
         }
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
@@ -990,7 +990,7 @@ def test_remove_personnel_from_branch_unassigns_and_clears_role(monkeypatch):
         {"user_id": staff_id, "role": "machine_maintenance", "state": "active", "active": True},
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
     monkeypatch.setattr(branches, "_admin_user", lambda uid: {"id": uid, "email_confirmed_at": "2026-10-27T00:00:00Z", "app_metadata": {}})
@@ -1017,11 +1017,137 @@ def test_remove_primary_manager_from_branch_rejected_409(monkeypatch):
         {"user_id": mgr_id, "role": "branch_manager", "state": "active", "active": True},
     ]
     @contextmanager
-    def db():
+    def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
     with pytest.raises(HTTPException) as exc:
         branches.remove_personnel_from_branch(branch_id, mgr_id, user={"id": USER})
     assert exc.value.status_code == 409
+
+
+def test_update_branch_owner_and_assigned_manager_allowed(monkeypatch):
+    branch_id = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+    existing_row = {
+        "id": branch_id,
+        "name": "MSU Shah Alam",
+        "address": "1 Jalan University",
+        "city": "Shah Alam",
+        "region": "Selangor",
+        "postal_code": "40100",
+        "contact_phone": "+60355216868",
+        "opening_hours": "07:00 - 23:00",
+        "latitude": 3.0789,
+        "longitude": 101.5529,
+        "service_status": "open",
+        "primary_manager_user_id": UUID(USER),
+        "created_at": "2026-10-27T00:00:00Z",
+    }
+    updated_row = {
+        **existing_row,
+        "name": "MSU Shah Alam Central",
+        "opening_hours": "24 Hours",
+        "service_status": "closed",
+    }
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.side_effect = [
+        # Owner update
+        member("owner", "active"),
+        existing_row,
+        None,  # duplicate check
+        updated_row,
+        # Assigned branch manager update
+        member("branch_manager", "active"),
+        {"?column?": 1},  # assigned check
+        existing_row,
+        None,  # duplicate check
+        updated_row,
+    ]
+    @contextmanager
+    def db(**_kwargs):
+        yield conn
+    monkeypatch.setattr(branches, "_database", db)
+
+    payload = branches.BranchUpdate(
+        name="MSU Shah Alam Central",
+        address="1 Jalan University",
+        city="Shah Alam",
+        region="Selangor",
+        postal_code="40100",
+        contact_phone="+60355216868",
+        opening_hours="24 Hours",
+        service_status="closed",
+        latitude=3.0789,
+        longitude=101.5529,
+    )
+
+    res_owner = branches.update_branch(branch_id, payload, user={"id": USER})
+    assert res_owner["branch"]["name"] == "MSU Shah Alam Central"
+    assert res_owner["branch"]["opening_hours"] == "24 Hours"
+    assert res_owner["branch"]["service_status"] == "closed"
+
+    res_mgr = branches.update_branch(branch_id, payload, user={"id": USER})
+    assert res_mgr["branch"]["name"] == "MSU Shah Alam Central"
+
+
+def test_update_branch_duplicate_name_and_unauthorized_roles(monkeypatch):
+    branch_id = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+    existing_row = {
+        "id": branch_id,
+        "name": "MSU Shah Alam",
+        "primary_manager_user_id": UUID(USER),
+    }
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.side_effect = [
+        # Duplicate name check -> 409
+        member("owner", "active"),
+        existing_row,
+        {"?column?": 1},
+        # Maintenance role -> 403
+        member("machine_maintenance", "active"),
+        # Branch manager attempting to change primary_manager_user_id -> 403
+        member("branch_manager", "active"),
+        {"?column?": 1},
+        existing_row,
+        None,
+    ]
+    @contextmanager
+    def db(**_kwargs):
+        yield conn
+    monkeypatch.setattr(branches, "_database", db)
+
+    payload = branches.BranchUpdate(
+        name="Duplicate Branch",
+        address="1 Jalan University",
+        city="Shah Alam",
+        region="Selangor",
+        postal_code="40100",
+        contact_phone="+60355216868",
+        opening_hours="07:00 - 23:00",
+        service_status="open",
+    )
+
+    with pytest.raises(HTTPException) as exc_dup:
+        branches.update_branch(branch_id, payload, user={"id": USER})
+    assert exc_dup.value.status_code == 409
+
+    with pytest.raises(HTTPException) as exc_tech:
+        branches.update_branch(branch_id, payload, user={"id": USER})
+    assert exc_tech.value.status_code == 403
+
+    payload_reassign = branches.BranchUpdate(
+        name="MSU Shah Alam",
+        address="1 Jalan University",
+        city="Shah Alam",
+        region="Selangor",
+        postal_code="40100",
+        contact_phone="+60355216868",
+        opening_hours="07:00 - 23:00",
+        service_status="open",
+        primary_manager_user_id=UUID("33333333-3333-3333-3333-333333333333"),
+    )
+    with pytest.raises(HTTPException) as exc_mgr:
+        branches.update_branch(branch_id, payload_reassign, user={"id": USER})
+    assert exc_mgr.value.status_code == 403
+
 

@@ -144,15 +144,19 @@ describe("CustomerReportsView component", () => {
     // Verify both sections render with their filter controls
     expect(text).toContain("Ongoing Reports");
     expect(text).toContain("All Ongoing");
-    expect(text).toContain("Report History & Resolved Reports");
+    expect(text).toContain("Report History");
     expect(text).toContain("All History");
 
-    // Ongoing ticket items & simulated badge (CR-01, CR-04)
+    // Ongoing ticket items & separated machine/issue/reporter details
     expect(text).toContain("RPT-1041");
-    expect(text).toContain("Washer #02 (15kg) — Door Latch / Lock");
+    expect(text).toContain("Washer #02 (15kg)");
+    expect(text).toContain("Door Latch / Lock");
+    expect(text).toContain("Customer Complaint");
+    expect(text).toContain("Reporter:");
     expect(text).toContain("Nurul Aisyah");
+    expect(text).toContain("Phone:");
     expect(text).toContain("+60 12-834 9102");
-    expect(text).toContain("Simulated");
+    expect(text).not.toContain("Simulated");
     expect(text).toContain("Review & Address");
 
     // Specialist domain tag
@@ -161,7 +165,8 @@ describe("CustomerReportsView component", () => {
 
     // Historical / Resolved ticket item
     expect(text).toContain("RPT-1038");
-    expect(text).toContain("QR Payment Terminal #1 — Payment / Kiosk");
+    expect(text).toContain("QR Payment Terminal #1");
+    expect(text).toContain("Payment / Kiosk");
     expect(text).toContain("Rebooted payment terminal and verified QR code generation.");
     expect(text).toContain("View History");
 
@@ -185,7 +190,13 @@ describe("CustomerReportTriageModal component", () => {
 
     expect(text).toContain("RPT-1039");
     expect(text).toContain("Acting as: Machine Maintenance");
-    expect(text).toContain("Detergent Dispenser · Washer #01 (15kg)");
+    expect(text).toContain("Washer #01 (15kg)");
+    expect(text).toContain("Detergent Dispenser");
+    expect(text).toContain("Customer Complaint");
+    expect(text).toContain("Reporter:");
+    expect(text).toContain("Phone:");
+    expect(text).not.toContain("CR-02");
+    expect(text).not.toContain("CR-03");
     expect(text).toContain("1. Investigation & Maintenance Triage");
     expect(text).toContain("Save & Mark Investigating");
     expect(text).toContain("2. Close Support Ticket (Resolve or Dismiss)");

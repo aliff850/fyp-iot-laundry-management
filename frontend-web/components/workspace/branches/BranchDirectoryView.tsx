@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ArrowRight, MapPin, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, MapPin, Plus } from "lucide-react";
 import { BranchMap } from "@/components/workspace/branches/BranchMap";
+import { BranchDirectoryList } from "@/components/workspace/branches/BranchDirectoryList";
 import { deleteWorkspaceBranch } from "@/app/branches/actions";
 import { primaryButton, secondaryButton } from "@/lib/auth/styles";
 import type { WorkspaceBranch } from "@/lib/auth/business";
@@ -115,98 +116,24 @@ export function BranchDirectoryView({
               {owner && (
                 <Link
                   href="/branches/new"
-                  className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-ink bg-ink px-3 py-1 text-xs font-semibold text-surface transition-colors hover:border-muted hover:bg-muted active:bg-faint focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
+                  className="inline-flex min-h-11 items-center gap-1.5 rounded-md border border-ink bg-ink px-3.5 py-2 text-xs sm:text-sm font-semibold text-surface transition-colors hover:border-muted hover:bg-muted active:bg-faint focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
                 >
-                  <Plus className="size-3.5" aria-hidden="true" />
+                  <Plus className="size-4" aria-hidden="true" />
                   Add branch
                 </Link>
               )}
             </div>
 
-            <ul
-              className="mt-3 flex-1 min-h-0 divide-y divide-rule overflow-y-auto pr-1"
-              aria-label="Branch directory list"
-            >
-              {branches.map(branch => {
-                const isSelected = selectedId === branch.id;
-                return (
-                  <li key={branch.id} className="py-2.5 first:pt-0 last:pb-0">
-                    <div
-                      className={`rounded-md border p-3 transition-colors ${isSelected
-                          ? "border-line bg-navy"
-                          : "border-transparent bg-surface hover:bg-raised"
-                        }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setSelectedId(isSelected ? null : branch.id)}
-                          aria-pressed={isSelected}
-                          className="text-left font-semibold text-sm text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                        >
-                          {branch.name}
-                        </button>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <span className="rounded border border-line bg-raised px-2 py-0.5 text-xs text-muted">
-                            {branch.service_status === "open"
-                              ? "Open to customers"
-                              : "Closed to customers"}
-                          </span>
-                          {owner && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setDeleteError(null);
-                                setDeleteTarget(branch);
-                              }}
-                              className="inline-flex size-6 items-center justify-center rounded border border-transparent text-muted transition-colors hover:border-negative/50 hover:bg-negative/15 hover:text-negative focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                              aria-label={`Delete ${branch.name}`}
-                              title={`Delete ${branch.name}`}
-                            >
-                              <Trash2 className="size-3.5" aria-hidden="true" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      <div
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => setSelectedId(isSelected ? null : branch.id)}
-                        onKeyDown={e => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            setSelectedId(isSelected ? null : branch.id);
-                          }
-                        }}
-                        className="mt-1 cursor-pointer select-none"
-                      >
-                        <p className="text-xs text-muted">
-                          {branch.address}, {branch.city}, {branch.region} {branch.postal_code}
-                        </p>
-                        <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
-                          <div className="flex flex-wrap items-center gap-2 text-faint">
-                            <span>
-                              {branch.latitude !== null && branch.longitude !== null
-                                ? "Map pin active"
-                                : "Map location not set"}
-                            </span>
-                            <span>·</span>
-                            <span>Hours: {branch.opening_hours}</span>
-                          </div>
-                          <Link
-                            href={`/branches/${branch.id}`}
-                            className="inline-flex items-center gap-1 font-medium text-ink hover:text-accent focus-visible:outline-2 focus-visible:outline-accent"
-                          >
-                            <span>Dashboard</span>
-                            <ArrowRight className="size-3" aria-hidden="true" />
-                          </Link>
-                        </div>
-                      </div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+            <BranchDirectoryList
+              branches={branches}
+              selectedId={selectedId}
+              onSelectBranch={setSelectedId}
+              onDeleteBranch={branch => {
+                setDeleteError(null);
+                setDeleteTarget(branch);
+              }}
+              owner={owner}
+            />
           </section>
         )}
       </div>

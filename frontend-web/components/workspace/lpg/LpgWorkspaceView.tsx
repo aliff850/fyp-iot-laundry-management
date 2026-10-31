@@ -13,6 +13,7 @@ import {
 import type { LpgBranchData, LpgCylinderItem, LpgEnvironmentData } from "@/lib/auth/business";
 import { LpgCylinderCard } from "./LpgCylinderCard";
 import { LpgSafetyPanel } from "./LpgSafetyPanel";
+import { MetricCard, MetricGrid } from "@/components/workspace/common/MetricCard";
 
 interface LpgWorkspaceViewProps {
   initialData: LpgBranchData;
@@ -109,89 +110,58 @@ export function LpgWorkspaceView({
       />
 
       {/* 2. Aggregate KPI Metrics Bar */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <MetricGrid columns={4} ariaLabel="LPG manifold and fuel statistics">
         {/* KPI 1: Remaining Fuel */}
-        <div className="flex flex-col justify-between rounded-md border border-line bg-surface p-4">
-          <div className="flex items-center gap-1.5 text-xs text-muted">
-            <Scale className="size-3.5 text-faint" aria-hidden="true" />
-            <span>Manifold Fuel Mass</span>
-          </div>
-          <div className="mt-2 flex items-baseline gap-1">
-            <span className="text-3xl font-semibold text-ink tabular-nums">
-              {summary.total_remaining_fuel_kg.toFixed(1)}
-            </span>
-            <span className="text-xs font-normal text-muted">
-              / {summary.total_rated_capacity_kg.toFixed(1)} kg
-            </span>
-          </div>
-          {/* <p className="mt-1 text-[11px] text-faint">Valid load-cell readings</p> */}
-        </div>
+        <MetricCard
+          icon={<Scale className="size-3.5 text-faint" aria-hidden="true" />}
+          label="Manifold Fuel Mass"
+          value={summary.total_remaining_fuel_kg.toFixed(1)}
+          suffix={`/ ${summary.total_rated_capacity_kg.toFixed(1)} kg`}
+        />
 
         {/* KPI 2: Weighted Fuel % (PRD Section 4.4) */}
-        <div className="flex flex-col justify-between rounded-md border border-line bg-surface p-4">
-          <div className="flex items-center gap-1.5 text-xs text-muted">
-            <Gauge className="size-3.5 text-faint" aria-hidden="true" />
-            <span>Weighted Fuel Level</span>
-          </div>
-          <div className="mt-2 flex items-baseline gap-1">
-            <span className="text-3xl font-semibold text-ink tabular-nums">
-              {summary.weighted_fuel_percent.toFixed(1)}%
-            </span>
-          </div>
-          {/* <p className="mt-1 text-[11px] text-faint">
-            Coverage: {summary.measurement_coverage}
-          </p> */}
-        </div>
+        <MetricCard
+          icon={<Gauge className="size-3.5 text-faint" aria-hidden="true" />}
+          label="Weighted Fuel Level"
+          value={`${summary.weighted_fuel_percent.toFixed(1)}%`}
+        />
 
         {/* KPI 3: Commissioned Cylinders */}
-        <div className="flex flex-col justify-between rounded-md border border-line bg-surface p-4">
-          <div className="flex items-center gap-1.5 text-xs text-muted">
-            <Layers className="size-3.5 text-faint" aria-hidden="true" />
-            <span>Active Cylinders</span>
-          </div>
-          <div className="mt-2 flex items-baseline gap-1">
-            <span className="text-3xl font-semibold text-ink tabular-nums">
-              {summary.active_cylinders}
-            </span>
-            <span className="text-xs font-normal text-muted">
-              / {summary.total_cylinders} Online
-            </span>
-          </div>
-          {/* <p className="mt-1 text-[11px] text-faint">4 commissioned stations</p> */}
-        </div>
+        <MetricCard
+          icon={<Layers className="size-3.5 text-faint" aria-hidden="true" />}
+          label="Active Cylinders"
+          value={summary.active_cylinders}
+          suffix={`/ ${summary.total_cylinders} Online`}
+        />
 
         {/* KPI 4: Manifold Status */}
-        <div className="flex flex-col justify-between rounded-md border border-line bg-surface p-4">
-          <div className="flex items-center gap-1.5 text-xs text-muted">
-            <ShieldCheck className="size-3.5 text-faint" aria-hidden="true" />
-            <span>System Status</span>
-          </div>
-          <div className="mt-2">
+        <MetricCard
+          icon={<ShieldCheck className="size-3.5 text-faint" aria-hidden="true" />}
+          label="System Status"
+        >
+          <span
+            className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 text-xs font-semibold ${summary.status === "Leak Hazard"
+              ? "border-negative/50 bg-negative/15 text-negative animate-pulse"
+              : summary.status === "Critical Depletion"
+                ? "border-negative/40 bg-negative/10 text-negative"
+                : summary.status === "Low Gas Warning"
+                  ? "border-warning/40 bg-warning/10 text-warning"
+                  : "border-positive/30 bg-positive/10 text-positive"
+              }`}
+          >
             <span
-              className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 text-xs font-semibold ${summary.status === "Leak Hazard"
-                ? "border-negative/50 bg-negative/15 text-negative animate-pulse"
-                : summary.status === "Critical Depletion"
-                  ? "border-negative/40 bg-negative/10 text-negative"
-                  : summary.status === "Low Gas Warning"
-                    ? "border-warning/40 bg-warning/10 text-warning"
-                    : "border-positive/30 bg-positive/10 text-positive"
+              className={`size-1.5 rounded-full ${summary.status === "Healthy"
+                ? "bg-positive"
+                : summary.status === "Low Gas Warning"
+                  ? "bg-warning"
+                  : "bg-negative"
                 }`}
-            >
-              <span
-                className={`size-1.5 rounded-full ${summary.status === "Healthy"
-                  ? "bg-positive"
-                  : summary.status === "Low Gas Warning"
-                    ? "bg-warning"
-                    : "bg-negative"
-                  }`}
-                aria-hidden="true"
-              />
-              <span>{summary.status}</span>
-            </span>
-          </div>
-          {/* <p className="mt-1 text-[11px] text-faint">Continuous telemetry sync</p> */}
-        </div>
-      </div>
+              aria-hidden="true"
+            />
+            <span>{summary.status}</span>
+          </span>
+        </MetricCard>
+      </MetricGrid>
 
       {/* 3. Shared Facility Climate Monitoring (DHT22 Temperature & Humidity) */}
       <section className="space-y-3" aria-labelledby="climate-monitoring-heading">
@@ -204,7 +174,7 @@ export function LpgWorkspaceView({
               </div>
               <div>
                 <h3 id="climate-monitoring-heading" className="text-sm font-semibold text-ink">
-                  Shared Environmental Atmosphere
+                  Environmental Atmosphere
                 </h3>
                 {/* <p className="mt-0.5 text-xs text-muted">
                   DHT22 Facility Climate Sensor · Ambient laundry hall temperature and moisture telemetry

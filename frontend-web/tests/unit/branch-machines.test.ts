@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToString } from "react-dom/server";
 import { MachineCard } from "@/components/workspace/machines/MachineCard";
+import { MachineRowCard } from "@/components/workspace/machines/MachineRowCard";
 import { MachineDetailModal } from "@/components/workspace/machines/MachineDetailModal";
 import { MachineFleetView } from "@/components/workspace/machines/MachineFleetView";
 import type { MachineItem } from "@/lib/auth/business";
@@ -219,8 +220,87 @@ describe("MachineDetailModal component", () => {
   });
 });
 
+describe("MachineRowCard component", () => {
+  it("renders running washer with DESIGN.md Section 4.8 semantic article, dl reading grid, SVG progress bar, and min-h-11 controls", () => {
+    const raw = renderToString(
+      React.createElement(MachineRowCard, {
+        machine: mockWasherRunning,
+        branchId: "b1111111-1111-1111-1111-111111111111",
+        userRole: "owner",
+        onOpenDetails: () => {},
+      })
+    );
+    const text = raw.replace(/<!--.*?-->/g, "");
+    // Semantic article container (no nested role="button" wrapper around buttons)
+    expect(raw).toContain("<article");
+    expect(raw).not.toContain('role="button"');
+    // Identity & spec
+    expect(text).toContain("Washer #01 (15kg)");
+    expect(text).toContain("Running");
+    expect(text).toContain("Door locked");
+    // Semantic <dl>/<dt>/<dd> reading grid with sentence-case labels
+    expect(raw).toContain("<dl");
+    expect(text).toContain("Cycle program");
+    expect(text).toContain("Standard Cotton 40°C");
+    expect(text).toContain("Cycle time");
+    expect(text).toContain("18 min remaining");
+    expect(text).toContain("Cycle rate");
+    expect(text).toContain("RM 6.00");
+    // Native SVG progress bar with zero inline styles (DESIGN.md Section 2.3)
+    expect(raw).toContain('role="progressbar"');
+    expect(raw).not.toContain("style=");
+    // DESIGN.md Section 4.2 & 5.3: min-h-11 touch targets & full-contrast disabled text
+    expect(raw).toContain("min-h-11");
+    expect(raw).toContain("disabled:text-muted");
+    expect(raw).not.toContain("disabled:text-muted/60");
+    expect(text).toContain("Start");
+    expect(text).toContain("Pause");
+    expect(text).toContain("Stop");
+    expect(text).toContain("Details &amp; parameters");
+    expect(raw).not.toContain("font-mono");
+  });
+
+  it("renders idle machine in row card with enabled Start button and disabled Pause/Stop buttons", () => {
+    const raw = renderToString(
+      React.createElement(MachineRowCard, {
+        machine: mockWasherIdle,
+        branchId: "b1111111-1111-1111-1111-111111111111",
+        userRole: "branch_manager",
+        onOpenDetails: () => {},
+      })
+    );
+    const text = raw.replace(/<!--.*?-->/g, "");
+    expect(text).toContain("Washer #02 (15kg)");
+    expect(text).toContain("Idle / Available");
+    expect(text).toContain("Ready (30 min cycle)");
+    expect(text).toContain("Start");
+    expect(text).toContain("Pause");
+    expect(text).toContain("Stop");
+    expect(raw).not.toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Start<\/span>/);
+    expect(raw).toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Pause<\/span>/);
+    expect(raw).toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Stop<\/span>/);
+  });
+
+  it("restricts cycle controls and omits financial price for maintenance specialist in row card", () => {
+    const raw = renderToString(
+      React.createElement(MachineRowCard, {
+        machine: mockMaintenanceProjection,
+        branchId: "b1111111-1111-1111-1111-111111111111",
+        userRole: "machine_maintenance",
+        onOpenDetails: () => {},
+      })
+    );
+    const text = raw.replace(/<!--.*?-->/g, "");
+    expect(text).toContain("Washer #01 (15kg)");
+    expect(text).toContain("Diagnostics only");
+    expect(text).toContain("Operator controls restricted");
+    expect(text).not.toContain("<span>Start</span>");
+    expect(text).not.toContain("RM 6.00");
+  });
+});
+
 describe("MachineFleetView component", () => {
-  it("renders fleet category buttons, status filters, 4-column grid, and machine cards", () => {
+  it("renders fleet category buttons, status filters, view mode toggle, and stacked row cards by default", () => {
     const raw = renderToString(
       React.createElement(MachineFleetView, {
         initialMachines: [mockWasherRunning, mockWasherIdle, mockDryerFault],
@@ -238,9 +318,39 @@ describe("MachineFleetView component", () => {
     expect(text).toContain("Washer #01 (15kg)");
     expect(text).toContain("Washer #02 (15kg)");
     expect(text).toContain("Dryer #01 (Gas 16kg)");
-    // Verifies 4-column grid on large screens per Frontend-Specs.md Line 205
-    expect(raw).toContain("xl:grid-cols-4");
+    // Verifies View Mode Toggle exists (Rows and Grid)
+    expect(text).toContain("Rows");
+    expect(text).toContain("Grid");
+    expect(text).toContain("Fleet Equipment");
+    // Verifies dedicated view mode header container exists
+    expect(raw).toMatch(/Fleet Equipment[\s\S]*?aria-label="View mode"/);
+    // Verifies default view renders stacked rows
+    expect(raw).toContain("space-y-3");
     // Verifies no font-mono in MachineFleetView
     expect(raw).not.toContain("font-mono");
+  });
+
+  it("enforces mobile-responsive layout and 44px touch targets on the quick filters bar", () => {
+    const raw = renderToString(
+      React.createElement(MachineFleetView, {
+        initialMachines: [mockWasherRunning, mockWasherIdle, mockDryerFault],
+        branchId: "b1111111-1111-1111-1111-111111111111",
+        userRole: "owner",
+      })
+    );
+    // Equipment Category tabs use responsive 2-col mobile grid with All full-width, collapsing to flex on sm+
+    expect(raw).toContain("grid-cols-2 gap-2 sm:flex");
+    expect(raw).toContain("col-span-2 sm:col-auto");
+    // View mode toggle uses mobile full-width 2-column segmented control, collapsing to flex on sm+
+    expect(raw).toContain("grid grid-cols-2 w-full sm:w-auto sm:flex");
+    // Status filter section uses flex-wrap with integrated Status label
+    expect(raw).toContain("flex flex-wrap items-center gap-1.5 sm:gap-2");
+    // All interactive buttons in quick filters enforce >=44px touch targets (min-h-11)
+    expect(raw).toMatch(/<button[^>]*min-h-11[^>]*>(?:(?!<\/button>)[\s\S])*?<span>All Equipment<\/span>/);
+    expect(raw).toMatch(/<button[^>]*min-h-11[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Rows<\/span>/);
+    expect(raw).toMatch(/<button[^>]*min-h-11[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Grid<\/span>/);
+    // Accessibility: aria-pressed applied to active category, status, and view mode
+    expect(raw).toContain('aria-pressed="true"');
+    expect(raw).toContain('aria-pressed="false"');
   });
 });

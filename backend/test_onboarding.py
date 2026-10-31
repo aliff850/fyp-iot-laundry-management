@@ -96,7 +96,7 @@ def test_public_directory_projects_only_active_names(monkeypatch):
     connection = MagicMock()
     connection.execute.return_value.fetchall.return_value = [{"id": ORG_ID, "name": "Active Branch Co", "private": "hidden"}]
     @contextmanager
-    def database():
+    def database(**_kwargs):
         yield connection
     monkeypatch.setattr(onboarding, "_database", database)
     result = onboarding.public_organizations()
@@ -122,7 +122,7 @@ def test_approval_metadata_failure_leaves_provisional_membership(monkeypatch):
         None,
     ]
     @contextmanager
-    def database():
+    def database(**_kwargs):
         yield connection
     monkeypatch.setattr(onboarding, "_database", database)
     monkeypatch.setattr(onboarding, "_admin_user", lambda *_: user())
@@ -139,7 +139,7 @@ def test_cross_organization_decision_is_not_found(monkeypatch):
     connection = MagicMock()
     connection.execute.return_value.fetchone.side_effect = [{"organization_id": ORG_ID}, None]
     @contextmanager
-    def database():
+    def database(**_kwargs):
         yield connection
     monkeypatch.setattr(onboarding, "_database", database)
     with pytest.raises(HTTPException) as exc:
@@ -164,7 +164,7 @@ def test_owner_retry_after_metadata_failure_uses_one_organization(monkeypatch):
     }
     connections = iter([first, retry, finalize, status])
     @contextmanager
-    def database():
+    def database(**_kwargs):
         yield next(connections)
     monkeypatch.setattr(onboarding, "_database", database)
     attempts = iter([False, True])
@@ -204,7 +204,7 @@ def test_decide_approval_without_role_succeeds(monkeypatch):
         None,  # previous decision
     ]
     @contextmanager
-    def database():
+    def database(**_kwargs):
         yield conn
     monkeypatch.setattr(onboarding, "_database", database)
     monkeypatch.setattr(onboarding, "_admin_user", lambda uid: user())
@@ -219,3 +219,74 @@ def test_decide_approval_without_role_succeeds(monkeypatch):
     sql = [call.args[0] for call in conn.execute.call_args_list]
     assert any("insert into public.join_request_decisions" in s for s in sql)
     assert any("state='approved_unassigned'" in s for s in sql)
+
+
+def test_db_connection_pool_reuses_healthy_idle_connections():
+    dsn = "postgresql://pool-test/db"
+    onboarding._DB_IDLE_POOL.pop(dsn, None)
+    mock_conn = MagicMock()
+    mock_conn.closed = False
+    mock_conn.broken = False
+    onboarding._return_db_connection(dsn, mock_conn)
+    checked_out = onboarding._checkout_db_connection(dsn)
+    assert checked_out is mock_conn
+    onboarding._DB_IDLE_POOL.pop(dsn, None)
+
+
+def test_database_context_manager_accepts_read_only_mode(monkeypatch):
+    mock_conn = MagicMock()
+    mock_conn.closed = False
+    mock_conn.broken = False
+    mock_conn.read_only = False
+
+    monkeypatch.setattr(onboarding, "_configuration", lambda: ("https://test.supabase.co", "key", "postgresql://test/db"))
+    monkeypatch.setattr(onboarding, "_checkout_db_connection", lambda dsn: mock_conn)
+    returned = []
+    monkeypatch.setattr(onboarding, "_return_db_connection", lambda dsn, conn: returned.append(conn))
+
+    with onboarding._database(read_only=True) as conn:
+        assert conn is mock_conn
+        assert conn.read_only is True
+        mock_conn.commit.assert_not_called()
+
+    mock_conn.rollback.assert_called_once()
+    mock_conn.commit.assert_not_called()
+    assert mock_conn.read_only is False
+    assert returned == [mock_conn]
+
+
+def test_database_context_manager_write_mode_commits(monkeypatch):
+    mock_conn = MagicMock()
+    mock_conn.closed = False
+    mock_conn.broken = False
+    mock_conn.read_only = False
+
+    monkeypatch.setattr(onboarding, "_configuration", lambda: ("https://test.supabase.co", "key", "postgresql://test/db"))
+    monkeypatch.setattr(onboarding, "_checkout_db_connection", lambda dsn: mock_conn)
+    returned = []
+    monkeypatch.setattr(onboarding, "_return_db_connection", lambda dsn, conn: returned.append(conn))
+
+    with onboarding._database(read_only=False) as conn:
+        assert conn is mock_conn
+
+    mock_conn.commit.assert_called_once()
+    mock_conn.rollback.assert_not_called()
+    assert returned == [mock_conn]
+
+
+def test_database_with_monkeypatched_connect_accepts_read_only(monkeypatch):
+    mock_conn = MagicMock()
+    mock_conn.read_only = False
+
+    @contextmanager
+    def fake_connect(*args, **kwargs):
+        yield mock_conn
+
+    monkeypatch.setattr(onboarding, "_configuration", lambda: ("https://test.supabase.co", "key", "postgresql://test/db"))
+    monkeypatch.setattr(onboarding.psycopg, "connect", fake_connect)
+
+    with onboarding._database(read_only=True) as conn:
+        assert conn is mock_conn
+        assert mock_conn.read_only is True
+
+

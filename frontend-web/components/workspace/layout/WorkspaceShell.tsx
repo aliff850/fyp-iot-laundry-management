@@ -1,7 +1,11 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { WashingMachine } from "lucide-react";
+import { Building2, Users, WashingMachine } from "lucide-react";
 import { SignOutButton } from "@/components/auth/SignOutButton";
+import {
+  WorkspaceNav,
+  type WorkspaceNavItem,
+} from "@/components/workspace/layout/WorkspaceNav";
 
 export function WorkspaceShell({
   title,
@@ -16,11 +20,26 @@ export function WorkspaceShell({
 }) {
   const isBranches = title === "Branches" || title === "Create branch";
   const isPersonnel = title === "Personnel" || title === "Requests";
+  const isAccount = title === "Account";
 
-  const baseNavLink =
-    "inline-flex min-h-11 items-center rounded-md px-3 text-sm text-muted transition-colors duration-150 hover:bg-navy-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent motion-reduce:transition-none";
-  const activeNavLink =
-    "inline-flex min-h-11 items-center rounded-md bg-navy-selected px-3 text-sm font-semibold text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent";
+  const navItems: WorkspaceNavItem[] = [
+    {
+      id: "branches",
+      label: "Branches",
+      href: "/branches",
+      icon: Building2,
+      visible: true,
+    },
+    {
+      id: "personnel",
+      label: "Personnel",
+      href: "/personnel",
+      icon: Users,
+      visible: owner,
+    },
+  ];
+
+  const activeId = isBranches ? "branches" : isPersonnel ? "personnel" : isAccount ? "account" : "";
 
   return (
     <div className="min-h-screen bg-canvas font-sans text-sm leading-normal text-ink scheme-dark">
@@ -43,33 +62,22 @@ export function WorkspaceShell({
           </Link>
 
           <div className="flex items-center gap-3 md:gap-4">
-            <nav aria-label="Operator navigation" className="flex items-center gap-2">
-              <Link
-                href="/branches"
-                aria-current={isBranches ? "page" : undefined}
-                className={isBranches ? activeNavLink : baseNavLink}
-              >
-                Branches
-              </Link>
-              {owner && (
-                <Link
-                  href="/personnel"
-                  aria-current={isPersonnel ? "page" : undefined}
-                  className={isPersonnel ? activeNavLink : baseNavLink}
-                >
-                  Personnel
-                </Link>
-              )}
-            </nav>
+            <WorkspaceNav
+              items={navItems}
+              activeId={activeId}
+              ariaLabel="Operator navigation"
+            />
 
-            <SignOutButton />
+            <div className="hidden md:block">
+              <SignOutButton />
+            </div>
           </div>
         </div>
       </header>
 
       <main
         id="main-content"
-        className="mx-auto w-full max-w-360 px-4 py-6 md:px-6 md:pt-9 md:pb-7 xl:px-10"
+        className="mx-auto w-full max-w-360 px-4 pt-6 pb-24 md:px-6 md:pt-9 md:pb-7 xl:px-10"
       >
         {organization && (
           <div className="mb-6 flex items-center gap-2 text-xs text-faint">

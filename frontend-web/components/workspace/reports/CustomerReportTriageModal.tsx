@@ -2,15 +2,18 @@
 
 import React, { useEffect, useState, useTransition } from "react";
 import {
-  X,
+  AlertCircle,
+  Calendar,
   CheckCircle2,
   Clock,
+  MessageSquare,
   MessageSquareWarning,
   Phone,
+  Search,
   User,
   Wrench,
+  X,
   XCircle,
-  Search,
 } from "lucide-react";
 import type {
   CustomerReportItem,
@@ -171,10 +174,10 @@ export function CustomerReportTriageModal({
       <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-md border border-line bg-surface shadow-lg">
         {/* Top Modal Header */}
         <div className="flex items-start justify-between gap-4 border-b border-rule px-5 py-4">
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-semibold text-muted tabular-nums">
-                {report.id}
+              <span className="rounded border border-rule bg-raised/80 px-2 py-0.5 text-xs font-semibold text-ink tabular-nums">
+                #{report.id}
               </span>
               <span
                 className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 text-xs font-medium ${statusBadge.wrapper}`}
@@ -185,21 +188,25 @@ export function CustomerReportTriageModal({
                 />
                 <span>{statusBadge.label}</span>
               </span>
-              {report.source_kind === "simulated" && (
-                <span className="rounded border border-rule bg-raised px-2 py-0.5 text-[11px] font-medium text-muted">
-                  Simulated
-                </span>
-              )}
-              <span className="rounded border border-rule bg-raised px-2 py-0.5 text-[11px] font-medium text-muted">
+              <span className="rounded border border-rule bg-raised px-2 py-0.5 text-xs font-medium text-muted">
                 Acting as: {formatActorRole(userRole)}
               </span>
             </div>
-            <h2
-              id="triage-modal-title"
-              className="text-base font-semibold text-ink"
-            >
-              {report.category} · {report.asset_name}
-            </h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2
+                id="triage-modal-title"
+                className="text-base font-semibold text-ink"
+              >
+                {report.asset_name}
+              </h2>
+              <span className="text-faint font-normal" aria-hidden="true">
+                ·
+              </span>
+              <span className="inline-flex items-center gap-1 text-xs font-semibold text-warning">
+                <AlertCircle className="size-3 text-warning shrink-0" aria-hidden="true" />
+                <span>{report.category}</span>
+              </span>
+            </div>
           </div>
 
           <button
@@ -215,35 +222,51 @@ export function CustomerReportTriageModal({
         {/* Scrollable Modal Body */}
         <div className="flex-1 space-y-5 overflow-y-auto p-5">
           {/* Customer Report Observation Summary */}
-          <div className="space-y-3 rounded-md border border-rule bg-raised/30 p-4">
-            <div className="flex items-center justify-between gap-2 text-xs text-muted">
-              <span className="flex items-center gap-1.5 font-medium text-ink">
-                <MessageSquareWarning
-                  className="size-3.5 text-accent"
-                  aria-hidden="true"
-                />
-                <span>Customer Observation</span>
-              </span>
-              <span className="tabular-nums">
-                {formatTimestamp(report.created_at)}
-              </span>
+          <div className="space-y-3.5 rounded-md border border-rule bg-raised/30 p-4">
+            {/* Header: Machine, Issue Category, and Date */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rule pb-2.5 text-xs">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-muted">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-faint">Machine:</span>
+                  <span className="font-semibold text-ink">{report.asset_name}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-faint">Issue:</span>
+                  <span className="font-medium text-warning">{report.category}</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-muted">
+                <Calendar className="size-3.5 text-faint" aria-hidden="true" />
+                <span>Reported:</span>
+                <span className="font-medium text-ink tabular-nums">
+                  {formatTimestamp(report.created_at)}
+                </span>
+              </div>
             </div>
 
-            <p className="text-sm leading-relaxed text-ink">
-              {report.description}
-            </p>
+            {/* Complaint quote well */}
+            <div className="space-y-1">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-muted">
+                <MessageSquare className="size-3.5 text-accent" aria-hidden="true" />
+                <span>Customer Complaint</span>
+              </span>
+              <p className="text-sm leading-relaxed text-ink">
+                &ldquo;{report.description}&rdquo;
+              </p>
+            </div>
 
-            <div className="flex flex-wrap items-center gap-4 border-t border-rule pt-3 text-xs text-muted">
-              <span className="inline-flex items-center gap-1.5">
+            {/* Reporter Contact Info */}
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5 border-t border-rule pt-2.5 text-xs text-muted">
+              <div className="flex items-center gap-1.5">
                 <User className="size-3.5 text-faint" aria-hidden="true" />
-                <span>
-                  Reporter: <strong className="font-medium text-ink">{report.reporter_name}</strong>
-                </span>
-              </span>
-              <span className="inline-flex items-center gap-1.5 tabular-nums">
+                <span>Reporter:</span>
+                <span className="font-medium text-ink">{report.reporter_name}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
                 <Phone className="size-3.5 text-faint" aria-hidden="true" />
-                <span>{report.reporter_contact}</span>
-              </span>
+                <span>Phone:</span>
+                <span className="font-medium text-ink tabular-nums">{report.reporter_contact}</span>
+              </div>
             </div>
           </div>
 
@@ -265,14 +288,13 @@ export function CustomerReportTriageModal({
             </div>
           )}
 
-          {/* Step 1: Investigation Notes & Specialist Domain Assignment (CR-02) */}
+          {/* Step 1: Investigation Notes & Specialist Domain Assignment */}
           <form onSubmit={handleInvestigateSubmit} className="space-y-3 rounded-md border border-line bg-surface p-4">
             <div className="flex items-center justify-between">
               <h3 className="flex items-center gap-1.5 text-xs font-semibold text-ink">
                 <Search className="size-3.5 text-accent" aria-hidden="true" />
                 <span>1. Investigation &amp; Maintenance Triage</span>
               </h3>
-              <span className="text-[11px] text-faint">CR-02</span>
             </div>
 
             <div>
@@ -341,7 +363,7 @@ export function CustomerReportTriageModal({
             </div>
           </form>
 
-          {/* Step 2: Resolution or Dismissal with Reason (CR-03) */}
+          {/* Step 2: Resolution or Dismissal with Reason */}
           <div className="space-y-3 rounded-md border border-line bg-surface p-4">
             <div className="flex items-center justify-between">
               <h3 className="flex items-center gap-1.5 text-xs font-semibold text-ink">
@@ -351,7 +373,6 @@ export function CustomerReportTriageModal({
                 />
                 <span>2. Close Support Ticket (Resolve or Dismiss)</span>
               </h3>
-              <span className="text-[11px] text-faint">CR-03</span>
             </div>
 
             <div>

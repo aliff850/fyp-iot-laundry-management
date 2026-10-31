@@ -6,6 +6,8 @@ import {
   type SelectionOption,
 } from "@/components/workspace/personnel/PersonnelSelectionDropdown";
 import { PersonnelRoleSelect } from "@/components/workspace/personnel/PersonnelRoleSelect";
+import { PersonnelBranchSelect } from "@/components/workspace/personnel/PersonnelBranchSelect";
+import type { WorkspaceBranch } from "@/lib/auth/business";
 
 const mockBranchOptions: SelectionOption[] = [
   {
@@ -201,5 +203,76 @@ describe("PersonnelSelectionDropdown component", () => {
     const text = raw.replace(/<!--.*?-->/g, "");
     expect(text).toContain("Owner (Permanent)");
     expect(text).not.toContain("button");
+  });
+
+  it("PersonnelBranchSelect ticks assigned branch checkboxes when opened", () => {
+    const branches: WorkspaceBranch[] = [
+      {
+        id: "b1111111-1111-1111-1111-111111111111",
+        name: "MSU Shah Alam",
+        address: "Seksyen 13",
+        city: "Shah Alam",
+        region: "Selangor",
+        postal_code: "40100",
+        latitude: null,
+        longitude: null,
+        contact_phone: "+60123456789",
+        opening_hours: "Daily 08:00-22:00",
+        primary_manager_user_id: "u1111111-1111-1111-1111-111111111111",
+        service_status: "open",
+        created_at: "2026-10-27T00:00:00Z",
+      },
+      {
+        id: "b2222222-2222-2222-2222-222222222222",
+        name: "Subang Jaya SS15",
+        address: "Jalan SS 15/4",
+        city: "Subang Jaya",
+        region: "Selangor",
+        postal_code: "47500",
+        latitude: null,
+        longitude: null,
+        contact_phone: "+60123456789",
+        opening_hours: "Daily 08:00-22:00",
+        primary_manager_user_id: "u9999999-9999-9999-9999-999999999999",
+        service_status: "open",
+        created_at: "2026-10-27T00:00:00Z",
+      },
+      {
+        id: "b3333333-3333-3333-3333-333333333333",
+        name: "Sunway Pyramid",
+        address: "Bandar Sunway",
+        city: "Petaling Jaya",
+        region: "Selangor",
+        postal_code: "46150",
+        latitude: null,
+        longitude: null,
+        contact_phone: "+60123456789",
+        opening_hours: "Daily 08:00-22:00",
+        primary_manager_user_id: "u9999999-9999-9999-9999-999999999999",
+        service_status: "open",
+        created_at: "2026-10-27T00:00:00Z",
+      },
+    ];
+
+    const raw = renderToString(
+      React.createElement(PersonnelBranchSelect, {
+        userId: "u1111111-1111-1111-1111-111111111111",
+        fullName: "Ahmad Faiz",
+        branches,
+        assignedBranchIds: ["b2222222-2222-2222-2222-222222222222"],
+        assignedBranchNames: ["Subang Jaya SS15"],
+        defaultOpen: true,
+      })
+    );
+    const text = raw.replace(/<!--.*?-->/g, "");
+    expect(text).toContain("2 locations");
+    expect(text).toContain("MSU Shah Alam");
+    expect(text).toContain("Subang Jaya SS15");
+    expect(text).toContain("Sunway Pyramid");
+    // Two assigned branches should be checked (MSU Shah Alam via primary_manager_user_id, Subang Jaya SS15 via assignedBranchIds)
+    const checkedMatches = text.match(/role="checkbox"\s+aria-checked="true"/g) ?? [];
+    const uncheckedMatches = text.match(/role="checkbox"\s+aria-checked="false"/g) ?? [];
+    expect(checkedMatches.length).toBe(2);
+    expect(uncheckedMatches.length).toBe(1);
   });
 });

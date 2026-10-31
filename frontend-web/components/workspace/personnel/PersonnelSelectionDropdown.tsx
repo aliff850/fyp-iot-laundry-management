@@ -153,9 +153,11 @@ export function PersonnelSelectionDropdown({
     return <span className="text-xs text-faint italic">{ownerText}</span>;
   }
 
+  const normalize = (val: string) => val.trim().toLowerCase();
+
   // Determine if selection has changed from committed values
-  const currentSet = new Set(currentValues);
-  const selectedSet = new Set(selected);
+  const currentSet = new Set(currentValues.map(normalize));
+  const selectedSet = new Set(selected.map(normalize));
   const hasChanged =
     currentSet.size !== selectedSet.size ||
     [...selectedSet].some(v => !currentSet.has(v));
@@ -163,15 +165,16 @@ export function PersonnelSelectionDropdown({
   // Determine trigger button label
   let triggerLabel = buttonPlaceholder;
   if (mode === "radio") {
-    const activeVal = selected[0] ?? "";
-    const activeOpt = options.find(o => o.value === activeVal);
+    const activeVal = normalize(selected[0] ?? "");
+    const activeOpt = options.find(o => normalize(o.value) === activeVal);
     triggerLabel = activeOpt ? activeOpt.label : buttonPlaceholder;
   } else {
     // Checkbox mode
     if (selected.length === 0) {
       triggerLabel = buttonPlaceholder;
     } else if (selected.length === 1) {
-      const match = options.find(o => o.value === selected[0]);
+      const target = normalize(selected[0]);
+      const match = options.find(o => normalize(o.value) === target);
       triggerLabel = match ? match.label : "1 location";
     } else {
       triggerLabel = `${selected.length} locations`;
@@ -184,8 +187,9 @@ export function PersonnelSelectionDropdown({
       setSelected([val]);
     } else {
       // Checkbox mode
-      if (selected.includes(val)) {
-        setSelected(selected.filter(v => v !== val));
+      const normVal = normalize(val);
+      if (selected.some(v => normalize(v) === normVal)) {
+        setSelected(selected.filter(v => normalize(v) !== normVal));
       } else {
         setSelected([...selected, val]);
       }
@@ -254,7 +258,7 @@ export function PersonnelSelectionDropdown({
           </p>
         ) : (
           options.map(opt => {
-            const isChecked = selected.includes(opt.value);
+            const isChecked = selectedSet.has(normalize(opt.value));
             return (
               <button
                 key={opt.value}

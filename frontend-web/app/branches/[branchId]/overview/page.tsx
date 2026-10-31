@@ -14,6 +14,7 @@ import {
 import { Notice } from "@/components/auth/AuthForm";
 import { BranchWorkspaceShell } from "@/components/workspace/layout/BranchWorkspaceShell";
 import { BranchPerformanceChart } from "@/components/workspace/overview/BranchPerformanceChart";
+import { MetricCard, MetricGrid } from "@/components/workspace/common/MetricCard";
 import { getBranchOverview, getMembership } from "@/lib/auth/business";
 
 export const metadata: Metadata = { title: "Branch Overview" };
@@ -117,48 +118,83 @@ export default async function BranchOverviewPage({ params }: BranchOverviewPageP
           </div>
         )}
 
-        {/* Basic Stats Row (Matched with branches/page.tsx) */}
-        <div
-          className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6"
-          aria-label="Branch and equipment statistics"
+        {/* Grouped Metric Statistics Container (Infrastructure & Operational Activity) */}
+        <section
+          className="rounded-md border border-line bg-surface p-5 md:p-6"
+          aria-label="Branch statistics"
         >
-          <Metric
-            icon={<WashingMachine className="size-4" aria-hidden="true" />}
-            label="Total machines"
-            value={overview.fleet.total_machines}
-            href={`/branches/${branch.id}/machines`}
-          />
-          <Metric
-            icon={<Activity className="size-4" aria-hidden="true" />}
-            label="Machines running"
-            value={overview.fleet.running}
-            href={`/branches/${branch.id}/machines`}
-          />
-          <Metric
-            icon={<AlertCircle className="size-4" aria-hidden="true" />}
-            label="Machines down"
-            value={overview.fleet.error + overview.fleet.offline}
-            href={`/branches/${branch.id}/machines`}
-          />
-          <Metric
-            icon={<Flame className="size-4" aria-hidden="true" />}
-            label="LPG cylinders"
-            value={overview.lpg.total_cylinders}
-            href={`/branches/${branch.id}/lpg`}
-          />
-          <Metric
-            icon={<Users className="size-4" aria-hidden="true" />}
-            label="Branch personnel"
-            value={overview.personnel.total_assigned}
-            href={`/branches/${branch.id}/personnel`}
-          />
-          <Metric
-            icon={<MessageSquareWarning className="size-4" aria-hidden="true" />}
-            label="Customer reports"
-            value={overview.customer_reports.pending_count}
-            href={`/branches/${branch.id}/customer-reports`}
-          />
-        </div>
+          <div className="space-y-6">
+            <div>
+              <h2 id="branch-infrastructure-heading" className="text-sm font-semibold text-ink mb-3">
+                Infrastructure
+              </h2>
+              <MetricGrid
+                columns={3}
+                ariaLabel="Branch infrastructure statistics"
+              >
+                <MetricCard
+                  size="sm"
+                  variant="raised"
+                  icon={<WashingMachine className="size-4" aria-hidden="true" />}
+                  label="Total machines"
+                  value={overview.fleet.total_machines}
+                  href={`/branches/${branch.id}/machines`}
+                />
+                <MetricCard
+                  size="sm"
+                  variant="raised"
+                  icon={<Flame className="size-4" aria-hidden="true" />}
+                  label="LPG cylinders"
+                  value={overview.lpg.total_cylinders}
+                  href={`/branches/${branch.id}/lpg`}
+                />
+                <MetricCard
+                  size="sm"
+                  variant="raised"
+                  icon={<Users className="size-4" aria-hidden="true" />}
+                  label="Branch personnel"
+                  value={overview.personnel.total_assigned}
+                  href={`/branches/${branch.id}/personnel`}
+                />
+              </MetricGrid>
+            </div>
+
+            <div className="border-t border-rule pt-6">
+              <h2 id="branch-operations-heading" className="text-sm font-semibold text-ink mb-3">
+                Operational activity
+              </h2>
+              <MetricGrid
+                columns={3}
+                ariaLabel="Branch operational activity statistics"
+              >
+                <MetricCard
+                  size="sm"
+                  variant="raised"
+                  icon={<Activity className="size-4" aria-hidden="true" />}
+                  label="Machines running"
+                  value={overview.fleet.running}
+                  href={`/branches/${branch.id}/machines`}
+                />
+                <MetricCard
+                  size="sm"
+                  variant="raised"
+                  icon={<AlertCircle className="size-4" aria-hidden="true" />}
+                  label="Machines down"
+                  value={overview.fleet.error + overview.fleet.offline}
+                  href={`/branches/${branch.id}/machines`}
+                />
+                <MetricCard
+                  size="sm"
+                  variant="raised"
+                  icon={<MessageSquareWarning className="size-4" aria-hidden="true" />}
+                  label="Customer reports"
+                  value={overview.customer_reports.pending_count}
+                  href={`/branches/${branch.id}/customer-reports`}
+                />
+              </MetricGrid>
+            </div>
+          </div>
+        </section>
 
         {/* Visuals & Charts (Chart.js Powered Branch Analytics) */}
         <BranchPerformanceChart
@@ -167,39 +203,5 @@ export default async function BranchOverviewPage({ params }: BranchOverviewPageP
         />
       </div>
     </BranchWorkspaceShell>
-  );
-}
-
-function Metric({
-  icon,
-  label,
-  value,
-  href,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: number;
-  href?: string;
-}) {
-  const content = (
-    <>
-      <div className="flex items-center gap-1.5 text-muted">
-        <span className="shrink-0">{icon}</span>
-        <span className="truncate text-xs text-muted">{label}</span>
-      </div>
-      <strong className="mt-1 text-xl font-semibold text-ink tabular-nums">{value}</strong>
-    </>
-  );
-  const base =
-    "flex flex-col justify-between rounded-md border border-line bg-surface p-3 transition-colors";
-  return href ? (
-    <Link
-      href={href}
-      className={`${base} hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none`}
-    >
-      {content}
-    </Link>
-  ) : (
-    <div className={base}>{content}</div>
   );
 }

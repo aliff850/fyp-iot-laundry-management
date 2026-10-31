@@ -20,22 +20,39 @@ function apiBase(): string | null {
   } catch { return null; }
 }
 
+let inFlightTokenPromise: Promise<Result<string>> | null = null;
+
+async function resolveVerifiedBearerToken(): Promise<Result<string>> {
+  if (inFlightTokenPromise) return inFlightTokenPromise;
+  inFlightTokenPromise = (async (): Promise<Result<string>> => {
+    try {
+      const client = await createClient();
+      if (!client) return { ok: false, status: 503, message: "Authentication is unavailable." };
+      // getUser establishes a fresh verified identity; getSession only supplies its bearer token.
+      const { data: identity, error: identityError } = await client.auth.getUser();
+      if (identityError || !identity.user?.email_confirmed_at) {
+        return { ok: false, status: 401, message: "Log in with a confirmed account." };
+      }
+      const { data: session, error: sessionError } = await client.auth.getSession();
+      if (sessionError || !session.session?.access_token) {
+        return { ok: false, status: 401, message: "Your session has expired. Log in again." };
+      }
+      return { ok: true, value: session.session.access_token };
+    } catch {
+      return { ok: false, status: 503, message: "Authentication is temporarily unavailable." };
+    } finally {
+      inFlightTokenPromise = null;
+    }
+  })();
+  return inFlightTokenPromise;
+}
+
 export async function businessRequest<T>(path: string, method = "GET", body?: object): Promise<Result<T>> {
   const base = apiBase();
   if (!base) return { ok: false, status: 503, message: "Business service is not configured." };
-  let token: string;
-  try {
-    const client = await createClient();
-    if (!client) return { ok: false, status: 503, message: "Authentication is unavailable." };
-    // getUser establishes a fresh verified identity; getSession only supplies its bearer token.
-    const { data: identity, error: identityError } = await client.auth.getUser();
-    if (identityError || !identity.user?.email_confirmed_at) return { ok: false, status: 401, message: "Log in with a confirmed account." };
-    const { data: session, error: sessionError } = await client.auth.getSession();
-    if (sessionError || !session.session?.access_token) return { ok: false, status: 401, message: "Your session has expired. Log in again." };
-    token = session.session.access_token;
-  } catch {
-    return { ok: false, status: 503, message: "Authentication is temporarily unavailable." };
-  }
+  const tokenRes = await resolveVerifiedBearerToken();
+  if (!tokenRes.ok) return tokenRes;
+  const token = tokenRes.value;
   try {
     const response = await fetch(`${base}${path}`, {
       method, cache: "no-store", signal: AbortSignal.timeout(method === "GET" ? 10000 : 30000),
@@ -43,6 +60,25 @@ export async function businessRequest<T>(path: string, method = "GET", body?: ob
       body: body ? JSON.stringify(body) : undefined,
     });
     if (!response.ok) {
+      let detailMessage: string | null = null;
+      try {
+        const errorData = await response.json();
+        if (typeof errorData?.detail === "string" && errorData.detail.trim()) {
+          detailMessage = errorData.detail.trim();
+        } else if (Array.isArray(errorData?.detail)) {
+          detailMessage = errorData.detail
+            .map((err: { loc?: unknown[]; msg?: string }) => {
+              const field = Array.isArray(err.loc) && err.loc.length > 1 ? String(err.loc[err.loc.length - 1]) : "";
+              return field ? `${field}: ${err.msg || "invalid value"}` : (err.msg || "invalid value");
+            })
+            .filter(Boolean)
+            .join("; ");
+        } else if (typeof errorData?.message === "string" && errorData.message.trim()) {
+          detailMessage = errorData.message.trim();
+        }
+      } catch {
+        // Response was not JSON
+      }
       const messages: Record<number, string> = {
         401: "Your session has expired. Log in again.",
         403: "This action is not permitted for your current account.",
@@ -51,7 +87,7 @@ export async function businessRequest<T>(path: string, method = "GET", body?: ob
         422: "Review the selected action and role.",
         503: "Business setup is temporarily unavailable. Please retry.",
       };
-      return { ok: false, status: response.status, message: messages[response.status] ?? "The business service could not complete this request." };
+      return { ok: false, status: response.status, message: detailMessage || messages[response.status] || "The business service could not complete this request." };
     }
     return { ok: true, value: await response.json() as T };
   } catch {
@@ -238,6 +274,34 @@ export type BranchOverviewData = {
 
 export async function getBranch(branchId: string): Promise<Result<BranchDetail>> {
   const result = await businessRequest<{ branch: BranchDetail }>(`/branches/${branchId}`);
+  if (!result.ok) return result;
+  if (!result.value?.branch || !validBranch(result.value.branch)) return invalid();
+  return { ok: true, value: result.value.branch };
+}
+
+export interface BranchUpdatePayload {
+  name: string;
+  address: string;
+  city: string;
+  region: string;
+  postal_code: string;
+  contact_phone: string;
+  opening_hours: string;
+  service_status: "open" | "closed";
+  latitude: number | null;
+  longitude: number | null;
+  primary_manager_user_id?: string;
+}
+
+export async function updateBranchDetails(
+  branchId: string,
+  payload: BranchUpdatePayload,
+): Promise<Result<WorkspaceBranch>> {
+  const result = await businessRequest<{ branch: WorkspaceBranch }>(
+    `/branches/${encodeURIComponent(branchId)}`,
+    "PATCH",
+    payload,
+  );
   if (!result.ok) return result;
   if (!result.value?.branch || !validBranch(result.value.branch)) return invalid();
   return { ok: true, value: result.value.branch };

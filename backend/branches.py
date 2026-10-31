@@ -43,6 +43,31 @@ class BranchCreate(BaseModel):
         return self
 
 
+class BranchUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    address: str = Field(min_length=1, max_length=240)
+    city: str = Field(min_length=1, max_length=100)
+    region: str = Field(min_length=1, max_length=100)
+    postal_code: str = Field(min_length=1, max_length=20)
+    contact_phone: str = Field(min_length=7, max_length=32, pattern=r"^[+()0-9 .-]+$")
+    opening_hours: str = Field(min_length=1, max_length=200)
+    service_status: Literal["open", "closed"] = "open"
+    latitude: float | None = Field(default=None, ge=-90, le=90, allow_inf_nan=False)
+    longitude: float | None = Field(default=None, ge=-180, le=180, allow_inf_nan=False)
+    primary_manager_user_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def valid_location(self):
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Provide both coordinates or leave both blank")
+        for field in ("name", "address", "city", "region", "postal_code", "opening_hours"):
+            value = getattr(self, field).strip()
+            if not value:
+                raise ValueError(f"{field} cannot be blank")
+            setattr(self, field, value)
+        return self
+
+
 def _membership(conn, user_id):
     row = conn.execute(
         """select m.organization_id, m.state, m.role, m.active, o.state as organization_state
@@ -68,7 +93,7 @@ def _branch(row):
 
 @router.get("/branches")
 def list_branches(user=Depends(_user)):
-    with _database() as conn:
+    with _database(read_only=True) as conn:
         member = _membership(conn, user["id"])
         owner = member["state"] == "active" and member["role"] == "owner"
         if member["state"] == "approved_unassigned":
@@ -103,7 +128,7 @@ def list_branches(user=Depends(_user)):
 
 @router.get("/branches/manager-options")
 def manager_options(user=Depends(_user)):
-    with _database() as conn:
+    with _database(read_only=True) as conn:
         member = _membership(conn, user["id"])
         if member["state"] != "active" or member["role"] != "owner":
             raise HTTPException(403, "An active owner membership is required")
@@ -189,7 +214,7 @@ def create_branch(payload: BranchCreate, user=Depends(_user)):
 
 @router.get("/branches/{branch_id}")
 def get_branch(branch_id: UUID, user=Depends(_user)):
-    with _database() as conn:
+    with _database(read_only=True) as conn:
         member = _membership(conn, user["id"])
         owner = member["state"] == "active" and member["role"] == "owner"
         if not owner and member["state"] != "active":
@@ -227,9 +252,118 @@ def get_branch(branch_id: UUID, user=Depends(_user)):
         return {"branch": b_data}
 
 
+@router.patch("/branches/{branch_id}")
+def update_branch(branch_id: UUID, payload: BranchUpdate, user=Depends(_user)):
+    promoted_from_unassigned = False
+    with _database() as conn:
+        member = _membership(conn, user["id"])
+        owner = member["state"] == "active" and member["role"] == "owner"
+        is_manager = member["state"] == "active" and member["role"] == "branch_manager"
+        if not (owner or is_manager):
+            raise HTTPException(403, "Only owners and assigned branch managers may update branch details")
+        organization = member["organization_id"]
+
+        if is_manager:
+            assigned = conn.execute(
+                """select 1 from public.branch_assignments
+                   where branch_id=%s and user_id=%s and organization_id=%s
+                   union
+                   select 1 from public.branches
+                   where id=%s and primary_manager_user_id=%s and organization_id=%s""",
+                (branch_id, user["id"], organization, branch_id, user["id"], organization),
+            ).fetchone()
+            if not assigned:
+                raise HTTPException(403, "You are not assigned to this branch")
+
+        existing = conn.execute(
+            "select * from public.branches where id=%s and organization_id=%s",
+            (branch_id, organization),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(404, "Branch not found")
+
+        duplicate = conn.execute(
+            "select 1 from public.branches where organization_id=%s and lower(name)=lower(%s) and id <> %s",
+            (organization, payload.name, branch_id),
+        ).fetchone()
+        if duplicate:
+            raise HTTPException(409, "A branch with this name already exists")
+
+        current_manager_id = existing["primary_manager_user_id"]
+        new_manager_id = payload.primary_manager_user_id or current_manager_id
+        manager_changed = str(new_manager_id) != str(current_manager_id)
+
+        if manager_changed:
+            if not owner:
+                raise HTTPException(403, "Only organization owners may reassign the primary branch manager")
+            manager = conn.execute(
+                """select role, state from public.memberships where user_id=%s and organization_id=%s and active
+                     and ((role='owner' and state='active') or
+                          (role='branch_manager' and state in ('approved_unassigned', 'active')) or
+                          (role is null and state in ('approved_unassigned', 'active')))""",
+                (new_manager_id, organization),
+            ).fetchone()
+            if not manager:
+                raise HTTPException(
+                    422,
+                    "Select an active owner, branch manager, or unassigned personnel in this organization",
+                )
+            conn.execute(
+                """insert into public.branch_assignments(branch_id, organization_id, user_id)
+                   values (%s, %s, %s)
+                   on conflict (branch_id, user_id) do nothing""",
+                (branch_id, organization, new_manager_id),
+            )
+            if manager["role"] == "branch_manager" and manager["state"] == "approved_unassigned":
+                conn.execute(
+                    """update public.memberships set state='active', updated_at=now()
+                       where user_id=%s and organization_id=%s and role='branch_manager'
+                         and state='approved_unassigned' and active""",
+                    (new_manager_id, organization),
+                )
+            elif manager["role"] is None:
+                promoted_from_unassigned = True
+                conn.execute(
+                    """update public.memberships set state='active', role='branch_manager', updated_at=now()
+                       where user_id=%s and organization_id=%s and role is null and active""",
+                    (new_manager_id, organization),
+                )
+
+        row = conn.execute(
+            """update public.branches
+                  set name=%s, address=%s, city=%s, region=%s, postal_code=%s,
+                      contact_phone=%s, opening_hours=%s, service_status=%s,
+                      latitude=%s, longitude=%s, primary_manager_user_id=%s
+                where id=%s and organization_id=%s
+                returning *""",
+            (
+                payload.name,
+                payload.address,
+                payload.city,
+                payload.region,
+                payload.postal_code,
+                payload.contact_phone,
+                payload.opening_hours,
+                payload.service_status,
+                payload.latitude,
+                payload.longitude,
+                new_manager_id,
+                branch_id,
+                organization,
+            ),
+        ).fetchone()
+
+    if promoted_from_unassigned:
+        target = _admin_user(str(new_manager_id))
+        _assert_confirmed_active(target)
+        _role_metadata(str(new_manager_id), "branch_manager", target)
+
+    return {"branch": _branch(row)}
+
+
 @router.get("/branches/{branch_id}/overview")
 def get_branch_overview(branch_id: UUID, user=Depends(_user)):
-    with _database() as conn:
+    with _database(read_only=True) as conn:
         member = _membership(conn, user["id"])
         owner = member["state"] == "active" and member["role"] == "owner"
         is_manager = member["state"] == "active" and member["role"] == "branch_manager"
@@ -364,7 +498,7 @@ def delete_branch(branch_id: UUID, user=Depends(_user)):
 
 @router.get("/personnel")
 def list_personnel(user=Depends(_user)):
-    with _database() as conn:
+    with _database(read_only=True) as conn:
         member = _membership(conn, user["id"])
         owner = member["state"] == "active" and member["role"] == "owner"
         if not owner:
@@ -372,12 +506,13 @@ def list_personnel(user=Depends(_user)):
         organization = member["organization_id"]
         rows = conn.execute(
             """select m.user_id, p.full_name, p.phone, m.role, m.state, m.created_at,
-                      array_remove(array_agg(b.name order by b.name), null) as assigned_branches,
-                      array_remove(array_agg(b.id::text order by b.name), null) as assigned_branch_ids
+                      array_remove(array_agg(distinct b.name order by b.name), null) as assigned_branches,
+                      array_remove(array_agg(distinct b.id::text), null) as assigned_branch_ids
                from public.memberships m
                join public.profiles p on p.user_id=m.user_id
                left join public.branch_assignments a on a.user_id=m.user_id and a.organization_id=m.organization_id
-               left join public.branches b on b.id=a.branch_id
+               left join public.branches b on b.organization_id=m.organization_id
+                 and (b.id=a.branch_id or b.primary_manager_user_id=m.user_id)
                where m.organization_id=%s and m.active and m.state in ('active', 'approved_unassigned')
                group by m.user_id, p.full_name, p.phone, m.role, m.state, m.created_at
                order by case when m.role='owner' then 0 else 1 end, p.full_name""",
@@ -537,7 +672,7 @@ def update_personnel_branches(user_id: UUID, payload: PersonnelBranchesUpdate, u
 
 @router.get("/branches/{branch_id}/personnel")
 def list_branch_personnel(branch_id: UUID, user=Depends(_user)):
-    with _database() as conn:
+    with _database(read_only=True) as conn:
         member = _membership(conn, user["id"])
         owner = member["state"] == "active" and member["role"] == "owner"
         is_manager = member["state"] == "active" and member["role"] == "branch_manager"
@@ -689,7 +824,7 @@ def _init_default_fleet(branch_id: UUID) -> dict[str, dict]:
             "type": "washer",
             "status": "RUNNING",
             "remaining_time": 18,
-            "current_cycle": "Standard Cotton 40°C",
+            "current_cycle": "Standard Cotton 40Â°C",
             "phase": "Wash",
             "capacity_kg": 15,
             "power_w": 1850.0,
@@ -739,7 +874,7 @@ def _init_default_fleet(branch_id: UUID) -> dict[str, dict]:
             "type": "washer",
             "status": "RUNNING",
             "remaining_time": 27,
-            "current_cycle": "Heavy Bedding 60°C",
+            "current_cycle": "Heavy Bedding 60Â°C",
             "phase": "Rinse",
             "capacity_kg": 20,
             "power_w": 2100.0,
@@ -878,7 +1013,7 @@ def _authorize_branch_access(conn, user_id: UUID, branch_id: UUID, allowed_roles
 
 @router.get("/branches/{branch_id}/machines")
 def get_branch_machines(branch_id: UUID, type: str | None = None, user=Depends(_user)):
-    with _database() as conn:
+    with _database(read_only=True) as conn:
         member, _ = _authorize_branch_access(
             conn, user["id"], branch_id, ("owner", "branch_manager", "machine_maintenance")
         )
@@ -892,7 +1027,7 @@ def get_branch_machines(branch_id: UUID, type: str | None = None, user=Depends(_
 
 @router.get("/branches/{branch_id}/machines/{machine_id}")
 def get_branch_machine(branch_id: UUID, machine_id: str, user=Depends(_user)):
-    with _database() as conn:
+    with _database(read_only=True) as conn:
         member, _ = _authorize_branch_access(
             conn, user["id"], branch_id, ("owner", "branch_manager", "machine_maintenance")
         )
@@ -932,7 +1067,7 @@ def issue_machine_command(branch_id: UUID, machine_id: str, body: MachineCommand
             m["power_w"] = 1850.0 if m["type"] == "washer" else 480.0
             m["drum_rpm"] = 800 if m["type"] == "washer" else 450
             if not m.get("current_cycle"):
-                m["current_cycle"] = "Standard Cotton 40°C" if m["type"] == "washer" else "High Heat Express"
+                m["current_cycle"] = "Standard Cotton 40Â°C" if m["type"] == "washer" else "High Heat Express"
         elif cmd == "pause":
             if m["status"] != "RUNNING":
                 raise HTTPException(400, "Can only pause a running machine")
@@ -1241,7 +1376,7 @@ def _authorize_lpg_access(conn, user_id: UUID, branch_id: UUID, allowed_roles: t
 
 @router.get("/branches/{branch_id}/lpg")
 def get_branch_lpg(branch_id: UUID, user=Depends(_user)):
-    with _database() as conn:
+    with _database(read_only=True) as conn:
         _authorize_lpg_access(
             conn, user["id"], branch_id, ("owner", "branch_manager", "lpg_maintenance")
         )
@@ -1426,7 +1561,7 @@ def _init_default_reports(branch_id: UUID) -> list[dict]:
             "asset_name": "Dryer #02 (Gas 16kg)",
             "asset_type": "dryer",
             "category": "Insufficient Heating",
-            "description": "Selected 65°C high heat for 30 minutes, but clothes came out slightly damp and lukewarm.",
+            "description": "Selected 65Â°C high heat for 30 minutes, but clothes came out slightly damp and lukewarm.",
             "status": "received",
             "source_kind": "simulated",
             "reporter_name": "Hafizuddin Razak",
@@ -1573,7 +1708,7 @@ def _authorize_reports_access(conn, user_id: UUID, branch_id: UUID):
 
 @router.get("/branches/{branch_id}/customer-reports")
 def get_branch_customer_reports(branch_id: UUID, status: str | None = None, user=Depends(_user)):
-    with _database() as conn:
+    with _database(read_only=True) as conn:
         _authorize_reports_access(conn, user["id"], branch_id)
         reports = _get_branch_reports(branch_id)
         summary = _compute_reports_summary(reports)

@@ -15,7 +15,9 @@ export default async function NewBranchPage() {
   if (member.value.state !== "active" || member.value.role !== "owner") redirect("/membership-status");
   const managers = await getManagerOptions();
   return <WorkspaceShell title="Create branch" organization={member.value.organization?.name} owner>
-    <div className="max-w-3xl"><h1 className="text-2xl font-semibold tracking-tight">Create a branch</h1><p className="mt-2 text-sm text-muted">Record the location and choose its primary manager. Machines and gateway devices can be added in a later phase.</p>
+    <div className="mx-auto max-w-3xl">
+      <h1 className="text-2xl font-semibold tracking-tight text-ink">Create a branch</h1>
+      <p className="mt-2 text-sm text-muted">Record the location and choose its primary manager. Machines and gateway devices can be added in a later phase.</p>
       {!managers.ok ? <div className="mt-6"><Notice>{managers.message}</Notice></div> : <BranchCreateForm managers={managers.value} />}
     </div>
   </WorkspaceShell>;
