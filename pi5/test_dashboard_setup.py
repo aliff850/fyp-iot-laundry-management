@@ -19,6 +19,12 @@ def _auth():
     return {"Authorization": f"Basic {encoded}"}
 
 
+def test_dashboard_renders_repository_pairing_template():
+    response = dashboard.app.test_client().get("/")
+    assert response.status_code == 200
+    assert b"Gateway Pairing" in response.data
+
+
 def test_setup_requires_local_login(monkeypatch):
     _configured(monkeypatch)
     client = dashboard.app.test_client()

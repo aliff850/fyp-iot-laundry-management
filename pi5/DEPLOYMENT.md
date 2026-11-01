@@ -6,6 +6,8 @@ This runbook applies the [gateway onboarding blueprint](../docs/GATEWAY_DEVICE_O
 
 An isolated ingestion check using the staged worker and the Pi test database committed exactly one canonical row after duplicate delivery, quarantined one legacy sample, and created no legacy device discovery. Its temporary rows and credential file were removed afterward. This check did not involve the live MQTT broker, physical ESP32, or cloud sync.
 
+The Pi staging directory also contains no-secret, branch-specific Mosquitto listener/ACL and systemd override templates under `cutover/`. These are staged files only. The repository dashboard now loads its adjacent `index.html`; the Pi's older `dashboard/templates/index.html` remains untouched and is no longer selected by the staged code.
+
 The Pi owner checked `sudo crontab -l` and reported no deletion job for `edge_iot.sensor_telemetry`. Recheck system-wide timers and cron directories during the maintenance window before enabling any future retention.
 
 **Read-only preflight recorded 2026-11-01:** Pi `pi5laundry` has MariaDB client 11.8.6, Mosquitto 2.0.21, `wlan0` AP at `10.42.0.1/24`, `wlan1` uplink at `192.168.0.12/24`, and about 20 GB free. MariaDB, Mosquitto, ingestion and sync units are active; `edge-dashboard.service` is inactive/disabled. Mosquitto currently listens on `0.0.0.0:1883` with `allow_anonymous true`. The existing `sensor_telemetry` has its legacy five columns and 5,243 rows marked synced at inspection time; the session time zone reports `SYSTEM`. These sync flags are not proof of committed cloud acknowledgements. The worker units use `/home/aliff850/edge_gateway/venv/bin/python`; that environment has Flask, Paho, PyMySQL and Requests but not Waitress. The existing `.env` was tightened from mode `664` to `600`; its old variable names still need cutover review. The Pi reached the current Render status endpoint over HTTPS after a wake-up delay. A restricted 1.1 MB MariaDB dump was saved under `/home/aliff850/edge_backups/`; a separate fresh dump was restored and migration-tested in the isolated test database.
@@ -75,6 +77,29 @@ install -m 0644 staging-20261101/dashboard/index.html dashboard/index.html
 Update `/home/aliff850/edge_gateway/.env` locally with the reviewed values from `.env.example`: the actual HTTPS Render base, Pi AP broker address `10.42.0.1`, a dedicated ingestion MQTT account, protected setup login/hash/CSRF values, and a persistent `SPINSENSE_CREDENTIALS_FILE` path. Keep `.env` at mode `0600`. The dashboard unit currently lacks `EnvironmentFile`; add one in its systemd override. The worker units already read this `.env`.
 
 Create Mosquitto identities interactively with `sudo mosquitto_passwd`, then grant only the branch and source topics needed by each identity. Back up `/etc/mosquitto/conf.d/local.conf` first. The replacement listener must bind `10.42.0.1:1883`, set `allow_anonymous false`, and reference a password file plus ACL file readable by the `mosquitto` service account. The ingestion account needs read access to `branches/<selected-branch-id>/devices/+/telemetry`; the LPG and simulator accounts each need write access only to their own `branches/<selected-branch-id>/devices/<source-id>/telemetry`. Do not give publishers a wildcard branch or source. Ensure `MQTT_BROKER=10.42.0.1` for the ingestion worker: its old `localhost` setting cannot reach an AP-only listener. Verify allowed and denied MQTT clients before treating the broker cutover as complete.
+
+Branch-specific, no-secret `local.conf`, `spinsense.acl`, and three systemd override templates are staged in `/home/aliff850/edge_gateway/staging-20261101/cutover/`. Inspect their selected branch UUID, source IDs, and paths before installation. The Pi owner runs this part locally during the same maintenance window; `mosquitto_passwd` prompts for each password without exposing it in command history:
+
+```bash
+cd /home/aliff850/edge_gateway
+sudo cp -n /etc/mosquitto/conf.d/local.conf /etc/mosquitto/conf.d/local.conf.pre-spinsense-20261101
+sudo mosquitto_passwd -c /etc/mosquitto/spinsense.passwd spinsense_ingest
+sudo mosquitto_passwd /etc/mosquitto/spinsense.passwd lpg-node-01
+sudo mosquitto_passwd /etc/mosquitto/spinsense.passwd sim-washer-01
+sudo chown root:mosquitto /etc/mosquitto/spinsense.passwd
+sudo chmod 0640 /etc/mosquitto/spinsense.passwd
+sudo install -o root -g mosquitto -m 0640 staging-20261101/cutover/spinsense.acl /etc/mosquitto/spinsense.acl
+sudo install -o root -g root -m 0644 staging-20261101/cutover/local.conf /etc/mosquitto/conf.d/local.conf
+sudo install -d /etc/systemd/system/edge-ingestion.service.d /etc/systemd/system/edge-sync.service.d /etc/systemd/system/edge-dashboard.service.d
+sudo install -m 0644 staging-20261101/cutover/edge-ingestion.override.conf /etc/systemd/system/edge-ingestion.service.d/override.conf
+sudo install -m 0644 staging-20261101/cutover/edge-sync.override.conf /etc/systemd/system/edge-sync.service.d/override.conf
+sudo install -m 0644 staging-20261101/cutover/edge-dashboard.override.conf /etc/systemd/system/edge-dashboard.service.d/override.conf
+sudo systemctl daemon-reload
+sudo systemctl restart mosquitto
+sudo systemctl start edge-ingestion.service edge-sync.service edge-dashboard.service
+```
+
+The ingestion account password must match `MQTT_USERNAME`/`MQTT_PASSWORD` in the protected Pi `.env`; the LPG password must match the ignored firmware `device_config.h`. The simulator uses its own password in its process environment. Stop and restore the saved Mosquitto config/unit files if any service does not start cleanly; do not overwrite MariaDB with the pre-cutover dump after new records exist.
 
 Use systemd overrides to point the three units at `/home/aliff850/edge_gateway/staging-20261101/venv/bin/python`; preserve their current unit files and `Restart=` behavior. For the dashboard override, add `EnvironmentFile=/home/aliff850/edge_gateway/.env`. Restart Mosquitto, then ingestion, sync, and the dashboard. From the Pi, check `sudo ss -ltnup`, `systemctl status`, and `journalctl` without pasting environment values into external logs. The broker must no longer listen on `0.0.0.0`; the dashboard must bind only `10.42.0.1:5000`. Upload the matching ESP32 firmware from the Windows PC via USB. The canonical subscription activates only after owner confirmation of the pairing claim; check local committed samples after that step, before approving the discovered device.
 
