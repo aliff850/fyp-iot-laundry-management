@@ -4,6 +4,8 @@ This runbook applies the [gateway onboarding blueprint](../docs/GATEWAY_DEVICE_O
 
 **Rollout status, 2026-11-01:** Supabase migration 004 was applied after a local public-schema backup; all six new tables have RLS enabled and no browser-role table grants. A disposable PostgreSQL 17.11 database passed the migration/RLS/constraint check and a database-backed pairing/sync scenario. A fresh Pi dump was restored into `edge_iot_gateway_test_20261101`; the additive migration preserved 5,243 legacy rows and duplicate source samples were rejected. Corrected Pi workers, dashboard and a separate dependency environment are staged under `/home/aliff850/edge_gateway/staging-20261101/`. The live Pi schema, services, broker, and Render revision have not been changed by this rollout.
 
+An isolated ingestion check using the staged worker and the Pi test database committed exactly one canonical row after duplicate delivery, quarantined one legacy sample, and created no legacy device discovery. Its temporary rows and credential file were removed afterward. This check did not involve the live MQTT broker, physical ESP32, or cloud sync.
+
 The Pi owner checked `sudo crontab -l` and reported no deletion job for `edge_iot.sensor_telemetry`. Recheck system-wide timers and cron directories during the maintenance window before enabling any future retention.
 
 **Read-only preflight recorded 2026-11-01:** Pi `pi5laundry` has MariaDB client 11.8.6, Mosquitto 2.0.21, `wlan0` AP at `10.42.0.1/24`, `wlan1` uplink at `192.168.0.12/24`, and about 20 GB free. MariaDB, Mosquitto, ingestion and sync units are active; `edge-dashboard.service` is inactive/disabled. Mosquitto currently listens on `0.0.0.0:1883` with `allow_anonymous true`. The existing `sensor_telemetry` has its legacy five columns and 5,243 rows marked synced at inspection time; the session time zone reports `SYSTEM`. These sync flags are not proof of committed cloud acknowledgements. The worker units use `/home/aliff850/edge_gateway/venv/bin/python`; that environment has Flask, Paho, PyMySQL and Requests but not Waitress. The existing `.env` was tightened from mode `664` to `600`; its old variable names still need cutover review. The Pi reached the current Render status endpoint over HTTPS after a wake-up delay. A restricted 1.1 MB MariaDB dump was saved under `/home/aliff850/edge_backups/`; a separate fresh dump was restored and migration-tested in the isolated test database.
@@ -44,6 +46,37 @@ Migration 004's schema and browser grants were checked in isolated PostgreSQL an
 ## Gate 4: short maintenance window
 
 Stop the current ingestion and sync units and take a final backup before changing the live schema. Apply the already tested additive MariaDB migration; verify old rows remain and are marked `legacy_unattributed`. Install the reviewed Pi files, protected environment, systemd updates and broker configuration. Restart MariaDB, access point, Mosquitto, ingestion, sync and dashboard in dependency order. Confirm `ss` shows broker/dashboard listening only where intended, anonymous MQTT is rejected, and a permitted sample commits to MariaDB. During a temporary WAN disconnect, local ingestion must continue while cloud acknowledgement pauses.
+
+The Pi owner runs the following privileged steps locally **after** the Render API is live, the selected branch is saved/closed, and the updated ESP32 firmware is built on the Windows PC with an ignored `device_config.h`. The physical ESP32 must be available by USB during this maintenance window. Choose and record separate MQTT passwords for `spinsense_ingest`, `lpg-node-01`, and `sim-washer-01` locally. Never put passwords in these commands, Git, chat, or shell history.
+
+```bash
+cd /home/aliff850/edge_gateway
+sudo systemctl stop edge-ingestion.service edge-sync.service
+umask 077
+mkdir -p /home/aliff850/edge_backups/gateway-cutover
+cp -a ingestion_worker.py sync_worker.py /home/aliff850/edge_backups/gateway-cutover/
+cp -a dashboard/dashboard.py dashboard/index.html /home/aliff850/edge_backups/gateway-cutover/
+mariadb-dump -u edge_user -p --single-transaction --databases edge_iot > /home/aliff850/edge_backups/gateway-cutover/edge_iot-final.sql
+mariadb -u edge_user -p edge_iot < staging-20261101/migrations/001_gateway_onboarding.sql
+mariadb -u edge_user -p edge_iot -e "SELECT COUNT(*) AS legacy_rows FROM sensor_telemetry WHERE quarantine_reason='legacy_unattributed';"
+```
+
+The final query must show at least the previously recorded legacy rows. Stop here if the backup or migration fails. MariaDB DDL can commit in stages; inspect and reconcile it rather than restoring an older dump over newer records. Copy the staged Python and dashboard files into their current service locations only after the migration check passes:
+
+```bash
+cd /home/aliff850/edge_gateway
+install -m 0644 staging-20261101/gateway_config.py gateway_config.py
+install -m 0644 staging-20261101/ingestion_worker.py ingestion_worker.py
+install -m 0644 staging-20261101/sync_worker.py sync_worker.py
+install -m 0644 staging-20261101/dashboard/dashboard.py dashboard/dashboard.py
+install -m 0644 staging-20261101/dashboard/index.html dashboard/index.html
+```
+
+Update `/home/aliff850/edge_gateway/.env` locally with the reviewed values from `.env.example`: the actual HTTPS Render base, Pi AP broker address `10.42.0.1`, a dedicated ingestion MQTT account, protected setup login/hash/CSRF values, and a persistent `SPINSENSE_CREDENTIALS_FILE` path. Keep `.env` at mode `0600`. The dashboard unit currently lacks `EnvironmentFile`; add one in its systemd override. The worker units already read this `.env`.
+
+Create Mosquitto identities interactively with `sudo mosquitto_passwd`, then grant only the branch and source topics needed by each identity. Back up `/etc/mosquitto/conf.d/local.conf` first. The replacement listener must bind `10.42.0.1:1883`, set `allow_anonymous false`, and reference a password file plus ACL file readable by the `mosquitto` service account. The ingestion account needs read access to `branches/<selected-branch-id>/devices/+/telemetry`; the LPG and simulator accounts each need write access only to their own `branches/<selected-branch-id>/devices/<source-id>/telemetry`. Do not give publishers a wildcard branch or source. Ensure `MQTT_BROKER=10.42.0.1` for the ingestion worker: its old `localhost` setting cannot reach an AP-only listener. Verify allowed and denied MQTT clients before treating the broker cutover as complete.
+
+Use systemd overrides to point the three units at `/home/aliff850/edge_gateway/staging-20261101/venv/bin/python`; preserve their current unit files and `Restart=` behavior. For the dashboard override, add `EnvironmentFile=/home/aliff850/edge_gateway/.env`. Restart Mosquitto, then ingestion, sync, and the dashboard. From the Pi, check `sudo ss -ltnup`, `systemctl status`, and `journalctl` without pasting environment values into external logs. The broker must no longer listen on `0.0.0.0`; the dashboard must bind only `10.42.0.1:5000`. Upload the matching ESP32 firmware from the Windows PC via USB. The canonical subscription activates only after owner confirmation of the pairing claim; check local committed samples after that step, before approving the discovered device.
 
 If the checkpoint fails, stop the new services and restore the previous broker/worker/unit configuration. Retain the additive database and all newly committed rows where possible; do **not** restore an older dump over newer committed observations. Use the backup only after reconciling rows written since it was taken.
 
