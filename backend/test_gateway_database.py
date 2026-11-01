@@ -108,6 +108,10 @@ def test_gateway_ceremony_and_sync_against_postgresql(monkeypatch):
             code=issued["code"], gateway_id=gateway_id, credential=credential))["claim_id"] == claimed["claim_id"]
         assert gateways.confirm_gateway_claim(branch, issued["claim_id"],
             gateways.GatewayClaimConfirm(gateway_id=gateway_id), owner_user)["gateway_id"] == str(gateway_id)
+        with pytest.raises(HTTPException) as replay:
+            edge.redeem_pairing_claim(edge.EdgeClaimRequest(
+                code=issued["code"], gateway_id=gateway_id, credential=credential))
+        assert replay.value.status_code == 410
         gateway = edge._gateway(f"Bearer {credential}")
         assert gateway["branch_id"] == branch
 
@@ -136,9 +140,26 @@ def test_gateway_ceremony_and_sync_against_postgresql(monkeypatch):
         with test_database(read_only=True) as conn:
             assert conn.execute("select count(*) as count from public.telemetry_observations").fetchone()["count"] == 1
 
-        gateways.revoke_gateway(branch, gateway_id, owner_user)
+        replacement_id, replacement_credential = uuid4(), "b" * 64
+        replacement = gateways.issue_gateway_claim(branch,
+            gateways.GatewayClaimCreate(request_id=uuid4(), replace_gateway_id=gateway_id), owner_user)
+        edge.redeem_pairing_claim(edge.EdgeClaimRequest(
+            code=replacement["code"], gateway_id=replacement_id, credential=replacement_credential))
+        gateways.confirm_gateway_claim(branch, replacement["claim_id"],
+            gateways.GatewayClaimConfirm(gateway_id=replacement_id), owner_user)
+        with test_database(read_only=True) as conn:
+            assert conn.execute("select count(*) as count from public.gateways where branch_id=%s and status='active'",
+                                (branch,)).fetchone()["count"] == 1
+            assert conn.execute("select gateway_id from public.telemetry_observations limit 1").fetchone()["gateway_id"] == gateway_id
         with pytest.raises(HTTPException) as denied:
             edge.sync_telemetry_batch(sync, edge._gateway(f"Bearer {credential}"))
+        assert denied.value.status_code == 403
+
+        gateways.revoke_gateway(branch, replacement_id, owner_user)
+        with pytest.raises(HTTPException) as denied:
+            edge.sync_telemetry_batch(edge.EdgeSyncBatch(
+                gateway_id=replacement_id, batch_id=uuid4(), records=[]),
+                edge._gateway(f"Bearer {replacement_credential}"))
         assert denied.value.status_code == 403
     finally:
         with psycopg.connect(admin_url, autocommit=True) as admin:
