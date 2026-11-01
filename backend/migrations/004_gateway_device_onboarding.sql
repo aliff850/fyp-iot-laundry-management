@@ -1,6 +1,8 @@
 -- Review and apply after 002_branches.sql (and 003_personnel_roles.sql).
 -- Schema and RLS for Gateways, Pairing Claims, Devices, Discoveries, and Telemetry Observations.
 
+begin;
+
 create table if not exists public.gateways (
     id uuid primary key,
     organization_id uuid not null references public.organizations(id) on delete cascade,
@@ -20,6 +22,15 @@ create table if not exists public.gateways (
 create unique index if not exists unique_active_gateway_per_branch
     on public.gateways (branch_id)
     where status = 'active';
+
+create unique index if not exists unique_gateway_credential
+    on public.gateways (credential_verifier);
+
+create unique index if not exists unique_gateway_binding_key
+    on public.gateways (id, branch_id, organization_id);
+
+alter table public.gateways add constraint gateways_branch_organization_fk
+    foreign key (branch_id, organization_id) references public.branches(id, organization_id);
 
 create index if not exists idx_gateways_org_branch
     on public.gateways (organization_id, branch_id);
@@ -46,8 +57,25 @@ create unique index if not exists unique_unconfirmed_claim_per_branch
     on public.gateway_claims (branch_id)
     where status in ('issued', 'redeemed_pending');
 
+create unique index if not exists unique_gateway_claim_code
+    on public.gateway_claims (code_hash);
+
+alter table public.gateway_claims add constraint gateway_claims_branch_organization_fk
+    foreign key (branch_id, organization_id) references public.branches(id, organization_id);
+
 create index if not exists idx_gateway_claims_lookup
     on public.gateway_claims (branch_id, status);
+
+-- Shared rate limit for public pairing-code redemption across API workers.
+create table if not exists public.gateway_claim_attempts (
+    client_key varchar(64) primary key,
+    attempts int not null default 0,
+    window_started_at timestamptz not null default now(),
+    last_attempt_at timestamptz not null default now()
+);
+
+create index if not exists idx_gateway_claim_attempts_last
+    on public.gateway_claim_attempts (last_attempt_at);
 
 create table if not exists public.devices (
     id uuid primary key default gen_random_uuid(),
@@ -70,6 +98,13 @@ create table if not exists public.devices (
 create unique index if not exists unique_active_device_per_branch
     on public.devices (branch_id, source_id)
     where status = 'active';
+
+create unique index if not exists unique_device_binding_key
+    on public.devices (id, gateway_id, branch_id, organization_id);
+
+alter table public.devices add constraint devices_gateway_binding_fk
+    foreign key (gateway_id, branch_id, organization_id)
+    references public.gateways(id, branch_id, organization_id);
 
 create index if not exists idx_devices_org_branch
     on public.devices (organization_id, branch_id);
@@ -97,6 +132,13 @@ create unique index if not exists unique_pending_discovery_per_gateway
     on public.device_discoveries (gateway_id, source_id)
     where decision = 'pending';
 
+create unique index if not exists unique_discovery_candidate_per_gateway
+    on public.device_discoveries (gateway_id, candidate_id);
+
+alter table public.device_discoveries add constraint discoveries_gateway_binding_fk
+    foreign key (gateway_id, branch_id, organization_id)
+    references public.gateways(id, branch_id, organization_id);
+
 create index if not exists idx_device_discoveries_branch
     on public.device_discoveries (branch_id, decision);
 
@@ -121,20 +163,28 @@ create table if not exists public.telemetry_observations (
 create unique index if not exists unique_gateway_observation_record
     on public.telemetry_observations (gateway_id, record_id);
 
+alter table public.telemetry_observations add constraint observations_device_binding_fk
+    foreign key (device_id, gateway_id, branch_id, organization_id)
+    references public.devices(id, gateway_id, branch_id, organization_id);
+
 create index if not exists idx_telemetry_observations_lookup
     on public.telemetry_observations (branch_id, device_id, cloud_received_at desc);
 
 -- Revoke all browser roles, enable RLS
 alter table public.gateways enable row level security;
 alter table public.gateway_claims enable row level security;
+alter table public.gateway_claim_attempts enable row level security;
 alter table public.devices enable row level security;
 alter table public.device_discoveries enable row level security;
 alter table public.telemetry_observations enable row level security;
 
 revoke all on table public.gateways from anon, authenticated;
 revoke all on table public.gateway_claims from anon, authenticated;
+revoke all on table public.gateway_claim_attempts from anon, authenticated;
 revoke all on table public.devices from anon, authenticated;
 revoke all on table public.device_discoveries from anon, authenticated;
 revoke all on table public.telemetry_observations from anon, authenticated;
 revoke all on sequence public.telemetry_observations_id_seq from anon, authenticated;
+
+commit;
 

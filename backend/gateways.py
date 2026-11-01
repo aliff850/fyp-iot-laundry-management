@@ -37,6 +37,8 @@ def _assert_branch_access(conn, branch_id: UUID, user: dict, require_owner: bool
         raise HTTPException(403, "An active owner membership is required")
     if not owner and member["state"] != "active":
         raise HTTPException(403, "Branch access is unavailable")
+    if not owner and member["role"] != "branch_manager":
+        raise HTTPException(403, "Gateway status is limited to branch managers and owners")
 
     branch = conn.execute(
         "select * from public.branches where id=%s and organization_id=%s",
@@ -395,11 +397,12 @@ def list_device_discoveries(branch_id: UUID, user=Depends(_user)):
         _assert_branch_access(conn, branch_id, user, require_owner=False)
 
         rows = conn.execute(
-            """select id, candidate_id, source_id, proposed_type, evidence_quality,
-                      first_seen_at, last_seen_at, decision, gateway_id
-               from public.device_discoveries
-               where branch_id=%s and decision='pending'
-               order by last_seen_at desc""",
+            """select d.id, d.candidate_id, d.source_id, d.proposed_type, d.evidence_quality,
+                      d.first_seen_at, d.last_seen_at, d.decision, d.gateway_id
+               from public.device_discoveries d
+               join public.gateways g on g.id=d.gateway_id and g.status='active'
+               where d.branch_id=%s and d.decision='pending'
+               order by d.last_seen_at desc""",
             (branch_id,),
         ).fetchall()
 
@@ -427,8 +430,9 @@ def approve_device_discovery(branch_id: UUID, candidate_id: UUID, payload: Devic
         org_id = member["organization_id"]
 
         candidate = conn.execute(
-            """select * from public.device_discoveries
-               where candidate_id=%s and branch_id=%s and decision='pending'""",
+            """select d.* from public.device_discoveries d
+               join public.gateways g on g.id=d.gateway_id and g.status='active'
+               where d.candidate_id=%s and d.branch_id=%s and d.decision='pending'""",
             (candidate_id, branch_id),
         ).fetchone()
         if not candidate:
