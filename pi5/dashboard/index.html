@@ -954,6 +954,7 @@
                 <h2 id="pairingHeading">Gateway Pairing</h2>
                 <span id="gatewayStatusBadge" class="sync-label small" data-sync="pending">Checking...</span>
             </div>
+            <a id="setupLoginLink" class="button button-primary" href="/api/setup/login" hidden>Sign in for gateway setup</a>
             <div id="pairingBody">
                 <div id="unpairedView">
                     <p style="color: var(--muted); margin-bottom: 12px; font-size: var(--fs-small);">
@@ -1233,11 +1234,18 @@
             document.querySelectorAll('[data-filter]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
             renderHistory();
         }));
+        let setupCsrfToken = '';
         async function updateGatewaySetup() {
             try {
                 const response = await fetch('/api/setup/gateway', { cache: 'no-store' });
-                if (!response.ok) return;
+                if (!response.ok) {
+                    el('setupLoginLink').hidden = response.status !== 401;
+                    el('gatewayStatusBadge').textContent = response.status === 401 ? 'SETUP LOGIN REQUIRED' : 'SETUP UNAVAILABLE';
+                    return;
+                }
+                el('setupLoginLink').hidden = true;
                 const data = await response.json();
+                setupCsrfToken = data.csrf_token || '';
                 const badge = el('gatewayStatusBadge');
                 const unpaired = el('unpairedView');
                 const awaiting = el('awaitingView');
@@ -1284,7 +1292,7 @@
                 try {
                     const res = await fetch('/api/setup/pair', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: { 'Content-Type': 'application/json', 'X-Setup-CSRF': setupCsrfToken },
                         body: JSON.stringify({ code }),
                     });
                     const data = await res.json();

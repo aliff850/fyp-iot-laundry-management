@@ -46,10 +46,10 @@ logger = logging.getLogger("spinsense.sync")
 # --- Environment & Configuration ---
 DB_HOST = os.getenv("SPINSENSE_DB_HOST", "localhost")
 DB_USER = os.getenv("SPINSENSE_DB_USER", "edge_user")
-DB_PASSWORD = os.getenv("SPINSENSE_DB_PASSWORD", "volvo850chungus")
+DB_PASSWORD = os.getenv("SPINSENSE_DB_PASSWORD", "")
 DB_NAME = os.getenv("SPINSENSE_DB_NAME", "edge_iot")
 
-CLOUD_BASE_URL = os.getenv("SPINSENSE_CLOUD_BASE", "http://localhost:8000").rstrip("/")
+CLOUD_BASE_URL = os.getenv("SPINSENSE_CLOUD_BASE", "").rstrip("/")
 
 API_TIMEOUT_SECONDS = 10
 BATCH_SIZE = 50
@@ -106,6 +106,7 @@ class EdgeSyncWorker:
                 autocommit=False,
                 cursorclass=DictCursor,
                 connect_timeout=5,
+                init_command="SET time_zone = '+00:00'",
             )
         else:
             self.connection.ping(reconnect=True)
@@ -116,15 +117,19 @@ class EdgeSyncWorker:
         creds = gateway_config.get_stored_gateway_credentials()
         if creds:
             self.gateway_id, self.credential = creds
+        else:
+            self.gateway_id, self.credential = None, None
 
         conn = self.get_db_connection()
-        state = gateway_config.load_gateway_db_state(conn)
+        state = gateway_config.load_gateway_db_state(conn, self.gateway_id)
         self.status = state.get("status", "unpaired")
         self.branch_id = state.get("branch_id")
         self.config_revision = state.get("config_revision", 1)
+        if self.status == "active" and not self.credential:
+            raise RuntimeError("Active gateway credential file is missing")
 
-    def check_cloud_activation(self) -> bool:
-        """Polls /edge/claim-status if in awaiting_confirmation to detect owner confirmation."""
+    def refresh_cloud_gateway_status(self) -> bool:
+        """Polls cloud status to detect activation, replacement, or revocation."""
         if not self.credential:
             return False
 
@@ -138,7 +143,8 @@ class EdgeSyncWorker:
             if res.status_code == 200:
                 data = res.json()
                 if data.get("status") == "active":
-                    logger.info("Gateway confirmed active in cloud! Updating local DB.")
+                    if self.status != "active":
+                        logger.info("Gateway confirmed active in cloud; updating local state.")
                     conn = self.get_db_connection()
                     gateway_config.save_gateway_db_state(
                         conn,
@@ -153,6 +159,14 @@ class EdgeSyncWorker:
                     self.config_revision = data.get("config_revision", 1)
                     self.sync_device_config()
                     return True
+                if data.get("status") in {"expired", "revoked", "replaced"}:
+                    conn = self.get_db_connection()
+                    gateway_config.save_gateway_db_state(
+                        conn, self.gateway_id, data.get("organization_id"),
+                        data.get("branch_id"), data["status"], self.config_revision
+                    )
+                    self.status = data["status"]
+                    logger.warning("Gateway is %s in cloud; stopping operational sync.", self.status)
         except Exception as e:
             logger.debug("Claim status poll failed: %s", e)
         return False
@@ -171,9 +185,13 @@ class EdgeSyncWorker:
             )
             if res.status_code == 200:
                 data = res.json()
-                devices = data.get("devices", [])
+                devices = data.get("devices")
+                if (not isinstance(devices, list) or data.get("gateway_id") != self.gateway_id
+                        or data.get("branch_id") != self.branch_id):
+                    raise ValueError("Cloud device configuration has invalid identity or device list")
                 conn = self.get_db_connection()
                 with conn.cursor() as cursor:
+                    cursor.execute("UPDATE device_registry SET status='retired' WHERE status='active'")
                     for d in devices:
                         cursor.execute(
                             """INSERT INTO device_registry
@@ -181,6 +199,9 @@ class EdgeSyncWorker:
                                 status, capacity_kg, capabilities, config_revision)
                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                                ON DUPLICATE KEY UPDATE
+                                   cloud_device_id = VALUES(cloud_device_id),
+                                   device_type = VALUES(device_type),
+                                   source_kind = VALUES(source_kind),
                                    label = VALUES(label),
                                    status = VALUES(status),
                                    capacity_kg = VALUES(capacity_kg),
@@ -203,6 +224,8 @@ class EdgeSyncWorker:
                 self.config_revision = data.get("config_revision", 1)
                 logger.info("Synchronized %d approved device(s) from cloud config (rev=%d).", len(devices), self.config_revision)
         except Exception as e:
+            if self.connection and self.connection.open:
+                self.connection.rollback()
             logger.warning("Failed to synchronize device config from cloud: %s", e)
 
     def sync_discoveries(self):
@@ -216,7 +239,7 @@ class EdgeSyncWorker:
                 """SELECT candidate_id, source_id, proposed_type, evidence_quality,
                           first_seen_at, last_seen_at
                    FROM device_discoveries
-                   WHERE is_synced = 0
+                   WHERE is_synced = 0 AND rejection_reason IS NULL
                    LIMIT 20"""
             )
             candidates = cursor.fetchall()
@@ -251,12 +274,30 @@ class EdgeSyncWorker:
                 timeout=API_TIMEOUT_SECONDS,
             )
             if res.status_code == 200:
-                cand_ids = [c["candidate_id"] for c in candidates]
-                placeholders = ", ".join(["%s"] * len(cand_ids))
+                submitted = {str(c["candidate_id"]) for c in candidates}
+                body = res.json()
+                accepted = body.get("accepted_ids")
+                rejected = body.get("rejected", [])
+                if (not isinstance(accepted, list) or not isinstance(rejected, list)
+                        or any(str(item) not in submitted for item in accepted)
+                        or any(not isinstance(item, dict) or str(item.get("candidate_id")) not in submitted
+                               or not isinstance(item.get("reason"), str) for item in rejected)
+                        or {str(item) for item in accepted}.intersection(
+                            str(item["candidate_id"]) for item in rejected)):
+                    logger.warning("Invalid discovery acknowledgement; retaining pending candidates")
+                    return
                 with conn.cursor() as cursor:
-                    cursor.execute(f"UPDATE device_discoveries SET is_synced = 1 WHERE candidate_id IN ({placeholders})", cand_ids)
+                    if accepted:
+                        placeholders = ", ".join(["%s"] * len(accepted))
+                        cursor.execute(f"UPDATE device_discoveries SET is_synced = 1 WHERE candidate_id IN ({placeholders})", accepted)
+                    for item in rejected:
+                        if item.get("retryable") is False:
+                            cursor.execute(
+                                "UPDATE device_discoveries SET rejection_reason=%s WHERE candidate_id=%s",
+                                (item["reason"][:255], item["candidate_id"]),
+                            )
                 conn.commit()
-                logger.info("Synced %d device discovery candidate(s) to cloud.", len(cand_ids))
+                logger.info("Cloud acknowledged %d discovery candidate(s).", len(accepted))
         except Exception as e:
             logger.warning("Failed to sync discoveries to cloud: %s", e)
 
@@ -265,13 +306,14 @@ class EdgeSyncWorker:
         with conn.cursor() as cursor:
             sql = """
                 SELECT id, record_id, source_id, boot_id, sequence, gateway_receipt_at,
-                       recorded_at, data_payload, device_id
+                       recorded_at, data_payload, device_id, source_kind, source_time_quality,
+                       quality_metadata
                 FROM sensor_telemetry
-                WHERE is_synced = 0 AND (quarantine_reason IS NULL OR quarantine_reason != 'legacy_unattributed')
+                WHERE is_synced = 0 AND quarantine_reason IS NULL AND gateway_id = %s
                 ORDER BY id ASC
                 LIMIT %s;
             """
-            cursor.execute(sql, (limit,))
+            cursor.execute(sql, (self.gateway_id, limit))
             return cursor.fetchall()
 
     def update_sync_status(self, accepted_ids: List[int], rejected_records: List[Dict[str, Any]]):
@@ -295,16 +337,18 @@ class EdgeSyncWorker:
                         """UPDATE sensor_telemetry
                            SET is_synced = -1, quarantine_reason = %s
                            WHERE id = %s;""",
-                        (reason, edge_id),
+                        (str(reason)[:255], edge_id),
                     )
         conn.commit()
 
     def run_sync_cycle(self) -> int:
+        if not DB_PASSWORD or not CLOUD_BASE_URL.startswith("https://"):
+            raise RuntimeError("Database password and HTTPS cloud endpoint are required")
         self.refresh_gateway_state()
 
         if self.status != "active":
             if self.status == "awaiting_confirmation":
-                self.check_cloud_activation()
+                self.refresh_cloud_gateway_status()
             return 0
 
         # Sync discoveries
@@ -313,7 +357,22 @@ class EdgeSyncWorker:
         # Sync telemetry
         records = self.fetch_pending_telemetry(limit=BATCH_SIZE)
         if not records:
-            # Heartbeat contact
+            try:
+                response = self.session.post(
+                    f"{CLOUD_BASE_URL}/edge/sync",
+                    json={"schema_version": 1, "gateway_id": self.gateway_id,
+                          "batch_id": str(uuid.uuid4()), "heartbeat": True, "records": []},
+                    headers={"Authorization": f"Bearer {self.credential}"},
+                    timeout=API_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                revision = response.json().get("config_revision", self.config_revision)
+                if isinstance(revision, int) and revision > self.config_revision:
+                    self.sync_device_config()
+            except requests.exceptions.RequestException as error:
+                logger.warning("Heartbeat failed: %s", error)
+                if getattr(error.response, "status_code", None) == 403:
+                    self.refresh_cloud_gateway_status()
             self.backoff_delay = BASE_INTERVAL_SECONDS
             return 0
 
@@ -331,7 +390,10 @@ class EdgeSyncWorker:
                     self.update_sync_status(accepted_ids=[], rejected_records=[{"edge_id": row["id"], "reason": "Corrupt JSON"}])
                     continue
 
-            record_uuid = row.get("record_id") or str(uuid.uuid4())
+            record_uuid = row.get("record_id")
+            if not record_uuid:
+                self.update_sync_status(accepted_ids=[], rejected_records=[{"edge_id": row["id"], "reason": "Missing stable record ID"}])
+                continue
             batch_ids.append(row["id"])
             batch_records.append({
                 "record_id": record_uuid,
@@ -340,9 +402,12 @@ class EdgeSyncWorker:
                 "boot_id": row.get("boot_id"),
                 "sequence": row.get("sequence"),
                 "gateway_receipt_at": row["gateway_receipt_at"].isoformat() if row.get("gateway_receipt_at") and hasattr(row["gateway_receipt_at"], "isoformat") else str(row.get("gateway_receipt_at") or row["recorded_at"]),
-                "source_recorded_at": row["recorded_at"].isoformat() if hasattr(row["recorded_at"], "isoformat") else str(row["recorded_at"]),
+                "source_recorded_at": (row["recorded_at"].isoformat() if hasattr(row["recorded_at"], "isoformat")
+                                       else str(row["recorded_at"])) if row.get("source_time_quality") in {"device_reported", "assumed_utc"} else None,
                 "payload": payload_data,
-                "quality": {},
+                "source_kind": row.get("source_kind") or "physical",
+                "quality": {**(json.loads(row["quality_metadata"]) if row.get("quality_metadata") else {}),
+                            "source_time_quality": row.get("source_time_quality") or "unknown"},
             })
 
         if not batch_records:
@@ -367,8 +432,18 @@ class EdgeSyncWorker:
             if response.status_code == 200:
                 body = response.json()
                 # Strict: ONLY IDs present in accepted_ids are marked synced
-                accepted_ids = body.get("accepted_ids", [])
+                accepted_ids = body.get("accepted_ids")
                 rejected = body.get("rejected", [])
+                if not isinstance(accepted_ids, list) or not isinstance(rejected, list):
+                    logger.warning("Malformed cloud acknowledgement; retaining batch")
+                    return 0
+                submitted = set(batch_ids)
+                if any(not isinstance(item, int) or item not in submitted for item in accepted_ids):
+                    logger.warning("Cloud acknowledged an unknown edge ID; retaining batch")
+                    return 0
+                if any(not isinstance(item, dict) or item.get("edge_id") not in submitted for item in rejected):
+                    logger.warning("Cloud rejected an unknown edge ID; retaining batch")
+                    return 0
 
                 self.update_sync_status(accepted_ids=accepted_ids, rejected_records=rejected)
                 logger.info(
@@ -387,6 +462,7 @@ class EdgeSyncWorker:
 
             elif response.status_code == 403:
                 logger.warning("Gateway rejected by cloud (status=%d). Refreshing state.", response.status_code)
+                self.refresh_cloud_gateway_status()
                 self.backoff_delay = min(self.backoff_delay * 2, MAX_BACKOFF_SECONDS)
                 return 0
 

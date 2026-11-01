@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import gateway_config
+from machine_simulator import build_sample
 from ingestion_worker import EdgeIngestionWorker
 from sync_worker import EdgeSyncWorker
 
@@ -25,6 +26,39 @@ def test_gateway_credentials_generation():
         gw_id2, cred2 = gateway_config.get_or_create_gateway_credentials(cred_file)
         assert gw_id == gw_id2
         assert cred == cred2
+
+
+def test_machine_simulator_sample_is_explicit_and_has_stable_identity():
+    sample = build_sample("washer-sim-01", "washer", "boot-01", 7)
+    assert sample["device_id"] == "washer-sim-01"
+    assert sample["boot_id"] == "boot-01"
+    assert sample["data"]["sequence"] == 7
+    assert sample["data"]["state"] == "idle"
+    assert sample["quality"]["simulation"] is True
+
+
+def test_corrupt_gateway_credentials_are_never_replaced():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cred_file = os.path.join(tmpdir, "gateway.json")
+        with open(cred_file, "w", encoding="utf-8") as file:
+            file.write("broken")
+        with pytest.raises(RuntimeError, match="preserve it for recovery"):
+            gateway_config.get_or_create_gateway_credentials(cred_file)
+        with open(cred_file, "r", encoding="utf-8") as file:
+            assert file.read() == "broken"
+
+
+def test_local_gateway_state_is_selected_by_credential_identity():
+    conn = MagicMock()
+    cursor = conn.cursor.return_value.__enter__.return_value
+    cursor.fetchone.return_value = {"gateway_id": "gateway-current", "status": "active"}
+    assert gateway_config.load_gateway_db_state(conn, "gateway-current")["status"] == "active"
+    assert "WHERE gateway_id=%s" in cursor.execute.call_args.args[0]
+    assert cursor.execute.call_args.args[1] == ("gateway-current",)
+    cursor.execute.reset_mock()
+    cursor.fetchone.reset_mock()
+    assert gateway_config.load_gateway_db_state(conn)["status"] == "unpaired"
+    cursor.execute.assert_not_called()
 
 
 def test_ingestion_payload_normalization_legacy_format():
@@ -59,16 +93,70 @@ def test_ingestion_payload_normalization_canonical_format():
     assert data["voltage"] == 2.1
 
 
-def test_ingestion_deduplication():
+def test_invalid_source_time_is_marked_and_falls_back_to_gateway_time():
     worker = EdgeIngestionWorker()
-    raw = '{"device_id": "NODE-1", "data": {"seq": 100}}'
+    assert worker.source_time_quality("not-a-time") == "invalid_source_time"
+    assert worker.source_time_quality(None) == "gateway_receipt_only"
+    assert worker.source_time_quality("2026-11-01T06:00:00Z") == "device_reported"
+    assert worker.source_time_quality("2026-11-01T06:00:00") == "assumed_utc"
+    assert worker.parse_to_sql_datetime(float("nan"))
 
-    # First time -> not duplicate
-    assert worker._is_duplicate("NODE-1", raw, sequence=100) is False
-    # Second time with same sequence -> duplicate!
-    assert worker._is_duplicate("NODE-1", raw, sequence=100) is True
-    # Different sequence -> not duplicate
-    assert worker._is_duplicate("NODE-1", raw, sequence=101) is False
+
+def test_ingestion_rejects_foreign_branch_topic():
+    worker = EdgeIngestionWorker()
+    worker.branch_id = "branch-1"
+    assert worker.parse_topic_device("branches/branch-1/devices/node-1/telemetry") == "node-1"
+    assert worker.parse_topic_device("branches/branch-2/devices/node-1/telemetry") is None
+    assert worker.parse_topic_device("branches/branch-1/devices/node-1/telemetry/extra") is None
+
+
+def test_pending_device_sample_is_diagnostic_only(monkeypatch):
+    worker = EdgeIngestionWorker()
+    worker.gateway_id = "gateway-1"
+    worker.branch_id = "branch-1"
+    worker.is_active = True
+    conn = MagicMock()
+    monkeypatch.setattr(worker, "get_db_connection", lambda: conn)
+    monkeypatch.setattr(worker, "ensure_device_registered_or_discovered", lambda *_: False)
+    message = MagicMock()
+    message.topic = "branches/branch-1/devices/node-1/telemetry"
+    message.payload = json.dumps({"device_id": "node-1", "boot_id": "boot-1",
+                                  "data": {"sequence": 1, "voltage": 1.2}}).encode()
+    worker.on_message(None, None, message)
+    sql, values = conn.cursor.return_value.__enter__.return_value.execute.call_args.args
+    assert "INSERT INTO sensor_telemetry" in sql
+    assert values[-2:] == (-1, "pending_device")
+    conn.commit.assert_called_once()
+
+
+def test_legacy_sample_never_creates_a_cloud_discovery(monkeypatch):
+    worker = EdgeIngestionWorker()
+    worker.gateway_id = "gateway-1"
+    worker.branch_id = "branch-1"
+    worker.is_active = True
+    conn = MagicMock()
+    discovery = MagicMock()
+    monkeypatch.setattr(worker, "get_db_connection", lambda: conn)
+    monkeypatch.setattr(worker, "ensure_device_registered_or_discovered", discovery)
+    message = MagicMock()
+    message.topic = "nodes/telemetry"
+    message.payload = json.dumps({"device_id": "legacy-node", "data": {"voltage": 1.2}}).encode()
+    worker.on_message(None, None, message)
+    discovery.assert_not_called()
+    sql, values = conn.cursor.return_value.__enter__.return_value.execute.call_args.args
+    assert "INSERT INTO sensor_telemetry" in sql
+    assert values[1] is None
+    assert values[-2:] == (-1, "legacy_unattributed")
+
+
+def test_repeat_discovery_does_not_clear_cloud_acknowledgement():
+    worker = EdgeIngestionWorker()
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.fetchone.return_value = None
+    assert worker.ensure_device_registered_or_discovered(conn, "node-1", {"voltage": 1.2}) is False
+    insert_sql = conn.cursor.return_value.__enter__.return_value.execute.call_args.args[0]
+    assert "ON DUPLICATE KEY UPDATE" in insert_sql
+    assert "is_synced = 0" not in insert_sql.split("ON DUPLICATE KEY UPDATE", 1)[1]
 
 
 def test_sync_worker_acknowledged_only_update():

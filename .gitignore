@@ -22,10 +22,14 @@ backend/.venv-phase2/
 # Hardware / Firmware (PlatformIO)
 **/.pio/
 **/.vscode/
+firmware/esp32-lpg-monitor/include/device_config.h
+pi5/.spinsense_gateway.json
 
 # System / OS
 .DS_Store
 Thumbs.db
 
-# Documentation and sensitive info
-docs/
+# Keep bulky local references out of Git while tracking the product contracts.
+docs/*
+!docs/PRD.md
+!docs/GATEWAY_DEVICE_ONBOARDING_PLAN.md

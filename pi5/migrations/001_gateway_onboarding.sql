@@ -36,13 +36,18 @@ CREATE TABLE IF NOT EXISTS device_discoveries (
     proposed_type VARCHAR(32) NULL,
     evidence_quality LONGTEXT NULL,
     is_synced TINYINT DEFAULT 0,
+    rejection_reason VARCHAR(255) NULL,
     first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_disc_sync (is_synced),
-    INDEX idx_disc_source (source_id)
+    UNIQUE KEY uq_disc_source (source_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 4. Additive columns on sensor_telemetry
+ALTER TABLE device_discoveries
+    ADD UNIQUE INDEX IF NOT EXISTS uq_disc_source (source_id),
+    ADD COLUMN IF NOT EXISTS rejection_reason VARCHAR(255) NULL AFTER is_synced;
+
 -- (Safe to run multiple times with IF NOT EXISTS on MariaDB 10.2+)
 ALTER TABLE sensor_telemetry
     ADD COLUMN IF NOT EXISTS record_id VARCHAR(36) NULL AFTER id,
@@ -50,12 +55,16 @@ ALTER TABLE sensor_telemetry
     ADD COLUMN IF NOT EXISTS source_id VARCHAR(100) NULL AFTER gateway_id,
     ADD COLUMN IF NOT EXISTS boot_id VARCHAR(64) NULL AFTER source_id,
     ADD COLUMN IF NOT EXISTS sequence BIGINT NULL AFTER boot_id,
+    ADD COLUMN IF NOT EXISTS source_kind VARCHAR(32) NULL AFTER sequence,
+    ADD COLUMN IF NOT EXISTS source_time_quality VARCHAR(32) NULL AFTER source_kind,
+    ADD COLUMN IF NOT EXISTS quality_metadata LONGTEXT NULL AFTER source_time_quality,
     ADD COLUMN IF NOT EXISTS gateway_receipt_at TIMESTAMP NULL AFTER recorded_at,
     ADD COLUMN IF NOT EXISTS cloud_acknowledged_at TIMESTAMP NULL AFTER is_synced,
     ADD COLUMN IF NOT EXISTS quarantine_reason VARCHAR(255) NULL AFTER cloud_acknowledged_at;
 
 ALTER TABLE sensor_telemetry
-    ADD INDEX IF NOT EXISTS idx_record_id (record_id),
+    ADD UNIQUE INDEX IF NOT EXISTS uq_gateway_record (gateway_id, record_id),
+    ADD UNIQUE INDEX IF NOT EXISTS uq_source_sample (gateway_id, source_id, boot_id, sequence),
     ADD INDEX IF NOT EXISTS idx_sync_id (is_synced, id);
 
 -- 5. Preserve legacy unassigned rows as legacy_unattributed (never delete or silently reattribute)
