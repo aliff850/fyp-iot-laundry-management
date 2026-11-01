@@ -213,10 +213,14 @@ export function MachineCard({
     <div
       role="button"
       tabIndex={0}
-      onClick={() => onOpenDetails(machine)}
+      onClick={() => {
+        if (typeof window !== "undefined" && window.innerWidth < 640) return;
+        onOpenDetails(machine);
+      }}
       onKeyDown={e => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
+          if (typeof window !== "undefined" && window.innerWidth < 640) return;
           onOpenDetails(machine);
         }
       }}
@@ -429,14 +433,14 @@ export function MachineCard({
           </div>
         )}
 
-        {/* Full-width Details & Parameters button */}
+        {/* Full-width Details & Parameters button (Hidden on mobile <640px, visible on tablet & desktop >=640px) */}
         <button
           type="button"
           onClick={e => {
             e.stopPropagation();
             onOpenDetails(machine);
           }}
-          className="mt-3 inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-md border border-control bg-raised/50 px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="mt-3 hidden sm:flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-control bg-raised/50 px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           <SlidersHorizontal className="size-3.5 text-muted" aria-hidden="true" />
           <span>Details & Parameters</span>

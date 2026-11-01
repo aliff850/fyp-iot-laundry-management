@@ -949,6 +949,43 @@
         <noscript>
             <p class="notice">JavaScript is required to load telemetry. No live readings are displayed.</p>
         </noscript>
+        <section class="panel pairing-panel" aria-labelledby="pairingHeading" style="margin-bottom: var(--gap);">
+            <div class="panel-header">
+                <h2 id="pairingHeading">Gateway Pairing</h2>
+                <span id="gatewayStatusBadge" class="sync-label small" data-sync="pending">Checking...</span>
+            </div>
+            <div id="pairingBody">
+                <div id="unpairedView">
+                    <p style="color: var(--muted); margin-bottom: 12px; font-size: var(--fs-small);">
+                        Enter the 12-character pairing code issued by the branch owner in the SpinSense cloud dashboard.
+                    </p>
+                    <form id="pairForm" style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                        <input id="pairingCodeInput" type="text" placeholder="XXXX-XXXX-XXXX" maxlength="14" required
+                            style="background: var(--raised); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: var(--radius); font-family: monospace; font-size: 16px; text-transform: uppercase; width: 220px;" />
+                        <button id="pairSubmitBtn" class="button button-primary" type="submit">
+                            <span class="button-label">Claim Code</span>
+                        </button>
+                    </form>
+                    <p id="pairNotice" class="notice" role="status" hidden style="margin-top: 10px;"></p>
+                </div>
+                <div id="awaitingView" hidden>
+                    <p style="color: var(--muted); margin-bottom: 8px; font-size: var(--fs-small);">
+                        Claim redeemed. Compare this verification fingerprint with the branch owner's screen:
+                    </p>
+                    <div style="display: flex; align-items: center; gap: 16px; margin: 12px 0;">
+                        <span id="piFingerprint" style="font-family: monospace; font-size: 28px; font-weight: 700; color: var(--accent); background: var(--raised); padding: 6px 14px; border-radius: var(--radius); border: 1px solid var(--border);">
+                            ----
+                        </span>
+                        <span style="color: var(--warning); font-size: var(--fs-small);">Awaiting explicit owner confirmation in SpinSense...</span>
+                    </div>
+                </div>
+                <div id="activeView" hidden>
+                    <p style="color: var(--positive); font-size: var(--fs-small);">
+                        ✔ Gateway active and bound to branch: <code id="activeBranchId" style="color: var(--text); font-weight: 600;">--</code>
+                    </p>
+                </div>
+            </div>
+        </section>
         <div class="overview">
             <section class="panel" aria-labelledby="fuelHeading">
                 <div class="panel-header">
@@ -1196,6 +1233,79 @@
             document.querySelectorAll('[data-filter]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
             renderHistory();
         }));
+        async function updateGatewaySetup() {
+            try {
+                const response = await fetch('/api/setup/gateway', { cache: 'no-store' });
+                if (!response.ok) return;
+                const data = await response.json();
+                const badge = el('gatewayStatusBadge');
+                const unpaired = el('unpairedView');
+                const awaiting = el('awaitingView');
+                const active = el('activeView');
+
+                const st = (data.status || 'unpaired').toLowerCase();
+                badge.textContent = st.replace('_', ' ').toUpperCase();
+
+                if (st === 'active') {
+                    badge.dataset.sync = 'synced';
+                    unpaired.hidden = true;
+                    awaiting.hidden = true;
+                    active.hidden = false;
+                    el('activeBranchId').textContent = data.branch_id || '--';
+                } else if (st === 'awaiting_confirmation') {
+                    badge.dataset.sync = 'pending';
+                    unpaired.hidden = true;
+                    awaiting.hidden = false;
+                    active.hidden = true;
+                    el('piFingerprint').textContent = data.verification_fingerprint || '----';
+                } else {
+                    badge.dataset.sync = 'quarantine';
+                    unpaired.hidden = false;
+                    awaiting.hidden = true;
+                    active.hidden = true;
+                }
+            } catch (e) {
+                // Ignore transient network errors
+            }
+        }
+
+        const pairForm = el('pairForm');
+        if (pairForm) {
+            pairForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const input = el('pairingCodeInput');
+                const submitBtn = el('pairSubmitBtn');
+                const noticeEl = el('pairNotice');
+                const code = input.value.trim();
+                if (!code) return;
+
+                submitBtn.disabled = true;
+                noticeEl.hidden = true;
+                try {
+                    const res = await fetch('/api/setup/pair', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ code }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) {
+                        noticeEl.textContent = data.error || 'Pairing failed';
+                        noticeEl.hidden = false;
+                    } else {
+                        updateGatewaySetup();
+                    }
+                } catch (err) {
+                    noticeEl.textContent = 'Could not contact local dashboard server';
+                    noticeEl.hidden = false;
+                } finally {
+                    submitBtn.disabled = false;
+                }
+            });
+        }
+
+        updateGatewaySetup();
+        setInterval(updateGatewaySetup, 5000);
+
         updateDashboard();
         setInterval(() => { if (!state.paused) updateDashboard(); }, 3000);
         setInterval(renderFreshness, 1000);

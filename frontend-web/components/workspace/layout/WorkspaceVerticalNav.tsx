@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   Building2,
+  Cpu,
   Flame,
   LayoutDashboard,
   Menu,
@@ -23,7 +24,8 @@ export type NavIconName =
   | "customer-reports"
   | "personnel"
   | "details"
-  | "branches";
+  | "branches"
+  | "hardware-setup";
 
 const ICON_MAP: Record<string, LucideIcon> = {
   overview: LayoutDashboard,
@@ -34,6 +36,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   personnel: Users,
   details: Settings,
   branches: Building2,
+  "hardware-setup": Cpu,
 };
 
 export interface WorkspaceVerticalNavItem {

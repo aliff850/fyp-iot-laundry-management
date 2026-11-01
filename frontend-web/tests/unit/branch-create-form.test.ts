@@ -146,6 +146,7 @@ describe("createWorkspaceBranch server action", () => {
     const res = await createWorkspaceBranch({}, fd);
     expect(res).toEqual({
       success: true,
+      branchId: "new-branch-id",
       message: "Branch created.",
     });
   });

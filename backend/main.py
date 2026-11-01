@@ -7,6 +7,8 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from onboarding import router as onboarding_router
 from branches import router as branches_router
+from gateways import router as gateways_router
+from edge import router as edge_router
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -28,6 +30,8 @@ app.add_middleware(
 )
 app.include_router(onboarding_router)
 app.include_router(branches_router)
+app.include_router(gateways_router)
+app.include_router(edge_router)
 
 @app.middleware("http")
 async def retire_unsecured_prototype(request, call_next):
@@ -37,6 +41,7 @@ async def retire_unsecured_prototype(request, call_next):
         or path.startswith("/join-requests/")
         or path.startswith("/branches/")
         or path.startswith("/personnel/")
+        or path.startswith("/edge")
     )
     if not allowed:
         from fastapi.responses import JSONResponse

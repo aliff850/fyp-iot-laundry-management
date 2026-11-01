@@ -632,3 +632,54 @@ export async function resolveCustomerReport(
   return { ok: true, value: { report: result.value.report, summary: result.value.summary } };
 }
 
+export interface GatewayItem {
+  id: string;
+  branch_id: string;
+  label: string;
+  status: "awaiting_confirmation" | "active" | "replaced" | "revoked";
+  firmware_version: string | null;
+  config_revision: number;
+  last_contact_at: string | null;
+  last_sync_at: string | null;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+export interface GatewayClaimItem {
+  claim_id: string;
+  status: "issued" | "redeemed_pending" | "confirmed" | "expired" | "cancelled";
+  expires_at: string;
+  confirmation_expires_at: string | null;
+  gateway_id: string | null;
+  verification_fingerprint: string | null;
+}
+
+export interface DeviceDiscoveryItem {
+  id: string;
+  candidate_id: string;
+  source_id: string;
+  proposed_type: string | null;
+  evidence_quality: Record<string, unknown>;
+  first_seen_at: string;
+  last_seen_at: string;
+  gateway_id: string;
+}
+
+export async function getBranchGateways(branchId: string): Promise<Result<GatewayItem[]>> {
+  const result = await businessRequest<{ gateways: GatewayItem[] }>(`/branches/${branchId}/gateways`);
+  if (!result.ok) return result;
+  return { ok: true, value: result.value?.gateways ?? [] };
+}
+
+export async function getCurrentGatewayClaim(branchId: string): Promise<Result<GatewayClaimItem | null>> {
+  const result = await businessRequest<{ current_claim: GatewayClaimItem | null }>(`/branches/${branchId}/gateway-claims`);
+  if (!result.ok) return result;
+  return { ok: true, value: result.value?.current_claim ?? null };
+}
+
+export async function getBranchDeviceDiscoveries(branchId: string): Promise<Result<DeviceDiscoveryItem[]>> {
+  const result = await businessRequest<{ discoveries: DeviceDiscoveryItem[] }>(`/branches/${branchId}/device-discoveries`);
+  if (!result.ok) return result;
+  return { ok: true, value: result.value?.discoveries ?? [] };
+}
+

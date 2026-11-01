@@ -76,3 +76,15 @@ The PRD already requires confirmed signup → login → automatic idempotent onb
 The live project preflight found only the five onboarding tables and the expected `memberships_check` constraint. Migration `002_branches.sql` committed in one transaction after checking both new tables had RLS enabled, no `anon`/`authenticated` grants, and the membership count was preserved. A separate post-commit query found zero branch and assignment rows with those same access controls. No organization or branch was seeded. The previously exposed key/password still need user rotation in Supabase and ignored backend configuration refresh.
 
 Focused checks after the redirect change: 52 Vitest tests and 23 backend tests passed, TypeScript and focused ESLint passed, the configured production build passed, and six desktop Playwright smoke tests passed. The user's signed-in check confirmed active-owner navigation to `/branches`. A stale local uvicorn process initially returned HTTP 410 for `/branches`; it was identified by PID and project command line, stopped, and replaced with the updated service. The restarted service returns HTTP 200 for health and HTTP 401 for unauthenticated `/branches`. The user refreshed while signed in and confirmed the genuine “Your first branch starts here” empty state. Browser smoke tests do not prove live email delivery or all role-specific routes.
+
+## Phase 3 — Gateway & Device Onboarding
+
+Implements the zero-trust pairing ceremony, device discovery, and durable telemetry sync outlined in `docs/GATEWAY_DEVICE_ONBOARDING_PLAN.md`.
+
+### Architecture & Subsystems
+- **Cloud Schema & RLS:** Migration `004_gateway_device_onboarding.sql` creates `gateway_claims`, `gateways`, `devices`, `device_discoveries`, and `telemetry_observations`. RLS enabled, browser direct grants revoked.
+- **FastAPI Routers:** `backend/gateways.py` provides owner management endpoints (issue code, status polling, cancellation, explicit confirmation with fingerprint verification, gateway fleet, device approvals); `backend/edge.py` provides edge-facing endpoints (`/edge/claim`, `/edge/claim-status`, `/edge/config`, `/edge/discoveries`, `/edge/sync`).
+- **Pi 5 Gateway:** MariaDB additive DDL in `pi5/migrations/001_gateway_onboarding.sql`, secure credential storage in `pi5/gateway_config.py`, local pairing handler with CSRF/auth in `pi5/dashboard/dashboard.py`, topic-validated ingestion in `pi5/ingestion_worker.py`, and acknowledged batch sync in `pi5/sync_worker.py`.
+- **Next.js Web UI:** Seamless redirect from `BranchCreateForm.tsx` to `/branches/[branchId]/hardware-setup`, providing mobile-first pairing code cards, visual fingerprint comparison, active gateway monitoring, and discovery approvals adhering strictly to `docs/DESIGN.md`.
+
+Detailed task breakdown and acceptance criteria are tracked in [todo.md](todo.md). The full technical plan artifact is recorded in the session artifact directory.

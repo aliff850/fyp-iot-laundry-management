@@ -14,7 +14,8 @@ export type BranchWorkspaceTab =
   | "lpg"
   | "customer-reports"
   | "personnel"
-  | "details";
+  | "details"
+  | "hardware-setup";
 
 interface BranchWorkspaceShellProps {
   branch: BranchDetail;
@@ -71,6 +72,13 @@ export function BranchWorkspaceShell({
       label: "Branch Personnel",
       href: `/branches/${branch.id}/personnel`,
       icon: "personnel",
+      visible: isOwner || isManager,
+    },
+    {
+      id: "hardware-setup",
+      label: "Hardware Setup",
+      href: `/branches/${branch.id}/hardware-setup`,
+      icon: "hardware-setup",
       visible: isOwner || isManager,
     },
     {

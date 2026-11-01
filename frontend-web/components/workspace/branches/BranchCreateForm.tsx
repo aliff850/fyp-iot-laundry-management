@@ -49,8 +49,12 @@ export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
   };
 
   useEffect(() => {
-    if (state.success) router.push("/branches");
-  }, [state.success, router]);
+    if (state.success && state.branchId) {
+      router.push(`/branches/${state.branchId}/hardware-setup`);
+    } else if (state.success) {
+      router.push("/branches");
+    }
+  }, [state.success, state.branchId, router]);
 
   const field = (
     name: keyof typeof values,

@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { businessRequest } from "@/lib/auth/business";
 
-export type CreateBranchState = { message?: string; success?: boolean };
+export type CreateBranchState = { message?: string; success?: boolean; branchId?: string };
 
 export async function createWorkspaceBranch(_state: CreateBranchState, form: FormData): Promise<CreateBranchState> {
   const read = (key: string) => form.get(key);
@@ -40,5 +40,5 @@ export async function createWorkspaceBranch(_state: CreateBranchState, form: For
   if (!result.ok) return { message: result.message };
   if (!result.value?.branch?.id) return { message: "The business service returned an invalid branch." };
   revalidatePath("/branches");
-  return { success: true, message: "Branch created." };
+  return { success: true, branchId: result.value.branch.id, message: "Branch created." };
 }

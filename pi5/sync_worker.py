@@ -1,6 +1,7 @@
 """
-SpinSense Pi 5 Edge-to-Cloud Telemetry Sync Worker
-Adheres to PRD §5.3 Durable Synchronization & TI-03 Acknowledged Protocol
+SpinSense Pi 5 Edge-to-Cloud Telemetry & Discovery Sync Worker
+Adheres to PRD §5.3 Durable Synchronization, TI-03 Acknowledged Protocol,
+and Branch Gateway and Device Onboarding Plan (docs/GATEWAY_DEVICE_ONBOARDING_PLAN.md).
 """
 
 import json
@@ -9,13 +10,30 @@ import os
 import signal
 import sys
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-import pymysql
-from pymysql.cursors import DictCursor
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+try:
+    import pymysql
+    from pymysql.cursors import DictCursor
+except ImportError:
+    pymysql = None
+    DictCursor = None
+try:
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+except ImportError:
+    requests = None
+    HTTPAdapter = None
+    Retry = None
+
+# Add parent directory to path to allow importing gateway_config
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    import gateway_config
+except ImportError:
+    from pi5 import gateway_config
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -31,22 +49,21 @@ DB_USER = os.getenv("SPINSENSE_DB_USER", "edge_user")
 DB_PASSWORD = os.getenv("SPINSENSE_DB_PASSWORD", "volvo850chungus")
 DB_NAME = os.getenv("SPINSENSE_DB_NAME", "edge_iot")
 
-CLOUD_API_URL = os.getenv("SPINSENSE_CLOUD_URL", "https://esp32-gas-api.onrender.com/api/v1/telemetry/batch")
-GATEWAY_TOKEN = os.getenv("SPINSENSE_GATEWAY_TOKEN", "spinsense-edge-gw-default")
-BRANCH_ID = os.getenv("SPINSENSE_BRANCH_ID", "msu-shah-alam")
+CLOUD_BASE_URL = os.getenv("SPINSENSE_CLOUD_BASE", "http://localhost:8000").rstrip("/")
 
 API_TIMEOUT_SECONDS = 10
 BATCH_SIZE = 50
-BASE_INTERVAL_SECONDS = 2.0   # Target per PRD §5.5
+BASE_INTERVAL_SECONDS = 2.0
 MAX_BACKOFF_SECONDS = 60.0
 
-# --- State Control ---
 RUNNING = True
+
 
 def handle_shutdown(signum, frame):
     global RUNNING
     logger.info("Shutdown signal received (%s). Draining active cycle...", signum)
     RUNNING = False
+
 
 signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
@@ -55,10 +72,18 @@ signal.signal(signal.SIGTERM, handle_shutdown)
 class EdgeSyncWorker:
     def __init__(self):
         self.session = self._init_http_session()
-        self.connection: Optional[pymysql.Connection] = None
+        self.connection: Optional[Any] = None
         self.backoff_delay = BASE_INTERVAL_SECONDS
 
-    def _init_http_session(self) -> requests.Session:
+        self.gateway_id: Optional[str] = None
+        self.credential: Optional[str] = None
+        self.status = "unpaired"
+        self.branch_id: Optional[str] = None
+        self.config_revision = 1
+
+    def _init_http_session(self) -> Any:
+        if requests is None:
+            return None
         session = requests.Session()
         retries = Retry(
             total=2,
@@ -69,14 +94,9 @@ class EdgeSyncWorker:
         adapter = HTTPAdapter(max_retries=retries, pool_connections=5, pool_maxsize=10)
         session.mount("https://", adapter)
         session.mount("http://", adapter)
-        session.headers.update({
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {GATEWAY_TOKEN}",
-            "X-Branch-ID": BRANCH_ID,
-        })
         return session
 
-    def get_db_connection(self) -> pymysql.Connection:
+    def get_db_connection(self) -> Any:
         if self.connection is None or not self.connection.open:
             self.connection = pymysql.connect(
                 host=DB_HOST,
@@ -91,53 +111,216 @@ class EdgeSyncWorker:
             self.connection.ping(reconnect=True)
         return self.connection
 
-    def fetch_pending_batch(self, limit: int = BATCH_SIZE) -> List[Dict[str, Any]]:
+    def refresh_gateway_state(self):
+        """Loads credentials from disk and pairing state from MariaDB."""
+        creds = gateway_config.get_stored_gateway_credentials()
+        if creds:
+            self.gateway_id, self.credential = creds
+
+        conn = self.get_db_connection()
+        state = gateway_config.load_gateway_db_state(conn)
+        self.status = state.get("status", "unpaired")
+        self.branch_id = state.get("branch_id")
+        self.config_revision = state.get("config_revision", 1)
+
+    def check_cloud_activation(self) -> bool:
+        """Polls /edge/claim-status if in awaiting_confirmation to detect owner confirmation."""
+        if not self.credential:
+            return False
+
+        try:
+            url = f"{CLOUD_BASE_URL}/edge/claim-status"
+            res = self.session.get(
+                url,
+                headers={"Authorization": f"Bearer {self.credential}"},
+                timeout=5,
+            )
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("status") == "active":
+                    logger.info("Gateway confirmed active in cloud! Updating local DB.")
+                    conn = self.get_db_connection()
+                    gateway_config.save_gateway_db_state(
+                        conn,
+                        self.gateway_id,
+                        data.get("organization_id"),
+                        data.get("branch_id"),
+                        "active",
+                        data.get("config_revision", 1),
+                    )
+                    self.status = "active"
+                    self.branch_id = data.get("branch_id")
+                    self.config_revision = data.get("config_revision", 1)
+                    self.sync_device_config()
+                    return True
+        except Exception as e:
+            logger.debug("Claim status poll failed: %s", e)
+        return False
+
+    def sync_device_config(self):
+        """Fetches approved device list from cloud GET /edge/config and updates local registry."""
+        if self.status != "active" or not self.credential:
+            return
+
+        try:
+            url = f"{CLOUD_BASE_URL}/edge/config"
+            res = self.session.get(
+                url,
+                headers={"Authorization": f"Bearer {self.credential}"},
+                timeout=API_TIMEOUT_SECONDS,
+            )
+            if res.status_code == 200:
+                data = res.json()
+                devices = data.get("devices", [])
+                conn = self.get_db_connection()
+                with conn.cursor() as cursor:
+                    for d in devices:
+                        cursor.execute(
+                            """INSERT INTO device_registry
+                               (source_id, cloud_device_id, device_type, source_kind, label,
+                                status, capacity_kg, capabilities, config_revision)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                               ON DUPLICATE KEY UPDATE
+                                   label = VALUES(label),
+                                   status = VALUES(status),
+                                   capacity_kg = VALUES(capacity_kg),
+                                   capabilities = VALUES(capabilities),
+                                   config_revision = VALUES(config_revision),
+                                   updated_at = CURRENT_TIMESTAMP""",
+                            (
+                                d["source_id"],
+                                d["id"],
+                                d["device_type"],
+                                d.get("source_kind", "physical"),
+                                d["label"],
+                                d["status"],
+                                d.get("capacity_kg"),
+                                json.dumps(d.get("capabilities", {})),
+                                data.get("config_revision", 1),
+                            ),
+                        )
+                conn.commit()
+                self.config_revision = data.get("config_revision", 1)
+                logger.info("Synchronized %d approved device(s) from cloud config (rev=%d).", len(devices), self.config_revision)
+        except Exception as e:
+            logger.warning("Failed to synchronize device config from cloud: %s", e)
+
+    def sync_discoveries(self):
+        """Syncs pending discovered candidates to cloud POST /edge/discoveries."""
+        if self.status != "active" or not self.credential:
+            return
+
         conn = self.get_db_connection()
         with conn.cursor() as cursor:
-            # Query un-synced records, excluding quarantined (-1)
+            cursor.execute(
+                """SELECT candidate_id, source_id, proposed_type, evidence_quality,
+                          first_seen_at, last_seen_at
+                   FROM device_discoveries
+                   WHERE is_synced = 0
+                   LIMIT 20"""
+            )
+            candidates = cursor.fetchall()
+
+        if not candidates:
+            return
+
+        payload_list = []
+        for c in candidates:
+            quality = {}
+            if c.get("evidence_quality"):
+                try:
+                    quality = json.loads(c["evidence_quality"])
+                except Exception:
+                    pass
+
+            payload_list.append({
+                "candidate_id": c["candidate_id"],
+                "source_id": c["source_id"],
+                "proposed_type": c.get("proposed_type"),
+                "evidence_quality": quality,
+                "first_seen_at": c["first_seen_at"].isoformat() if hasattr(c["first_seen_at"], "isoformat") else str(c["first_seen_at"]),
+                "last_seen_at": c["last_seen_at"].isoformat() if hasattr(c["last_seen_at"], "isoformat") else str(c["last_seen_at"]),
+            })
+
+        try:
+            url = f"{CLOUD_BASE_URL}/edge/discoveries"
+            res = self.session.post(
+                url,
+                json={"candidates": payload_list},
+                headers={"Authorization": f"Bearer {self.credential}"},
+                timeout=API_TIMEOUT_SECONDS,
+            )
+            if res.status_code == 200:
+                cand_ids = [c["candidate_id"] for c in candidates]
+                placeholders = ", ".join(["%s"] * len(cand_ids))
+                with conn.cursor() as cursor:
+                    cursor.execute(f"UPDATE device_discoveries SET is_synced = 1 WHERE candidate_id IN ({placeholders})", cand_ids)
+                conn.commit()
+                logger.info("Synced %d device discovery candidate(s) to cloud.", len(cand_ids))
+        except Exception as e:
+            logger.warning("Failed to sync discoveries to cloud: %s", e)
+
+    def fetch_pending_telemetry(self, limit: int = BATCH_SIZE) -> List[Dict[str, Any]]:
+        conn = self.get_db_connection()
+        with conn.cursor() as cursor:
             sql = """
-                SELECT id, device_id, recorded_at, data_payload 
-                FROM sensor_telemetry 
-                WHERE is_synced = 0 
-                ORDER BY id ASC 
+                SELECT id, record_id, source_id, boot_id, sequence, gateway_receipt_at,
+                       recorded_at, data_payload, device_id
+                FROM sensor_telemetry
+                WHERE is_synced = 0 AND (quarantine_reason IS NULL OR quarantine_reason != 'legacy_unattributed')
+                ORDER BY id ASC
                 LIMIT %s;
             """
             cursor.execute(sql, (limit,))
             return cursor.fetchall()
 
-    def update_sync_status(self, accepted_ids: List[int], quarantined_ids: Optional[List[int]] = None):
-        """Transactionally commits acknowledged IDs and flags quarantined failures."""
-        if not accepted_ids and not quarantined_ids:
-            return
-
+    def update_sync_status(self, accepted_ids: List[int], rejected_records: List[Dict[str, Any]]):
+        """Strictly acknowledges ONLY committed IDs with cloud_acknowledged_at timestamp."""
         conn = self.get_db_connection()
         with conn.cursor() as cursor:
             if accepted_ids:
                 placeholders = ", ".join(["%s"] * len(accepted_ids))
                 cursor.execute(
-                    f"UPDATE sensor_telemetry SET is_synced = 1 WHERE id IN ({placeholders});",
+                    f"""UPDATE sensor_telemetry
+                        SET is_synced = 1, cloud_acknowledged_at = CURRENT_TIMESTAMP
+                        WHERE id IN ({placeholders});""",
                     accepted_ids,
                 )
-            if quarantined_ids:
-                placeholders = ", ".join(["%s"] * len(quarantined_ids))
-                cursor.execute(
-                    f"UPDATE sensor_telemetry SET is_synced = -1 WHERE id IN ({placeholders});",
-                    quarantined_ids,
-                )
+
+            for rej in rejected_records:
+                edge_id = rej.get("edge_id")
+                reason = rej.get("reason", "Rejected by cloud")
+                if edge_id:
+                    cursor.execute(
+                        """UPDATE sensor_telemetry
+                           SET is_synced = -1, quarantine_reason = %s
+                           WHERE id = %s;""",
+                        (reason, edge_id),
+                    )
         conn.commit()
 
     def run_sync_cycle(self) -> int:
-        """Executes one sync cycle. Returns number of records synced."""
-        records = self.fetch_pending_batch(limit=BATCH_SIZE)
+        self.refresh_gateway_state()
+
+        if self.status != "active":
+            if self.status == "awaiting_confirmation":
+                self.check_cloud_activation()
+            return 0
+
+        # Sync discoveries
+        self.sync_discoveries()
+
+        # Sync telemetry
+        records = self.fetch_pending_telemetry(limit=BATCH_SIZE)
         if not records:
+            # Heartbeat contact
             self.backoff_delay = BASE_INTERVAL_SECONDS
             return 0
 
         logger.info("Preparing sync batch for %d record(s)...", len(records))
 
-        batch_payload = []
+        batch_records = []
         batch_ids = []
-        quarantine_local = []
 
         for row in records:
             payload_data = row["data_payload"]
@@ -145,66 +328,75 @@ class EdgeSyncWorker:
                 try:
                     payload_data = json.loads(payload_data)
                 except json.JSONDecodeError:
-                    logger.warning("Record #%d has corrupted JSON payload. Quarantining.", row["id"])
-                    quarantine_local.append(row["id"])
+                    self.update_sync_status(accepted_ids=[], rejected_records=[{"edge_id": row["id"], "reason": "Corrupt JSON"}])
                     continue
 
+            record_uuid = row.get("record_id") or str(uuid.uuid4())
             batch_ids.append(row["id"])
-            batch_payload.append({
-                "edge_record_id": row["id"],
-                "device_id": row["device_id"],
-                "recorded_at": (
-                    row["recorded_at"].isoformat()
-                    if hasattr(row["recorded_at"], "isoformat")
-                    else str(row["recorded_at"])
-                ),
-                "data": payload_data,
+            batch_records.append({
+                "record_id": record_uuid,
+                "edge_id": row["id"],
+                "source_id": row["source_id"] or row.get("device_id") or "unknown_node",
+                "boot_id": row.get("boot_id"),
+                "sequence": row.get("sequence"),
+                "gateway_receipt_at": row["gateway_receipt_at"].isoformat() if row.get("gateway_receipt_at") and hasattr(row["gateway_receipt_at"], "isoformat") else str(row.get("gateway_receipt_at") or row["recorded_at"]),
+                "source_recorded_at": row["recorded_at"].isoformat() if hasattr(row["recorded_at"], "isoformat") else str(row["recorded_at"]),
+                "payload": payload_data,
+                "quality": {},
             })
 
-        # Immediately quarantine any records that failed local serialization
-        if quarantine_local:
-            self.update_sync_status(accepted_ids=[], quarantined_ids=quarantine_local)
-
-        if not batch_payload:
+        if not batch_records:
             return 0
 
-        # Outbound POST to Cloud FastAPI
+        url = f"{CLOUD_BASE_URL}/edge/sync"
+        batch_payload = {
+            "schema_version": 1,
+            "gateway_id": self.gateway_id,
+            "batch_id": str(uuid.uuid4()),
+            "records": batch_records,
+        }
+
         try:
             response = self.session.post(
-                CLOUD_API_URL,
-                json={"batch": batch_payload, "branch_id": BRANCH_ID},
+                url,
+                json=batch_payload,
+                headers={"Authorization": f"Bearer {self.credential}"},
                 timeout=API_TIMEOUT_SECONDS,
             )
 
             if response.status_code == 200:
                 body = response.json()
-                # Acknowledged protocol support:
-                accepted_ids = body.get("accepted_ids", batch_ids)
-                rejected_ids = body.get("rejected_ids", [])
+                # Strict: ONLY IDs present in accepted_ids are marked synced
+                accepted_ids = body.get("accepted_ids", [])
+                rejected = body.get("rejected", [])
 
-                self.update_sync_status(accepted_ids=accepted_ids, quarantined_ids=rejected_ids)
+                self.update_sync_status(accepted_ids=accepted_ids, rejected_records=rejected)
                 logger.info(
-                    "Cloud accepted %d/%d records (quarantined=%d).",
+                    "Cloud acknowledged %d/%d records (rejected=%d).",
                     len(accepted_ids),
                     len(batch_ids),
-                    len(rejected_ids),
+                    len(rejected),
                 )
+
+                new_rev = body.get("config_revision", self.config_revision)
+                if new_rev > self.config_revision:
+                    self.sync_device_config()
+
                 self.backoff_delay = BASE_INTERVAL_SECONDS
                 return len(accepted_ids)
 
-            elif 400 <= response.status_code < 500:
-                logger.error("Cloud rejected payload (HTTP %d): %s", response.status_code, response.text)
-                # Client error: back off to prevent tight crash loop
+            elif response.status_code == 403:
+                logger.warning("Gateway rejected by cloud (status=%d). Refreshing state.", response.status_code)
                 self.backoff_delay = min(self.backoff_delay * 2, MAX_BACKOFF_SECONDS)
                 return 0
 
             else:
-                logger.warning("Cloud server error (HTTP %d). Will retry batch.", response.status_code)
+                logger.warning("Cloud error (HTTP %d). Retrying batch.", response.status_code)
                 self.backoff_delay = min(self.backoff_delay * 2, MAX_BACKOFF_SECONDS)
                 return 0
 
         except requests.exceptions.RequestException as err:
-            logger.warning("Network failure reaching cloud (%s). Backing off.", err)
+            logger.warning("Network failure connecting to cloud (%s). Backing off.", err)
             self.backoff_delay = min(self.backoff_delay * 1.5, MAX_BACKOFF_SECONDS)
             return 0
 
@@ -220,13 +412,10 @@ def main():
 
     try:
         while RUNNING:
-            synced_count = worker.run_sync_cycle()
-
-            # Backlog drain optimization:
-            # If we just synced a full batch, check immediately without sleeping
-            if synced_count == BATCH_SIZE and RUNNING:
-                continue
-
+            try:
+                worker.run_sync_cycle()
+            except Exception as e:
+                logger.error("Error in sync worker cycle: %s", e, exc_info=True)
             time.sleep(worker.backoff_delay)
     finally:
         worker.close()

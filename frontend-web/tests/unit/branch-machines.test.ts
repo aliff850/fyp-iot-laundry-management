@@ -120,8 +120,9 @@ describe("MachineCard component", () => {
     // In running state, pause button is enabled, start button is disabled
     expect(raw).toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Start<\/span>/);
     expect(raw).not.toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Pause<\/span>/);
-    // Modal trigger
+    // Modal trigger (hidden on mobile, visible on desktop / PC)
     expect(text).toContain("Details &amp; Parameters");
+    expect(raw).toContain("hidden sm:flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-control bg-raised/50 px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent");
     // No font-mono
     expect(raw).not.toContain("font-mono");
   });
@@ -198,10 +199,14 @@ describe("MachineDetailModal component", () => {
     const text = raw.replace(/<!--.*?-->/g, "");
     expect(text).toContain("Dryer #01 (Gas 16kg)");
     expect(text).toContain("State &amp; Diagnostics");
+    expect(text).toContain("Statistics &amp; Revenue");
     expect(text).toContain("Programs Catalog");
     expect(text).toContain("Parameters &amp; Pricing");
     expect(text).toContain("Active Fault: E-302 (Ignition)");
     expect(text).toContain("Verify LPG cylinder manifold pressure and inspect spark igniter.");
+    // Desktop-only modal gating and expanded sizing
+    expect(raw).toContain("hidden sm:flex");
+    expect(raw).toContain("max-w-6xl");
     // No font-mono
     expect(raw).not.toContain("font-mono");
   });
@@ -257,6 +262,7 @@ describe("MachineRowCard component", () => {
     expect(text).toContain("Pause");
     expect(text).toContain("Stop");
     expect(text).toContain("Details &amp; parameters");
+    expect(raw).toContain("hidden sm:inline-flex min-h-11");
     expect(raw).not.toContain("font-mono");
   });
 
@@ -321,9 +327,9 @@ describe("MachineFleetView component", () => {
     // Verifies View Mode Toggle exists (Rows and Grid)
     expect(text).toContain("Rows");
     expect(text).toContain("Grid");
-    expect(text).toContain("Fleet Equipment");
+    expect(text).toContain("View");
     // Verifies dedicated view mode header container exists
-    expect(raw).toMatch(/Fleet Equipment[\s\S]*?aria-label="View mode"/);
+    expect(raw).toMatch(/View[\s\S]*?aria-label="View mode"/);
     // Verifies default view renders stacked rows
     expect(raw).toContain("space-y-3");
     // Verifies no font-mono in MachineFleetView

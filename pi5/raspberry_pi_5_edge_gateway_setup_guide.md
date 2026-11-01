@@ -1,6 +1,8 @@
 # SpinSense LPG Edge Gateway: End-to-End Implementation Manual
 
-This document details the configuration, deployment, debugging, and operational procedures for the **SpinSense LPG Edge Gateway** hosted on a Raspberry Pi 5 (4GB RAM) running Raspberry Pi OS (64-bit).
+> **Historical prototype record.** This guide records an earlier Raspberry Pi 5 setup; it is not a verified snapshot of the running Pi or an installation procedure for the paired, multi-branch gateway. The target architecture, safety gates, and deployment sequence are in the [gateway and device onboarding plan](../docs/GATEWAY_DEVICE_ONBOARDING_PLAN.md). Commands that permit anonymous MQTT or prune by the legacy sync flag must not be reused unchanged. Credential values have been replaced with placeholders; if any removed value is still in use, rotate it in the actual environment before relying on the service. No live Pi, Render revision, or database was inspected during this documentation update.
+
+This document details the historical configuration, deployment, debugging, and operational procedures for the **SpinSense LPG Edge Gateway** hosted on a Raspberry Pi 5 (4GB RAM) running Raspberry Pi OS (64-bit).
 
 ---
 
@@ -48,7 +50,7 @@ Ensure existing and future Wi-Fi uplink profiles attach exclusively to `wlan1`:
 
 ```bash
 # Bind the primary home profile to wlan1
-sudo nmcli connection modify "netplan-wlan0-BSC12A_5G@unifi" connection.interface-name wlan1
+sudo nmcli connection modify "<UPLINK_CONNECTION_NAME>" connection.interface-name wlan1
 ```
 
 *Note: For field demonstrations, connect `wlan1` to any phone hotspot without affecting `wlan0`:*
@@ -79,7 +81,7 @@ sudo nmcli connection modify Hotspot-ESP32 802-11-wireless-security.proto rsn
 sudo nmcli connection modify Hotspot-ESP32 802-11-wireless-security.key-mgmt wpa-psk
 sudo nmcli connection modify Hotspot-ESP32 802-11-wireless-security.pairwise ccmp
 sudo nmcli connection modify Hotspot-ESP32 802-11-wireless-security.group ccmp
-sudo nmcli connection modify Hotspot-ESP32 wifi-sec.psk "volvo850"
+sudo nmcli connection modify Hotspot-ESP32 wifi-sec.psk "<PI_AP_PASSWORD>"
 
 # 4. Disable Protected Management Frames (PMF / 802.11w) for legacy microcontroller compatibility
 sudo nmcli connection modify Hotspot-ESP32 wifi-sec.pmf 1
@@ -90,6 +92,8 @@ sudo nmcli connection modify Hotspot-ESP32 ipv4.method shared
 # 6. Bring the hotspot online
 sudo nmcli connection up Hotspot-ESP32
 ```
+
+For the planned pairing flow, an installer joins this Pi access point to open the local dashboard. `ipv4.method shared` is intended to provide DHCP and NAT toward the Pi's default network; verify on the actual Pi that an access-point client can reach the dashboard and SpinSense over HTTPS while `wlan1` is connected. The local dashboard should remain reachable for diagnosis when the uplink fails, but cloud claim/owner confirmation must wait for connectivity. Check which interface the dashboard and broker listen on before exposing pairing.
 
 ---
 
@@ -143,7 +147,9 @@ iw dev wlan0 get power_save
 
 ## 4. Mosquitto MQTT Broker Configuration
 
-Mosquitto must accept connections from both `localhost` (internal Python services) and external nodes connecting across the `10.42.0.0/24` subnet.
+**Historical, insecure prototype configuration — do not reuse for paired gateways.** The example below accepts anonymous clients on all Pi interfaces, including the uplink. The target requires a listener restricted to the Pi access-point interface, authenticated per-device MQTT identities and topic permissions. The current ingestion worker connects to `localhost`; changing the listener also requires updating and testing its broker address or providing a separately protected loopback listener. See the [onboarding plan](../docs/GATEWAY_DEVICE_ONBOARDING_PLAN.md#4-planned-pi-mosquitto-and-mariadb-changes).
+
+This prototype broker accepted connections from both `localhost` (internal Python services) and external nodes on `10.42.0.0/24`.
 
 Edit `/etc/mosquitto/mosquitto.conf`:
 
@@ -183,6 +189,8 @@ CREATE TABLE IF NOT EXISTS sensor_telemetry (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
+This is the documented prototype schema, not a verified live `SHOW CREATE TABLE` result. It lacks a durable observation ID, gateway/device provenance, separate source and gateway receipt times, quality, and a cloud acknowledgement time. `TIMESTAMP` values are converted using the MariaDB session time zone; check the live setting before interpreting old records or migrating them. Back up the live database before staged schema changes; `CREATE TABLE` and `ALTER TABLE` are not rollbackable as one ordinary transaction.
+
 ### Step 5.2: Ingestion Worker Fix (`edge-ingestion.service`)
 *Bug Encountered:* MariaDB rejected ISO 8601 timestamps containing the `T` separator and `+00:00` offset (`Error 1292: Incorrect datetime value`).
 
@@ -207,12 +215,14 @@ journalctl -u edge-ingestion.service -f
 
 ## 6. Cloud Synchronization Pipeline
 
-The sync worker (`edge-sync.service`) polls MariaDB for unsynced records (`is_synced = 0`), constructs batch payloads (up to 50 records), and sends them to the Render cloud API via HTTPS.
+The historical sync worker (`edge-sync.service`) polls MariaDB for unsynced records (`is_synced = 0`), constructs batch payloads (up to 50 records), and sends them to the Render cloud API via HTTPS. The repository worker currently treats an HTTP 200 response without `accepted_ids` as acceptance of the entire batch. Neither that status code nor the example log below proves a cloud transaction committed each row. The target worker must require explicit committed-ID acknowledgements before setting `is_synced=1`; verify the deployed Render contract before switching the Pi.
 
 ### Step 6.1: Deprecation and Socket Blocking Fix
 In `/home/aliff850/edge_gateway/sync_worker.py`:
 1. Updated `self.connection.ping(reconnect=True)` to `self.connection.ping()` to prevent library deprecation warnings.
 2. Verified explicit `timeout` settings on HTTP requests to prevent worker thread lockups.
+
+This describes a historical local edit; the checked-in worker still calls `ping(reconnect=True)`. Compare the deployed worker revision with the repository before using this note as evidence of current behavior.
 
 Restart and verify batch sync:
 
@@ -232,8 +242,8 @@ To avoid RF drops and scanning deadlocks, the ESP32 firmware includes the follow
 #include <WiFi.h>
 #include <PubSubClient.h>
 
-const char* WIFI_SSID   = "SpinSense-GW";
-const char* WIFI_PASS   = "volvo850";
+const char* WIFI_SSID   = "<PI_AP_SSID>";
+const char* WIFI_PASS   = "<PI_AP_PASSWORD>";
 const char* MQTT_SERVER = "10.42.0.1";
 const int   MQTT_PORT   = 1883;
 const char* MQTT_TOPIC  = "nodes/telemetry";
@@ -295,6 +305,8 @@ void loop() {
 }
 ```
 
+This abbreviated historical example does not provision an authenticated MQTT identity or show a boot/session identifier. The checked-in publisher sends every five seconds and can encode an invalid temperature or humidity as zero. The target [onboarding plan](../docs/GATEWAY_DEVICE_ONBOARDING_PLAN.md#esp32-publisher-readiness) requires explicit quality, stable source identity and packet-size checks before treating data as operational evidence.
+
 ---
 
 ## 8. Persistence, Maintenance & Operational Procedures
@@ -321,20 +333,23 @@ systemctl is-enabled mariadb mosquitto edge-ingestion.service edge-sync.service
 # Expected output: 4 lines of "enabled"
 ```
 
+The guide does not contain the installed unit definitions or a dashboard service. Before onboarding, inspect the actual units and environment-file paths with `systemctl cat`, confirm startup order after the access point and MariaDB, and record the dashboard's listening interface. Do not copy unit credentials into documentation or logs.
+
 ### Step 8.2: Automated Storage Pruning (Cron Job)
-A single node publishing every 5 seconds generates ~17,280 rows/day (~7 MB/day). To prevent local storage from expanding indefinitely, a daily cron job purges synced records older than 7 days:
+A single node publishing every 5 seconds generates ~17,280 rows/day in this historical estimate. The one-node estimate does not size storage for a one-second publishing cadence, multiple devices, pending discoveries, or an extended outage. **Do not install or continue this legacy pruning job during onboarding until the cloud acknowledgement contract and retained-row migration have been verified.** Inspect the Pi's installed crontab first; plan later retention from a recorded cloud acknowledgement time, not the device/source `recorded_at`.
 
 ```bash
 sudo crontab -e
 ```
 
-Add the following task:
+Historical crontab entry, shown for audit only:
 
 ```text
+# HISTORICAL ONLY — DO NOT INSTALL FOR THE PAIRED GATEWAY
 0 0 * * * mariadb -u root -e "DELETE FROM edge_iot.sensor_telemetry WHERE is_synced = 1 AND recorded_at < NOW() - INTERVAL 7 DAY;" > /dev/null 2>&1
 ```
 
-*Safety Guarantee: The clause `WHERE is_synced = 1` ensures un-synced data is never deleted during internet or cloud outages.*
+The old `WHERE is_synced = 1` filter does **not** guarantee a cloud commit because the current worker can set that flag when an HTTP 200 response omits `accepted_ids`. Keep quarantined and legacy unattributed records for diagnosis; prune only explicitly acknowledged rows after a tested retention window and backup/recovery procedure.
 
 ### Step 8.3: Safe Power-Down Procedure
 * **ESP32:** Safe to unplug at any time (code runs from non-volatile flash).

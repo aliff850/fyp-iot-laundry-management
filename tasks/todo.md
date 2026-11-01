@@ -112,3 +112,95 @@ Evidence and remaining integration limits are recorded in [plan.md](plan.md#evid
 - [x] Preflight and apply migration 002 transactionally; verify RLS, browser grants, preserved memberships and zero new branch records.
 - [x] Run focused web/backend tests, type/lint checks, production build and desktop browser smoke tests.
 - [x] Confirm the owner sees the true empty Branches state after refreshing against the restarted FastAPI service.
+
+## Phase 3: Gateway & Device Onboarding
+
+### Task 1: Supabase PostgreSQL Schema & RLS Migration
+**Description:** Create migration `004_gateway_device_onboarding.sql` defining `gateway_claims`, `gateways`, `devices`, `device_discoveries`, and `telemetry_observations` with foreign keys, unique active constraints, and strict RLS policies.
+**Acceptance criteria:**
+- [x] At most one unconfirmed claim and one active gateway per branch constraint enforced.
+- [x] Unique `(gateway_id, record_id)` constraint prevents observation replay or duplicates.
+- [x] Direct `anon` and `authenticated` browser access revoked on all five tables.
+**Verification:** Static SQL syntax and constraint validation against schema definitions.
+**Dependencies:** None. **Scope:** Medium (1 SQL migration file).
+
+### Task 2: FastAPI Gateway Management & Owner APIs
+**Description:** Implement `backend/gateways.py` router mounted under `/branches/{branch_id}` providing pairing code issuance, status polling, cancellation, explicit owner confirmation, gateway fleet status, and device discovery approval/retire endpoints.
+**Acceptance criteria:**
+- [x] Pairing code is single-use, 12-char base32, expires in 10 minutes, and only stored as SHA-256 hash.
+- [x] Confirmation requires matching fingerprint comparison and activates gateway atomically.
+- [x] Assigned managers can read gateway health; only owners can issue codes, confirm, or approve devices.
+**Verification:** `& "backend\.venv-phase2\Scripts\python.exe" -m pytest backend/test_gateways.py -q`
+**Dependencies:** Task 1. **Scope:** Medium (1 new router, updates to main.py).
+
+### Task 3: FastAPI Edge Endpoints (`/edge`)
+**Description:** Implement `backend/edge.py` router handling `/edge/claim`, `/edge/claim-status`, `/edge/config`, `/edge/discoveries`, and `/edge/sync` authenticated via gateway bearer token.
+**Acceptance criteria:**
+- [x] `/edge/claim` consumes pairing code, hashes secret, caps failed attempts at 5, and returns fingerprint.
+- [x] `/edge/sync` validates source IDs against approved devices, commits in a single transaction, and returns explicit `accepted_ids`.
+- [x] Idempotent retries of previously accepted records acknowledge successfully without creating duplicate rows.
+**Verification:** `& "backend\.venv-phase2\Scripts\python.exe" -m pytest backend/test_gateways.py -q`
+**Dependencies:** Tasks 1-2. **Scope:** Medium (1 router, schemas).
+
+### Checkpoint: Cloud Foundation
+- [x] All backend unit tests pass (`backend/test_gateways.py`, `backend/test_branches.py`, `backend/test_onboarding.py`).
+- [x] Ports 8000 and 3000 verified free with netstat.
+
+### Task 4: Pi 5 MariaDB Schema & Gateway Configuration
+**Description:** Add MariaDB migration `pi5/migrations/001_gateway_onboarding.sql` and configuration helper `pi5/gateway_config.py` for local identity, credential storage, and legacy row quarantine.
+**Acceptance criteria:**
+- [x] MariaDB tables `gateway_configuration`, `device_registry`, and `device_discoveries` defined.
+- [x] Additive columns on `sensor_telemetry` created without breaking legacy queries; old rows marked `legacy_unattributed`.
+- [x] Gateway secret stored with restricted file permissions (`0600`), never logged or exposed.
+**Verification:** Python compilation and local schema verification.
+**Dependencies:** None. **Scope:** Medium (1 SQL migration, 1 helper module).
+
+### Task 5: Pi 5 Local Dashboard Pairing Handler
+**Description:** Upgrade `pi5/dashboard/dashboard.py` with local setup authentication, CSRF tokens, rate-limited `POST /api/setup/pair`, non-secret `GET /api/setup/gateway`, and background claim-status polling.
+**Acceptance criteria:**
+- [x] Local pairing calls cloud `POST /edge/claim` and persists pending configuration.
+- [x] Dashboard displays `awaiting_confirmation` status and verification fingerprint.
+- [x] Detects owner confirmation via `GET /edge/claim-status` and updates local state to `active`.
+**Verification:** Local unit tests / curl checks against simulated or live FastAPI endpoints.
+**Dependencies:** Tasks 3, 4. **Scope:** Medium (dashboard routes & minimal setup HTML).
+
+### Task 6: Refactor Pi 5 Ingestion & Sync Workers
+**Description:** Refactor `pi5/ingestion_worker.py` and `pi5/sync_worker.py` to use dynamic gateway config, topic validation, candidate discovery, and strictly acknowledged batch synchronization.
+**Acceptance criteria:**
+- [x] Ingestion validates `source_id` in topic against payload and auto-flags unknown devices in `device_discoveries`.
+- [x] Sync worker sends batches to `POST /edge/sync` using gateway bearer credential.
+- [x] Only explicitly returned `accepted_ids` are marked `is_synced=1` and `cloud_acknowledged_at=NOW()`; no fallback to whole batch.
+- [x] Approved devices polled from `GET /edge/config` and updated in `device_registry`.
+**Verification:** Python unit tests for worker ingestion and sync loops.
+**Dependencies:** Tasks 3, 4, 5. **Scope:** Medium (2 worker files).
+
+### Checkpoint: Pi Edge Foundation
+- [x] Pi workers and dashboard compile and pass focused checks.
+- [x] Simulated MQTT message flows from broker to MariaDB to cloud sync.
+
+### Task 7: Next.js Branch Creation Route Forwarding
+**Description:** Update `frontend-web/app/branches/new/actions.ts` and `BranchCreateForm.tsx` to return the created `branchId` and route directly to `/branches/{branchId}/hardware-setup`.
+**Acceptance criteria:**
+- [x] Branch creation returns `branchId` upon 201 response.
+- [x] Form redirects to hardware setup route instead of general branch directory.
+**Verification:** `npm --prefix frontend-web test`
+**Dependencies:** None. **Scope:** Small (2 files).
+
+### Task 8: Next.js Hardware Setup UI & Device Commissioning
+**Description:** Implement `/branches/[branchId]/hardware-setup` route and mobile-first components conforming 100% to `docs/DESIGN.md` (PairingCodeCard, FingerprintComparisonCard, GatewayStatusCard, PendingDiscoveriesList, DeviceApprovalModal, ApprovedDevicesList).
+**Acceptance criteria:**
+- [x] Owner can generate pairing code with 10-minute countdown, poll claim status every 4s, and confirm activation.
+- [x] Verification fingerprint is prominently displayed for manual comparison.
+- [x] Discovered devices appear in pending list; owner can approve with label, device type, and capacity.
+- [x] 100% mobile-friendly (320px–1440px), min 44px touch targets, zero AI aesthetic tropes.
+**Verification:** TypeScript check, Vitest tests (148 passed), responsive layout review.
+**Dependencies:** Tasks 2, 7. **Scope:** Medium (1 page, 1 actions file, 5-6 components).
+
+### Task 9: End-to-End Integration & Scenario Acceptance
+**Description:** Execute full flow across cloud and Pi gateway with simulated ESP32 node and machines. Verify PRD scenarios S-02, S-03, S-04, S-22, S-28.
+**Acceptance criteria:**
+- [ ] Branch creation -> code issue -> Pi redemption -> fingerprint check -> owner confirm -> device discovery -> owner approval -> telemetry sync.
+- [ ] Outage and duplicate delivery handled cleanly without data corruption or duplicate rows.
+- [ ] Complete process and port teardown verified (ports 8000 and 3000 free).
+**Verification:** Integration test run, netstat port checks, and recorded walkthrough.
+**Dependencies:** Tasks 1-8. **Scope:** Medium.
