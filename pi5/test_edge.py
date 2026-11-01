@@ -176,3 +176,22 @@ def test_sync_worker_acknowledged_only_update():
     assert any("UPDATE sensor_telemetry\n                        SET is_synced = 1" in q or "UPDATE sensor_telemetry SET is_synced = 1" in q for q in sql_calls)
     assert any("SET is_synced = -1, quarantine_reason" in q for q in sql_calls)
 
+
+def test_cloud_revocation_stops_local_gateway_sync(monkeypatch):
+    worker = EdgeSyncWorker()
+    worker.gateway_id = "gateway-1"
+    worker.credential = "secret-in-memory"
+    worker.status = "active"
+    worker.branch_id = "branch-1"
+    worker.session.get = MagicMock(return_value=MagicMock(
+        status_code=200,
+        json=lambda: {"status": "revoked", "organization_id": "org-1", "branch_id": "branch-1"},
+    ))
+    conn = MagicMock()
+    monkeypatch.setattr(worker, "get_db_connection", lambda: conn)
+    save = MagicMock()
+    monkeypatch.setattr(gateway_config, "save_gateway_db_state", save)
+    assert worker.refresh_cloud_gateway_status() is False
+    assert worker.status == "revoked"
+    save.assert_called_once_with(conn, "gateway-1", "org-1", "branch-1", "revoked", 1)
+
