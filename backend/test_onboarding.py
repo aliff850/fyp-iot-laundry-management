@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from uuid import UUID
 
 import httpx
+import psycopg
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -288,5 +289,28 @@ def test_database_with_monkeypatched_connect_accepts_read_only(monkeypatch):
     with onboarding._database(read_only=True) as conn:
         assert conn is mock_conn
         assert mock_conn.read_only is True
+
+
+def test_database_failure_reports_safe_category_without_connection_string(monkeypatch, caplog):
+    secret = "do-not-log-this-password"
+    monkeypatch.setattr(
+        onboarding,
+        "_configuration",
+        lambda: ("https://test.supabase.co", "key", f"postgresql://user:{secret}@pooler.example/postgres"),
+    )
+
+    def unavailable(_dsn):
+        raise psycopg.OperationalError(f"connection timed out for password {secret}")
+
+    monkeypatch.setattr(onboarding, "_checkout_db_connection", unavailable)
+    with caplog.at_level("ERROR", logger="onboarding"):
+        with pytest.raises(HTTPException) as error:
+            with onboarding._database(read_only=True):
+                pass
+
+    assert error.value.status_code == 503
+    assert error.value.detail == "Onboarding database is unavailable"
+    assert "phase=connect category=timeout" in caplog.text
+    assert secret not in caplog.text
 
 

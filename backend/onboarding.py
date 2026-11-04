@@ -1,5 +1,6 @@
 """Supabase-verified, database-authorized onboarding boundary."""
 
+import logging
 import os
 import re
 import threading
@@ -20,6 +21,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).with_name(".env"))
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 PERSONNEL_ROLES = {"branch_manager", "machine_maintenance", "lpg_maintenance"}
 PHONE = re.compile(r"^[+()0-9 .-]{7,32}$")
 
@@ -107,12 +109,42 @@ def _return_db_connection(dsn: str, conn: psycopg.Connection) -> None:
         pass
 
 
+def _log_database_failure(exc: psycopg.Error, phase: str) -> None:
+    """Report a fixed diagnostic category without logging the DSN or exception text."""
+    detail = str(exc).lower()
+    if "password authentication failed" in detail:
+        category = "authentication"
+    elif "tenant or user not found" in detail:
+        category = "pooler_identity"
+    elif "could not translate host name" in detail or "name or service not known" in detail:
+        category = "dns"
+    elif "timeout" in detail or "timed out" in detail:
+        category = "timeout"
+    elif "connection refused" in detail:
+        category = "connection_refused"
+    elif "no route to host" in detail:
+        category = "network_route"
+    elif "too many clients" in detail or "too many connections" in detail:
+        category = "connection_limit"
+    else:
+        category = "other"
+    logger.error(
+        "spinsense_database_unavailable phase=%s category=%s error_type=%s sqlstate=%s",
+        phase,
+        category,
+        type(exc).__name__,
+        exc.sqlstate or "none",
+    )
+
+
 @contextmanager
 def _database(read_only: bool = False, **_kwargs):
     _, _, dsn = _configuration()
     if psycopg.connect is not _DEFAULT_PSYCOPG_CONNECT:
+        phase = "connect"
         try:
             with psycopg.connect(dsn, row_factory=dict_row, connect_timeout=5) as conn:
+                phase = "operation"
                 if read_only:
                     try:
                         conn.read_only = True
@@ -120,12 +152,15 @@ def _database(read_only: bool = False, **_kwargs):
                         pass
                 yield conn
         except psycopg.Error as exc:
+            _log_database_failure(exc, phase)
             raise HTTPException(503, "Onboarding database is unavailable") from exc
         return
 
     conn: psycopg.Connection | None = None
+    phase = "connect"
     try:
         conn = _checkout_db_connection(dsn)
+        phase = "operation"
         if read_only:
             try:
                 conn.read_only = True
@@ -145,6 +180,7 @@ def _database(read_only: bool = False, **_kwargs):
                     pass
             raise
     except psycopg.Error as exc:
+        _log_database_failure(exc, phase)
         if conn is not None:
             try:
                 conn.close()
