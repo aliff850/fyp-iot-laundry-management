@@ -6,6 +6,8 @@
 #include <PubSubClient.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include <cstring>
+#include "device_config.h"
 
 // --- Pin Definitions ---
 const int LOADCELL_DOUT_PIN = 27;
@@ -16,12 +18,17 @@ const int DHT_PIN = 18;
 const int MQ6_ANALOG_PIN = 34;
 
 // --- Network & MQTT Configuration ---
-const char *WIFI_SSID = "SpinSense-GW";
-const char *WIFI_PASS = "volvo850";
-const char *MQTT_SERVER = "10.42.0.1";
+const char *WIFI_SSID = SPINSENSE_WIFI_SSID;
+const char *WIFI_PASS = SPINSENSE_WIFI_PASSWORD;
+const char *MQTT_SERVER = SPINSENSE_MQTT_HOST;
 const int MQTT_PORT = 1883;
-const char *MQTT_TOPIC = "nodes/telemetry";
-const char *DEVICE_ID = "ESP32-NODE-01";
+const char *MQTT_USERNAME = SPINSENSE_MQTT_USERNAME;
+const char *MQTT_PASSWORD = SPINSENSE_MQTT_PASSWORD;
+const char *BRANCH_ID = SPINSENSE_BRANCH_ID;
+String mqttTopic;
+uint32_t bootId = 0;
+
+const char *DEVICE_ID = SPINSENSE_DEVICE_ID;
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
@@ -196,8 +203,7 @@ void maintainNetwork(unsigned long currentMillis) {
       Serial.print(MQTT_PORT);
       Serial.print("...");
 
-      String clientId = String(DEVICE_ID) + "-" + String(random(0xffff), HEX);
-      if (mqttClient.connect(clientId.c_str())) {
+      if (mqttClient.connect(DEVICE_ID, MQTT_USERNAME, MQTT_PASSWORD)) {
         Serial.println(" connected!");
       } else {
         Serial.print(" failed, rc=");
@@ -211,6 +217,9 @@ void maintainNetwork(unsigned long currentMillis) {
 
 void setup() {
   Serial.begin(115200);
+  bootId = esp_random();
+  mqttTopic = String("branches/") + BRANCH_ID + "/devices/" + DEVICE_ID + "/telemetry";
+  mqttClient.setBufferSize(1024);
   delay(1000);
   Serial.println("\n--- SpinSense LPG Edge Node Starting ---");
 
@@ -392,20 +401,37 @@ void loop() {
       telemetrySequence++;
 
       // Build JSON payload adhering to pi5/ingestion_worker.py schema
-      char payloadBuffer[256];
-      snprintf(
+      char payloadBuffer[640];
+      char temperatureText[24];
+      char humidityText[24];
+      char voltageText[24], gasText[24], grossText[24], percentText[24];
+      auto jsonNumber = [](float value, char *output, size_t length) {
+        if (isfinite(value)) snprintf(output, length, "%.2f", value);
+        else strcpy(output, "null");
+      };
+      jsonNumber(cachedTemp, temperatureText, sizeof(temperatureText));
+      jsonNumber(cachedHumidity, humidityText, sizeof(humidityText));
+      jsonNumber(cachedGasVoltage, voltageText, sizeof(voltageText));
+      jsonNumber(gasKg, gasText, sizeof(gasText));
+      jsonNumber(grossKg, grossText, sizeof(grossText));
+      jsonNumber(percentage, percentText, sizeof(percentText));
+      int payloadLength = snprintf(
           payloadBuffer, sizeof(payloadBuffer),
-          "{\"device_id\":\"%s\",\"data\":{\"voltage\":%.2f,\"temperature\":%."
-          "1f,"
-          "\"humidity\":%.1f,\"lpg_weight_kg\":%.2f,\"gross_weight_kg\":%.2f,"
-          "\"lpg_percent\":%.1f,\"seq\":%lu}}",
-          DEVICE_ID, cachedGasVoltage, isnan(cachedTemp) ? 0.0f : cachedTemp,
-          isnan(cachedHumidity) ? 0.0f : cachedHumidity, gasKg, grossKg,
-          percentage, telemetrySequence);
+          "{\"device_id\":\"%s\",\"boot_id\":\"%08lX\",\"quality\":{\"temperature_valid\":%s,\"humidity_valid\":%s,\"weight_valid\":%s},"
+          "\"data\":{\"mq6_raw_adc\":%d,\"voltage\":%s,\"temperature\":%s,\"humidity\":%s,\"lpg_weight_kg\":%s,\"gross_weight_kg\":%s,"
+          "\"lpg_percent\":%s,\"sequence\":%lu}}",
+          DEVICE_ID, static_cast<unsigned long>(bootId), isnan(cachedTemp) ? "false" : "true",
+          isnan(cachedHumidity) ? "false" : "true", isfinite(grossKg) ? "true" : "false",
+          cachedGasADC, voltageText, temperatureText, humidityText, gasText, grossText,
+          percentText, telemetrySequence);
 
       Serial.print("MQTT Publishing: ");
       Serial.println(payloadBuffer);
-      mqttClient.publish(MQTT_TOPIC, payloadBuffer);
+      if (payloadLength > 0 && payloadLength < static_cast<int>(sizeof(payloadBuffer))) {
+        mqttClient.publish(mqttTopic.c_str(), payloadBuffer);
+      } else {
+        Serial.println("MQTT payload exceeded buffer; sample not published");
+      }
     }
   }
 

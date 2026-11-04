@@ -2,8 +2,17 @@ import json
 import logging
 import os
 import sys
+import base64
+import hashlib
+import hmac
+import re
+import secrets
+import threading
+import time
+from functools import wraps
 from typing import Any, Dict, Optional
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request
+from werkzeug.security import check_password_hash
 try:
     import pymysql
     from pymysql.cursors import DictCursor
@@ -25,20 +34,76 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("spinsense.dashboard")
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder=".")
+app.config["MAX_CONTENT_LENGTH"] = 4096
 
 # --- Configuration ---
 DB_HOST = os.getenv("SPINSENSE_DB_HOST", "localhost")
 DB_USER = os.getenv("SPINSENSE_DB_USER", "edge_user")
-DB_PASSWORD = os.getenv("SPINSENSE_DB_PASSWORD", "volvo850chungus")
+DB_PASSWORD = os.getenv("SPINSENSE_DB_PASSWORD", "")
 DB_NAME = os.getenv("SPINSENSE_DB_NAME", "edge_iot")
-CLOUD_API_BASE = os.getenv("SPINSENSE_CLOUD_BASE", "http://localhost:8000").rstrip("/")
+CLOUD_API_BASE = os.getenv("SPINSENSE_CLOUD_BASE", "").rstrip("/")
+SETUP_USERNAME = os.getenv("SPINSENSE_SETUP_USERNAME", "")
+SETUP_PASSWORD_HASH = os.getenv("SPINSENSE_SETUP_PASSWORD_HASH", "")
+SETUP_CSRF_SECRET = os.getenv("SPINSENSE_SETUP_CSRF_SECRET", "")
+_FAILED_LOGINS: Dict[str, list[float]] = {}
+_LOGIN_LOCK = threading.Lock()
+
+
+def _setup_auth_required(handler):
+    @wraps(handler)
+    def protected(*args, **kwargs):
+        if not all((SETUP_USERNAME, SETUP_PASSWORD_HASH, SETUP_CSRF_SECRET)):
+            return jsonify({"error": "Local setup is not configured"}), 503
+        address = request.remote_addr or "unknown"
+        now = time.monotonic()
+        with _LOGIN_LOCK:
+            recent = [stamp for stamp in _FAILED_LOGINS.get(address, []) if now - stamp < 900]
+            _FAILED_LOGINS[address] = recent
+            if len(recent) >= 10:
+                return jsonify({"error": "Too many setup login attempts"}), 429
+        try:
+            scheme, encoded = request.headers.get("Authorization", "").split(" ", 1)
+            if scheme.lower() != "basic":
+                raise ValueError("Invalid scheme")
+            username, password = base64.b64decode(encoded, validate=True).decode("utf-8").split(":", 1)
+        except (ValueError, UnicodeDecodeError):
+            username, password = "", ""
+        if not (secrets.compare_digest(username, SETUP_USERNAME) and check_password_hash(SETUP_PASSWORD_HASH, password)):
+            with _LOGIN_LOCK:
+                _FAILED_LOGINS.setdefault(address, []).append(now)
+            response = jsonify({"error": "Local setup login required"})
+            response.status_code = 401
+            response.headers["WWW-Authenticate"] = 'Basic realm="SpinSense gateway setup"'
+            return response
+        return handler(*args, **kwargs)
+    return protected
+
+
+def _csrf_token() -> str:
+    period = int(time.time() // 300)
+    return hmac.new(SETUP_CSRF_SECRET.encode(), f"{SETUP_USERNAME}:{period}".encode(), hashlib.sha256).hexdigest()
+
+
+def _valid_csrf() -> bool:
+    origin = request.headers.get("Origin", "")
+    if origin != request.host_url.rstrip("/"):
+        return False
+    supplied = request.headers.get("X-Setup-CSRF", "")
+    period = int(time.time() // 300)
+    for candidate in (period, period - 1):
+        expected = hmac.new(SETUP_CSRF_SECRET.encode(), f"{SETUP_USERNAME}:{candidate}".encode(), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(supplied, expected):
+            return True
+    return False
 
 # In-memory cached fingerprint for display on Pi dashboard
 _CLAIM_CACHE: Dict[str, Any] = {}
 
 
 def get_db_connection():
+    if not DB_PASSWORD:
+        raise RuntimeError("Pi database credential is not configured")
     return pymysql.connect(
         host=DB_HOST,
         user=DB_USER,
@@ -46,6 +111,7 @@ def get_db_connection():
         database=DB_NAME,
         cursorclass=DictCursor,
         connect_timeout=5,
+        init_command="SET time_zone = '+00:00'",
     )
 
 
@@ -65,20 +131,28 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/api/setup/login")
+@_setup_auth_required
+def setup_login():
+    return redirect("/")
+
+
 @app.route("/api/setup/gateway", methods=["GET"])
+@_setup_auth_required
 def get_gateway_setup_status():
     """Returns local pairing status and verification fingerprint."""
     try:
         conn = get_db_connection()
     except Exception as e:
-        return jsonify({"error": f"Database connection failed: {str(e)}"}), 500
+        logger.error("Gateway status database connection failed: %s", e)
+        return jsonify({"error": "Gateway status unavailable"}), 503
 
     try:
-        state = gateway_config.load_gateway_db_state(conn)
         gw_id, cred = gateway_config.get_or_create_gateway_credentials()
+        state = gateway_config.load_gateway_db_state(conn, gw_id)
 
         # If awaiting confirmation, poll cloud to check if owner confirmed
-        if state["status"] == "awaiting_confirmation" and cred:
+        if state["status"] == "awaiting_confirmation" and cred and CLOUD_API_BASE.startswith("https://"):
             try:
                 resp = requests.get(
                     f"{CLOUD_API_BASE}/edge/claim-status",
@@ -97,7 +171,11 @@ def get_gateway_setup_status():
                             "active",
                             cloud_data.get("config_revision", 1),
                         )
-                        state = gateway_config.load_gateway_db_state(conn)
+                        state = gateway_config.load_gateway_db_state(conn, gw_id)
+                    elif cloud_data.get("status") == "expired":
+                        gateway_config.save_gateway_db_state(conn, gw_id, state.get("organization_id"),
+                                                             state.get("branch_id"), "expired")
+                        state = gateway_config.load_gateway_db_state(conn, gw_id)
                     if cloud_data.get("verification_fingerprint"):
                         _CLAIM_CACHE["fingerprint"] = cloud_data["verification_fingerprint"]
             except Exception as e:
@@ -111,26 +189,32 @@ def get_gateway_setup_status():
             "config_revision": state.get("config_revision", 1),
             "verification_fingerprint": _CLAIM_CACHE.get("fingerprint"),
             "cloud_base": CLOUD_API_BASE,
+            "csrf_token": _csrf_token(),
         })
     finally:
         conn.close()
 
 
 @app.route("/api/setup/pair", methods=["POST"])
+@_setup_auth_required
 def pair_gateway():
     """Claims pairing code with cloud FastAPI and stores pending/active status."""
+    if not _valid_csrf():
+        return jsonify({"error": "Invalid setup request"}), 403
+    if not CLOUD_API_BASE.startswith("https://"):
+        return jsonify({"error": "HTTPS cloud endpoint is required"}), 503
     data = request.get_json(silent=True) or {}
-    code = data.get("code", "").strip()
-
-    if not code:
-        return jsonify({"error": "Pairing code is required"}), 400
+    code = str(data.get("code", "")).replace("-", "").strip().upper()
+    if not re.fullmatch(r"[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{12}", code):
+        return jsonify({"error": "Enter the 12-character pairing code"}), 400
 
     gw_id, cred = gateway_config.get_or_create_gateway_credentials()
 
     try:
         conn = get_db_connection()
     except Exception as e:
-        return jsonify({"error": f"Database connection failed: {str(e)}"}), 500
+        logger.error("Pairing database connection failed: %s", e)
+        return jsonify({"error": "Local database unavailable"}), 503
 
     try:
         # Submit claim to cloud
@@ -148,7 +232,7 @@ def pair_gateway():
             )
         except Exception as e:
             logger.error("Failed to connect to cloud endpoint %s/edge/claim: %s", CLOUD_API_BASE, e)
-            return jsonify({"error": f"Could not reach SpinSense Cloud at {CLOUD_API_BASE}: {str(e)}"}), 502
+            return jsonify({"error": "Could not reach SpinSense Cloud"}), 502
 
         if resp.status_code != 200:
             err_msg = resp.json().get("detail", f"Cloud rejected claim (HTTP {resp.status_code})")
@@ -239,4 +323,5 @@ def health():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    from waitress import serve
+    serve(app, host=os.getenv("SPINSENSE_DASHBOARD_BIND", "127.0.0.1"), port=5000, threads=4)

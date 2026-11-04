@@ -250,6 +250,7 @@ def test_edge_redeem_claim_idempotent_retry(monkeypatch):
             "verification_fingerprint": "SPIN-89AB",
             "confirmation_expires_at": exp,
         },
+        {"credential_verifier": edge._hash_token("secret_token_12345678901234567890123456789012")},
     ]
     monkeypatch.setattr(edge, "_database", mock_db(conn))
 
@@ -276,6 +277,21 @@ def test_edge_redeem_claim_invalid_code(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         edge.redeem_pairing_claim(payload)
     assert exc.value.status_code == 404
+
+
+def test_edge_claim_rate_limit_is_database_backed(monkeypatch):
+    from fastapi import Request
+    from fastapi.exceptions import HTTPException
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = {"attempts": 11}
+    monkeypatch.setattr(edge, "_database", mock_db(conn))
+    request = Request({"type": "http", "client": ("192.0.2.10", 10000),
+                       "headers": [], "method": "POST", "path": "/edge/claim"})
+    with pytest.raises(HTTPException) as exc:
+        edge._limit_claim_attempts(request)
+    assert exc.value.status_code == 429
+    assert "gateway_claim_attempts" in conn.execute.call_args.args[0]
 
 
 def test_edge_claim_status_poller(monkeypatch):
@@ -319,7 +335,7 @@ def test_edge_discoveries_ingestion(monkeypatch):
     ])
 
     result = edge.ingest_device_discoveries(batch, gw)
-    assert result["accepted_count"] == 1
+    assert result["accepted_ids"] == [str(CANDIDATE_ID)]
     sql = [c.args[0] for c in conn.execute.call_args_list]
     assert any("insert into public.device_discoveries" in q for q in sql)
 
@@ -381,7 +397,7 @@ def test_edge_sync_batch_acknowledged_commit(monkeypatch):
         {"id": DEVICE_ID, "source_id": "ESP32-NODE-01", "source_kind": "physical"},
     ]
     conn.execute.return_value.fetchall.return_value = approved_devices
-    conn.execute.return_value.fetchone.return_value = None  # no duplicate observation
+    conn.execute.return_value.fetchone.return_value = {"id": 99999}  # inserted observation
     monkeypatch.setattr(edge, "_database", mock_db(conn))
 
     rec1 = edge.EdgeTelemetryRecord(
@@ -425,8 +441,10 @@ def test_edge_sync_idempotent_duplicate_acknowledged(monkeypatch):
         {"id": DEVICE_ID, "source_id": "ESP32-NODE-01", "source_kind": "physical"},
     ]
     conn.execute.return_value.fetchall.return_value = approved_devices
-    # Duplicate check returns an existing observation row!
-    conn.execute.return_value.fetchone.return_value = {"id": 99999}
+    # Insert reports a conflict; lookup returns the already committed record.
+    conn.execute.return_value.fetchone.side_effect = [
+        None, {"source_id": "ESP32-NODE-01", "payload": {"lpg_weight_kg": 12.5}},
+    ]
     monkeypatch.setattr(edge, "_database", mock_db(conn))
 
     rec = edge.EdgeTelemetryRecord(
@@ -444,6 +462,33 @@ def test_edge_sync_idempotent_duplicate_acknowledged(monkeypatch):
 
     result = edge.sync_telemetry_batch(batch, gw)
     assert 105 in result["accepted_ids"]
-    # Verify no new insert was executed for the duplicate
+    # Insert is conflict-safe and cannot overwrite the existing observation.
     insert_calls = [c for c in conn.execute.call_args_list if "insert into public.telemetry_observations" in c.args[0]]
-    assert len(insert_calls) == 0
+    assert len(insert_calls) == 1
+    assert "on conflict (gateway_id, record_id) do nothing" in insert_calls[0].args[0]
+
+
+def test_edge_sync_rejects_conflicting_record_identity(monkeypatch):
+    conn = MagicMock()
+    gw = {"id": GATEWAY_ID, "organization_id": ORG_ID, "branch_id": BRANCH_ID,
+          "status": "active", "config_revision": 2}
+    conn.execute.return_value.fetchall.return_value = [
+        {"id": DEVICE_ID, "source_id": "ESP32-NODE-01", "source_kind": "physical"}
+    ]
+    conn.execute.return_value.fetchone.side_effect = [
+        None, {"source_id": "ESP32-NODE-01", "payload": {"voltage": 0.1}},
+    ]
+    monkeypatch.setattr(edge, "_database", mock_db(conn))
+    record = edge.EdgeTelemetryRecord(
+        record_id=uuid4(), edge_id=106, source_id="ESP32-NODE-01",
+        source_kind="vendor", gateway_receipt_at=datetime.now(timezone.utc),
+        payload={"voltage": 2.0},
+    )
+    result = edge.sync_telemetry_batch(
+        edge.EdgeSyncBatch(gateway_id=GATEWAY_ID, batch_id=uuid4(), records=[record]), gw
+    )
+    assert result["accepted_ids"] == []
+    assert result["rejected"][0]["reason"] == "Conflicting record identity"
+    insert_call = next(call for call in conn.execute.call_args_list
+                       if "insert into public.telemetry_observations" in call.args[0])
+    assert "physical" in insert_call.args[1]
