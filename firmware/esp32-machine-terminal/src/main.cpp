@@ -428,7 +428,8 @@ void loop() {
     if (firstSample) { machine.queueSample(); firstSample = false; }
     if (machine.tick()) {
       machinePresenceDirty = true;
-      if (checkoutState != "confirmed") remoteFinishedAt = millis();
+      // The machine's completed cycle is authoritative even if an older QR status lingers.
+      remoteFinishedAt = millis();
       render();
     }
     static uint64_t lastPresence = 0, lastRetry = 0;
@@ -526,6 +527,14 @@ void loop() {
   }
   if (remoteFinishedAt && millis() - remoteFinishedAt >= 5000) {
     remoteFinishedAt = 0;
+    if (checkoutState == "confirmed" && String(machine.data["state"] | "unknown") == "idle") {
+      requestId = "";
+      checkoutUrl = "";
+      checkoutState = "";
+      commandStatus = "";
+      cycleOutcome = "";
+      resultShownAt = 0;
+    }
     render();
   }
   if (resultShownAt && millis() - resultShownAt >= 5000) {

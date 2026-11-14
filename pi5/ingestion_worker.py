@@ -8,11 +8,14 @@ import json
 import logging
 import math
 import os
+import re
 import signal
 import sys
 import time
 import uuid
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, Optional, Tuple
 
 try:
@@ -61,6 +64,7 @@ TOPIC_LEGACY = "nodes/telemetry"
 class EdgeIngestionWorker:
     def __init__(self):
         self.connection: Optional[pymysql.Connection] = None
+        self.state_connection: Optional[pymysql.Connection] = None
         self.running = True
         self.gateway_id: Optional[str] = None
         self.branch_id: Optional[str] = None
@@ -81,31 +85,41 @@ class EdgeIngestionWorker:
         else:
             self.client = None
 
+    @staticmethod
+    def _connect_db(autocommit: bool) -> Any:
+        if pymysql is None:
+            raise RuntimeError("pymysql is required for database connectivity. Please run: pip install pymysql")
+        return pymysql.connect(
+            host=DB_HOST,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME,
+            autocommit=autocommit,
+            cursorclass=DictCursor,
+            connect_timeout=5,
+            init_command="SET time_zone = '+00:00'",
+        )
+
     def get_db_connection(self) -> Any:
         if self.connection is not None and getattr(self.connection, "open", True):
             if hasattr(self.connection, "ping"):
                 self.connection.ping(reconnect=True)
             return self.connection
-
-        if pymysql is None:
-            raise RuntimeError("pymysql is required for database connectivity. Please run: pip install pymysql")
-
-        self.connection = pymysql.connect(
-            host=DB_HOST,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME,
-            autocommit=False,
-            cursorclass=DictCursor,
-            connect_timeout=5,
-            init_command="SET time_zone = '+00:00'",
-        )
+        self.connection = self._connect_db(autocommit=False)
         return self.connection
+
+    def get_state_db_connection(self) -> Any:
+        """Use a separate autocommit connection so pairing changes become visible."""
+        if self.state_connection is not None and getattr(self.state_connection, "open", True):
+            self.state_connection.ping(reconnect=True)
+            return self.state_connection
+        self.state_connection = self._connect_db(autocommit=True)
+        return self.state_connection
 
     def refresh_gateway_state(self):
         """Refreshes gateway active state from local MariaDB."""
         try:
-            conn = self.get_db_connection()
+            conn = self.get_state_db_connection()
             credentials = gateway_config.get_stored_gateway_credentials()
             state = gateway_config.load_gateway_db_state(conn, credentials[0] if credentials else None)
             self.gateway_id = state.get("gateway_id")
@@ -115,14 +129,21 @@ class EdgeIngestionWorker:
                 not self.is_active or self._subscribed_branch != self.branch_id
             ):
                 self.client.unsubscribe(f"branches/{self._subscribed_branch}/devices/+/telemetry")
+                self.client.unsubscribe(f"branches/{self._subscribed_branch}/devices/+/cycle-events")
+                self.client.unsubscribe(f"branches/{self._subscribed_branch}/devices/+/presence")
                 self._subscribed_branch = None
             if self.client and self.is_active and self.branch_id and self._subscribed_branch != self.branch_id:
                 self.client.subscribe(f"branches/{self.branch_id}/devices/+/telemetry", qos=1)
+                self.client.subscribe(f"branches/{self.branch_id}/devices/+/cycle-events", qos=1)
+                self.client.subscribe(f"branches/{self.branch_id}/devices/+/presence", qos=0)
                 self._subscribed_branch = self.branch_id
         except Exception as e:
             self.gateway_id = None
             self.branch_id = None
             self.is_active = False
+            if self.state_connection is not None:
+                self.state_connection.close()
+                self.state_connection = None
             logger.warning("Could not query gateway state from local database: %s", e)
 
     def on_connect(self, client, userdata, flags, rc, properties=None):
@@ -130,7 +151,8 @@ class EdgeIngestionWorker:
             logger.info("Connected to local Mosquitto broker (%s:%d).", MQTT_BROKER, MQTT_PORT)
             client.subscribe(TOPIC_LEGACY, qos=1)
             self._subscribed_branch = None
-            self.refresh_gateway_state()
+            # The main loop refreshes state on its own DB connection. MQTT
+            # callbacks must not share that connection across threads.
         else:
             logger.error("Failed to connect to Mosquitto broker, return code: %s", rc)
 
@@ -193,7 +215,7 @@ class EdgeIngestionWorker:
         """Checks if device is approved; if unknown, inserts candidate into device_discoveries."""
         with conn.cursor() as cursor:
             # Check approved registry
-            cursor.execute("SELECT source_id FROM device_registry WHERE source_id=%s AND status='active'", (source_id,))
+            cursor.execute("SELECT source_id FROM device_registry WHERE gateway_id=%s AND source_id=%s AND status='active'", (self.gateway_id, source_id))
             if cursor.fetchone():
                 return True
 
@@ -207,12 +229,12 @@ class EdgeIngestionWorker:
 
             cursor.execute(
                 """INSERT INTO device_discoveries
-                   (candidate_id, source_id, proposed_type, evidence_quality, is_synced)
-                   VALUES (%s, %s, %s, %s, 0)
+                   (candidate_id, gateway_id, source_id, proposed_type, evidence_quality, is_synced)
+                   VALUES (%s, %s, %s, %s, %s, 0)
                    ON DUPLICATE KEY UPDATE
                        last_seen_at = CURRENT_TIMESTAMP,
                        evidence_quality = VALUES(evidence_quality)""",
-                (cand_id, source_id, proposed_type, quality_info),
+                (cand_id, self.gateway_id, source_id, proposed_type, quality_info),
             )
             return False
 
@@ -234,6 +256,12 @@ class EdgeIngestionWorker:
 
     def on_message(self, client, userdata, msg):
         try:
+            if msg.topic.endswith("/presence"):
+                self.ingest_machine_presence(msg)
+                return
+            if msg.topic.endswith("/cycle-events"):
+                self.ingest_cycle_event(client, msg)
+                return
             raw_payload = msg.payload.decode("utf-8")
             if msg.topic != TOPIC_LEGACY and not self.is_active:
                 logger.warning("Rejected branch topic before gateway activation")
@@ -249,7 +277,7 @@ class EdgeIngestionWorker:
             source_id, recorded_at, sensor_data = self.normalize_payload(raw_payload, topic_device)
             receipt_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
 
-            sequence = sensor_data.get("sequence", sensor_data.get("seq"))
+            sequence = parsed.get("sequence", sensor_data.get("sequence", sensor_data.get("seq")))
             boot_id = parsed.get("boot_id", sensor_data.get("boot_id"))
 
             record_id = str(uuid.uuid4())
@@ -300,6 +328,10 @@ class EdgeIngestionWorker:
                 )
             conn.commit()
 
+            if msg.topic != TOPIC_LEGACY and approved and boot_id and sequence is not None:
+                client.publish(f"branches/{self.branch_id}/devices/{source_id}/telemetry-acks",
+                               json.dumps({"boot_id": boot_id, "sequence": sequence}), qos=1)
+
             logger.info("Ingested telemetry [%s] from %s (record_id=%s)", msg.topic, source_id, record_id)
 
         except json.JSONDecodeError as err:
@@ -308,6 +340,19 @@ class EdgeIngestionWorker:
             if pymysql and isinstance(err, pymysql.err.IntegrityError):
                 if self.connection:
                     self.connection.rollback()
+                if msg.topic != TOPIC_LEGACY and self.is_active:
+                    try:
+                        with self.get_db_connection().cursor() as cursor:
+                            cursor.execute("""SELECT data_payload FROM sensor_telemetry
+                                WHERE gateway_id=%s AND source_id=%s AND boot_id=%s AND sequence=%s
+                                AND quarantine_reason IS NULL""",
+                                (self.gateway_id, source_id, boot_id, sequence))
+                            existing = cursor.fetchone()
+                        if existing and json.loads(existing["data_payload"]) == sensor_data:
+                            client.publish(f"branches/{self.branch_id}/devices/{source_id}/telemetry-acks",
+                                           json.dumps({"boot_id": boot_id, "sequence": sequence}), qos=1)
+                    except (UnboundLocalError, pymysql.MySQLError, ValueError):
+                        logger.exception("Duplicate telemetry acknowledgement check failed")
                 logger.debug("Duplicate committed source sample suppressed on %s", msg.topic)
             elif pymysql and isinstance(err, pymysql.MySQLError):
                 logger.error("Database persistence failed on MQTT ingest: %s", err)
@@ -315,6 +360,136 @@ class EdgeIngestionWorker:
                     self.connection.rollback()
             else:
                 logger.error("Unexpected error in MQTT on_message: %s", err, exc_info=True)
+
+    def ingest_machine_presence(self, msg):
+        """Upsert an approved machine heartbeat without adding a history row."""
+        parts = msg.topic.split("/")
+        if (not self.is_active or len(parts) != 5 or parts[0] != "branches"
+                or parts[1] != self.branch_id or parts[2] != "devices" or parts[4] != "presence"):
+            return
+        source_id = parts[3]
+        try:
+            sample = json.loads(msg.payload)
+            data = sample.get("data")
+            boot_id = sample.get("boot_id")
+            sequence = sample.get("sequence")
+            if (sample.get("device_id") != source_id or sample.get("source_kind") != "simulated"
+                    or not isinstance(data, dict) or data.get("state") not in ("idle", "running", "paused", "error")
+                    or not isinstance(boot_id, str) or not 1 <= len(boot_id) <= 64
+                    or type(sequence) is not int or sequence < 0):
+                return
+            conn = self.get_db_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("""SELECT source_id FROM device_registry WHERE gateway_id=%s AND source_id=%s
+                    AND status='active' AND source_kind='simulated'
+                    AND device_type IN ('washer','dryer','washer_dryer')""", (self.gateway_id, source_id))
+                if not cursor.fetchone():
+                    conn.rollback()
+                    return
+                cursor.execute("""SELECT boot_id, sequence FROM machine_presence
+                    WHERE gateway_id=%s AND source_id=%s FOR UPDATE""", (self.gateway_id, source_id))
+                current = cursor.fetchone()
+                if current and current["boot_id"] == boot_id and current["sequence"] >= sequence:
+                    conn.rollback()
+                    return
+                if current:
+                    cursor.execute("""UPDATE machine_presence SET boot_id=%s, sequence=%s,
+                        state_payload=%s, last_seen_at=UTC_TIMESTAMP(6)
+                        WHERE gateway_id=%s AND source_id=%s""",
+                        (boot_id, sequence, json.dumps(data), self.gateway_id, source_id))
+                else:
+                    cursor.execute("""INSERT INTO machine_presence
+                        (gateway_id,source_id,boot_id,sequence,state_payload,last_seen_at)
+                        VALUES (%s,%s,%s,%s,%s,UTC_TIMESTAMP(6))""",
+                        (self.gateway_id, source_id, boot_id, sequence, json.dumps(data)))
+            conn.commit()
+        except (ValueError, TypeError, pymysql.MySQLError):
+            if self.connection:
+                self.connection.rollback()
+            logger.exception("Machine presence update failed")
+
+    def ingest_cycle_event(self, client, msg):
+        """Commit an approved simulator event before acknowledging its stable cycle ID."""
+        parts = msg.topic.split("/")
+        if (not self.is_active or len(parts) != 5 or parts[:1] != ["branches"]
+                or parts[1] != self.branch_id or parts[2] != "devices"
+                or parts[4] != "cycle-events"):
+            return
+        source_id = parts[3]
+        event = json.loads(msg.payload)
+        if not isinstance(event, dict) or event.get("source_id") != source_id or event.get("source_kind") != "simulated":
+            return
+        try:
+            cycle_id = str(uuid.UUID(event["cycle_id"]))
+            started = datetime.fromisoformat(event["started_at"].replace("Z", "+00:00"))
+            finished = datetime.fromisoformat(event["finished_at"].replace("Z", "+00:00"))
+            if started.tzinfo is None or finished.tzinfo is None or finished < started:
+                return
+            price = Decimal(str(event["price_myr"]))
+            target = event["target_seconds"]
+            running = event["running_seconds"]
+            daily = event.get("running_by_day")
+            if daily is None:
+                daily = {finished.astimezone(ZoneInfo("Asia/Kuala_Lumpur")).date().isoformat(): running}
+            first_local_day = started.astimezone(ZoneInfo("Asia/Kuala_Lumpur")).date().isoformat()
+            last_local_day = finished.astimezone(ZoneInfo("Asia/Kuala_Lumpur")).date().isoformat()
+            if (event["outcome"] not in {"completed", "stopped", "faulted", "interrupted"}
+                    or not isinstance(event["program_id"], str)
+                    or not re.fullmatch(r"(?:quick|standard|p_[a-f0-9]{12})", event["program_id"])
+                    or not price.is_finite() or not 0 <= price <= 999
+                    or type(target) is not int or not 1 <= target <= 7200
+                    or type(running) is not int or not 0 <= running <= target):
+                return
+            if (not isinstance(daily, dict) or len(daily) > 3
+                    or any(not isinstance(day, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day)
+                           or not first_local_day <= day <= last_local_day
+                           or type(amount) is not int or amount < 0 for day, amount in daily.items())
+                    or sum(daily.values()) != running):
+                return
+        except (KeyError, ValueError, TypeError, InvalidOperation):
+            return
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""SELECT source_id FROM device_registry WHERE gateway_id=%s AND source_id=%s
+                    AND status='active' AND source_kind='simulated' AND device_type IN ('washer','dryer','washer_dryer')""",
+                    (self.gateway_id, source_id))
+                if not cursor.fetchone():
+                    return
+                cursor.execute("""SELECT program_id,price_myr,target_seconds,running_seconds,outcome,started_at,finished_at
+                    FROM machine_cycles WHERE gateway_id=%s AND cycle_id=%s FOR UPDATE""",
+                    (self.gateway_id, cycle_id))
+                existing = cursor.fetchone()
+                expected = (event["program_id"], price, target, running, event["outcome"],
+                    self.parse_to_sql_datetime(started), self.parse_to_sql_datetime(finished))
+                if existing and tuple(existing[key] for key in ("program_id", "price_myr", "target_seconds",
+                        "running_seconds", "outcome", "started_at", "finished_at")) != expected:
+                    conn.rollback()
+                    return
+                if existing:
+                    cursor.execute("""SELECT local_date,running_seconds FROM machine_cycle_daily_runtime
+                        WHERE gateway_id=%s AND cycle_id=%s FOR UPDATE""", (self.gateway_id, cycle_id))
+                    current_daily = {str(row["local_date"]): row["running_seconds"] for row in cursor.fetchall()}
+                    if current_daily and current_daily != daily:
+                        conn.rollback()
+                        return
+                cursor.execute("""INSERT IGNORE INTO machine_cycles
+                    (cycle_id,gateway_id,source_id,program_id,price_myr,target_seconds,running_seconds,
+                     outcome,started_at,finished_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (cycle_id, self.gateway_id, source_id, event["program_id"], price, target, running,
+                     event["outcome"], self.parse_to_sql_datetime(started), self.parse_to_sql_datetime(finished)))
+                for day, amount in daily.items():
+                    cursor.execute("""INSERT INTO machine_cycle_daily_runtime
+                        (gateway_id,cycle_id,local_date,running_seconds) VALUES (%s,%s,%s,%s)
+                        ON DUPLICATE KEY UPDATE running_seconds=VALUES(running_seconds)""",
+                        (self.gateway_id, cycle_id, day, amount))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            logger.exception("Cycle event persistence failed")
+            return
+        ack_topic = f"branches/{self.branch_id}/devices/{source_id}/cycle-event-acks"
+        client.publish(ack_topic, json.dumps({"cycle_id": cycle_id}), qos=1)
 
     def start(self):
         if self.client is None or not DB_PASSWORD or not MQTT_USERNAME or not MQTT_PASSWORD:
@@ -333,6 +508,8 @@ class EdgeIngestionWorker:
             pass
         if self.connection and self.connection.open:
             self.connection.close()
+        if self.state_connection and self.state_connection.open:
+            self.state_connection.close()
         logger.info("Ingestion worker stopped cleanly.")
 
 
