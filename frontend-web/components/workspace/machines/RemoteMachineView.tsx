@@ -86,7 +86,7 @@ export function RemoteMachineView({ branchId, branchOpen, role, initialMachines 
                 args: Record<string, unknown> = {}) {
     if (!selected || !canControl) return;
     const confirmation = action === "start"
-      ? `Start ${program === "quick" ? "Quick" : "Standard"} on ${selected.label}?`
+      ? `Start ${String(selected.data?.programs?.[program]?.name ?? (program === "quick" ? "Quick" : program === "standard" ? "Standard" : program))} on ${selected.label}?`
       : `Request ${action} for ${selected.label}?`;
     if ((action === "stop" || action === "start") && !window.confirm(confirmation)) return;
     setActionMessage(null);
@@ -155,10 +155,10 @@ export function RemoteMachineView({ branchId, branchOpen, role, initialMachines 
               </dl>
               {role !== "machine_maintenance" && <div className="space-y-4">
                 <label className="block max-w-sm text-sm text-ink">Program for START
-                  <select value={program} onChange={event => setProgram(event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-control bg-raised px-3 text-sm text-ink focus-visible:outline-2 focus-visible:outline-accent"><option value="standard">Standard</option><option value="quick">Quick</option></select>
+                  <select value={program} onChange={event => setProgram(event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-control bg-raised px-3 text-sm text-ink focus-visible:outline-2 focus-visible:outline-accent">{Object.entries(selected.data?.programs ?? {}).map(([id, settings]) => <option key={id} value={id}>{String(settings.name ?? (id === "quick" ? "Quick" : id === "standard" ? "Standard" : id))}</option>)}</select>
                 </label>
                 <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-                {(["start", "pause", "resume", "stop"] as const).map(action => <button key={action} type="button" disabled={!canControl || (action === "start" ? selected.state !== "idle" : action === "pause" ? selected.state !== "running" : action === "resume" ? selected.state !== "paused" : !["running", "paused"].includes(selected.state))} onClick={() => send(action, action === "start" ? { program_id: program } : {})} className="min-h-11 min-w-11 rounded-md border border-control bg-navy px-5 py-2 text-sm font-semibold uppercase text-ink enabled:hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted">{action}</button>)}
+                {(["start", "pause", "resume", "stop"] as const).map(action => <button key={action} type="button" disabled={!canControl || (action === "start" ? selected.state !== "idle" || !selected.data?.programs?.[program] : action === "pause" ? selected.state !== "running" : action === "resume" ? selected.state !== "paused" : !["running", "paused"].includes(selected.state))} onClick={() => send(action, action === "start" ? { program_id: program } : {})} className="min-h-11 min-w-11 rounded-md border border-control bg-navy px-5 py-2 text-sm font-semibold uppercase text-ink enabled:hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted">{action}</button>)}
                 </div>
               </div>}
             </div>}
@@ -166,7 +166,7 @@ export function RemoteMachineView({ branchId, branchOpen, role, initialMachines 
               <h3 className="text-base font-semibold text-ink">Saved programs</h3>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 {Object.entries(selected.data?.programs ?? {}).map(([id, settings]) => <div key={id} className="rounded-md border border-rule bg-surface px-5 py-4">
-                  <h4 className="text-sm font-semibold text-ink">{id === "quick" ? "Quick" : id === "standard" ? "Standard" : id}</h4>
+                  <h4 className="text-sm font-semibold text-ink">{String(settings.name ?? (id === "quick" ? "Quick" : id === "standard" ? "Standard" : id))}</h4>
                   <dl className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div><dt className="text-xs text-muted">Duration</dt><dd className="text-sm text-ink">{String(settings.duration_seconds ?? "Unknown")} seconds</dd></div>
                     {role !== "machine_maintenance" && <div><dt className="text-xs text-muted">Cycle rate</dt><dd className="text-sm text-ink">RM {String(settings.price_myr ?? "Unknown")}</dd></div>}
@@ -181,6 +181,7 @@ export function RemoteMachineView({ branchId, branchOpen, role, initialMachines 
                 const form = new FormData(event.currentTarget);
                 send("set_settings", {
                   program_id: program,
+                  ...(selected.data?.programs?.[program]?.name ? { name: selected.data.programs[program].name } : {}),
                   price_myr: String(form.get("price_myr")),
                   duration_seconds: Number(form.get("duration_seconds")),
                   target_temperature_c: Number(form.get("target_temperature_c")),
@@ -189,7 +190,7 @@ export function RemoteMachineView({ branchId, branchOpen, role, initialMachines 
                 });
               }} className="space-y-4 rounded-md border border-rule bg-surface px-5 py-4 md:p-7">
                 <h4 className="text-base font-semibold text-ink">Edit saved program</h4>
-                <label className="block text-sm text-ink">Program<select value={program} onChange={event => setProgram(event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-control bg-raised px-3 text-ink focus-visible:outline-2 focus-visible:outline-accent"><option value="standard">Standard</option><option value="quick">Quick</option></select></label>
+                <label className="block text-sm text-ink">Program<select value={program} onChange={event => setProgram(event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-control bg-raised px-3 text-ink focus-visible:outline-2 focus-visible:outline-accent">{Object.entries(selected.data?.programs ?? {}).map(([id, settings]) => <option key={id} value={id}>{String(settings.name ?? (id === "quick" ? "Quick" : id === "standard" ? "Standard" : id))}</option>)}</select></label>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   {([['price_myr', 'Cycle rate (RM)', '0', '999', '0.01'], ['duration_seconds', 'Duration (seconds)', '1', '7200', '1'], ['target_temperature_c', 'Target temperature (°C)', '0', '90', '1'], ['spin_rpm', 'Spin speed (RPM)', '0', '1200', '1']] as const).map(([name, label, min, max, step]) => <label key={name} className="block text-sm text-ink">{label}<input name={name} type="number" required min={min} max={max} step={step} defaultValue={String(selected.data?.programs?.[program]?.[name] ?? '')} className="mt-2 min-h-11 w-full rounded-md border border-control bg-raised px-3 text-ink focus-visible:outline-2 focus-visible:outline-accent" /></label>)}
                   <label className="block text-sm text-ink">Water level<select name="water_level" defaultValue={String(selected.data?.programs?.[program]?.water_level ?? 'medium')} className="mt-2 min-h-11 w-full rounded-md border border-control bg-raised px-3 text-ink focus-visible:outline-2 focus-visible:outline-accent"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>

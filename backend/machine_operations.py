@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import re
 from typing import Any, Literal
 from uuid import UUID
 
@@ -211,11 +212,21 @@ def create_machine_command(branch_id: UUID, source_id: str, body: OperatorMachin
                 raise HTTPException(422, "Settings are not supported for this machine type")
             try:
                 settings = body.arguments
-                if set(settings) != {"program_id", "price_myr", "duration_seconds",
-                                     "target_temperature_c", "water_level", "spin_rpm"}:
+                required = {"program_id", "price_myr", "duration_seconds",
+                            "target_temperature_c", "water_level", "spin_rpm"}
+                if set(settings) not in (required, required | {"name"}):
                     raise ValueError("Incomplete program settings")
-                if settings["program_id"] not in {"quick", "standard"}:
+                if not isinstance(settings["program_id"], str) or not re.fullmatch(r"(?:quick|standard|p_[a-f0-9]{12})", settings["program_id"]):
                     raise ValueError("Unsupported program")
+                if "name" in settings and (not isinstance(settings["name"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 -]{0,17}", settings["name"])):
+                    raise ValueError("Invalid program name")
+                if settings["program_id"].startswith("p_") and not settings.get("name"):
+                    raise ValueError("Custom program name required")
+                programs = latest["state_payload"].get("programs")
+                if not isinstance(programs, dict) or (settings["program_id"] not in programs and len(programs) >= 6):
+                    raise ValueError("Program catalog unavailable or full")
+                if settings["program_id"] not in programs:
+                    raise ValueError("Program not found")
                 from decimal import Decimal, InvalidOperation
                 price = Decimal(str(settings["price_myr"]))
                 if (not price.is_finite() or not 0 <= price <= 999
@@ -232,7 +243,7 @@ def create_machine_command(branch_id: UUID, source_id: str, body: OperatorMachin
                 raise HTTPException(422, "Invalid program settings") from exc
         elif body.action == "start":
             program_id = body.arguments.get("program_id", "standard")
-            if set(body.arguments) - {"program_id"} or program_id not in {"quick", "standard"}:
+            if set(body.arguments) - {"program_id"} or not isinstance(program_id, str):
                 raise HTTPException(422, "Unsupported program selection")
             program = (latest["state_payload"].get("programs") or {}).get(program_id)
             if not isinstance(program, dict):
