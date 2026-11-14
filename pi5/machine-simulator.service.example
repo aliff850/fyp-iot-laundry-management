@@ -1,0 +1,18 @@
+[Unit]
+Description=SpinSense simulated washer client
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aliff850
+UMask=0077
+WorkingDirectory=/home/aliff850/edge_gateway
+EnvironmentFile=/home/aliff850/edge_gateway/simulator-washer.env
+ExecStart=/home/aliff850/edge_gateway/venv/bin/python /home/aliff850/edge_gateway/machine_simulator.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

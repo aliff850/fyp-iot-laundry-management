@@ -1,0 +1,18 @@
+[Unit]
+Description=SpinSense local simulator command dispatcher
+After=network-online.target mariadb.service mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aliff850
+UMask=0077
+WorkingDirectory=/home/aliff850/edge_gateway
+EnvironmentFile=/home/aliff850/edge_gateway/.env
+ExecStart=/home/aliff850/edge_gateway/venv/bin/python /home/aliff850/edge_gateway/machine_dispatcher.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

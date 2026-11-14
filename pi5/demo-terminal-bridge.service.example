@@ -1,0 +1,16 @@
+[Unit]
+Description=SpinSense local demo terminal bridge
+After=mariadb.service mosquitto.service
+Requires=mariadb.service mosquitto.service
+
+[Service]
+Type=simple
+User=aliff850
+WorkingDirectory=/home/aliff850/edge_gateway
+EnvironmentFile=/home/aliff850/edge_gateway/.env
+ExecStart=/home/aliff850/edge_gateway/venv/bin/python /home/aliff850/edge_gateway/demo_terminal_bridge.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

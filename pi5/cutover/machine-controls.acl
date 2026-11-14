@@ -1,0 +1,38 @@
+# Branch-specific ACL for the paired test branch 3 gateway. Review before installation.
+user spinsense_ingest
+topic read branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/+/telemetry
+topic read branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/+/cycle-events
+topic write branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/+/cycle-event-acks
+topic read branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/+/presence
+topic write branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/+/telemetry-acks
+
+user lpg-node-01
+topic write branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/lpg-node-01/telemetry
+
+user sim-washer-01
+topic write branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/telemetry
+topic write branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/command-results
+topic read branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/commands
+topic write branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/cycle-events
+topic read branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/cycle-event-acks
+topic write branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/presence
+topic read branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/telemetry-acks
+topic read branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/command-result-acks
+topic write branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/select
+topic read branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/checkout
+topic read branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/status
+
+user spinsense_dispatch
+topic write branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/commands
+topic read branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/command-results
+topic write branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/command-result-acks
+
+user demo-terminal-01
+topic write branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/demo-terminal-01/select
+topic read branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/demo-terminal-01/checkout
+topic read branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/demo-terminal-01/status
+
+user spinsense_demo_bridge
+topic read branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/select
+topic write branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/checkout
+topic write branches/dbf2290f-9cc3-4c9b-85fc-b9496f0840f6/devices/washer-sim-01/status

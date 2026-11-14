@@ -1,0 +1,2 @@
+# Install into the Pi gateway virtual environment before enabling demo checkout.
+qrcode==8.2

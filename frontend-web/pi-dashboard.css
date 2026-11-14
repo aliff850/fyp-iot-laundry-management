@@ -1,0 +1,34 @@
+@import "tailwindcss" source(none);
+@source "../pi5/dashboard/index.html";
+@source "../pi5/dashboard/login.html";
+@source "../pi5/dashboard/demo_new.html";
+@source "../pi5/dashboard/demo_checkout.html";
+@source "../pi5/dashboard/static/dashboard.js";
+
+@font-face {
+  font-family: "Manrope";
+  src: url("/static/fonts/Manrope-variable.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+}
+
+@theme {
+  --color-canvas: #171719;
+  --color-surface: #131217;
+  --color-raised: #212023;
+  --color-navy: #14243a;
+  --color-navy-hover: #1b304b;
+  --color-navy-selected: #223d5b;
+  --color-ink: #f2f2f3;
+  --color-muted: #b4b4ba;
+  --color-faint: #94949d;
+  --color-line: #2c2b30;
+  --color-rule: #242328;
+  --color-control: #8c8a93;
+  --color-accent: #ef6268;
+  --color-positive: #79c5a6;
+  --color-warning: #dfb463;
+  --color-negative: #ef8798;
+  --font-sans: "Manrope", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}

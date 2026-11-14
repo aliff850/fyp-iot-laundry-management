@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="refresh" content="3">
+  <title>Demo payment | SpinSense</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body class="min-h-dvh bg-canvas font-sans text-ink">
+  <main class="mx-auto flex min-h-dvh w-full max-w-xl flex-col justify-center px-4 py-8">
+    <section class="rounded-md border border-line bg-surface px-5 py-4 md:p-7">
+      <h1 class="text-2xl font-semibold tracking-tight">Demo payment</h1>
+      <dl class="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div><dt class="text-sm text-muted">Machine</dt><dd class="mt-1 text-base font-medium">{{ checkout.source_id }}</dd></div>
+        <div><dt class="text-sm text-muted">Program</dt><dd class="mt-1 text-base font-medium">{{ checkout.program_name or checkout.program_id|capitalize }}</dd></div>
+        <div><dt class="text-sm text-muted">Demo amount</dt><dd class="mt-1 text-2xl font-semibold tabular-nums">RM {{ '%.2f'|format(checkout.price_myr) }}</dd></div>
+        <div><dt class="text-sm text-muted">Expiry</dt><dd class="mt-1 text-base font-medium">{{ checkout.expires_at }} UTC</dd></div>
+      </dl>
+      {% if not checkout.confirmed_at and not expired %}
+      <img src="{{ url_for('demo_checkout_qr', token=token) }}" width="240" height="240" alt="QR link to this demo checkout" class="mx-auto my-6 w-full max-w-60 bg-ink p-3">
+      <form method="post" class="mt-5"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="min-h-11 w-full rounded-md border border-ink bg-ink px-4 text-sm font-semibold text-surface focus-visible:outline-2 focus-visible:outline-accent">Complete demo payment</button></form>
+      {% elif checkout.command_status == 'succeeded' %}
+      <p role="status" class="mt-6 rounded-md border border-positive bg-raised p-4 text-sm text-positive">Demo payment confirmed. Machine start acknowledged.</p>
+      {% elif checkout.command_status in ('failed', 'expired', 'unknown') %}
+      <p role="status" class="mt-6 rounded-md border border-warning bg-raised p-4 text-sm text-warning">Demo payment confirmed. Machine start {{ checkout.command_status }}. No successful start has been assumed.</p>
+      {% elif checkout.confirmed_at %}
+      <p role="status" class="mt-6 rounded-md border border-warning bg-raised p-4 text-sm text-warning">Demo payment confirmed. Machine start pending.</p>
+      {% else %}
+      <p role="status" class="mt-6 rounded-md border border-warning bg-raised p-4 text-sm text-warning">This demo QR has expired. Request a new one from the machine.</p>
+      {% endif %}
+      <p class="mt-5 text-sm text-muted">No money is collected. This demonstration does not contact a bank or wallet.</p>
+    </section>
+  </main>
+</body>
+</html>
