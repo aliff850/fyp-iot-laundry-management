@@ -34,12 +34,15 @@ String topicEvents = topicBase + "cycle-events";
 String topicEventAcks = topicBase + "cycle-event-acks";
 String requestId, checkoutUrl, programLabel, priceLabel, checkoutState, machineState;
 String commandStatus, cycleOutcome;
-String quickPrice, standardPrice;
+int selectedProgramIndex = 0;
 unsigned long selectedAt = 0;
 unsigned long resultShownAt = 0;
 unsigned long remoteFinishedAt = 0;
 int remainingSeconds = -1;
 bool quickWasHigh = true, standardWasHigh = true, backWasHigh = true;
+bool comboSeen = false, comboTriggered = false;
+unsigned long bothPressedAt = 0, pendingMoveAt = 0;
+int pendingMove = 0;
 bool machinePresenceDirty = true;
 unsigned long lastAnimationAt = 0;
 uint8_t drumFrame = 0;
@@ -228,24 +231,45 @@ void render() {
     heading("Checkout unavailable", "Press a program button again");
     return;
   }
-  heading("Choose program", "Press Quick or Standard");
-  tft.fillRoundRect(16, 72, 288, 64, 5, surface);
-  tft.fillRoundRect(16, 148, 288, 64, 5, surface);
-  tft.setTextColor(ink, surface);
-  tft.setTextSize(2);
-  tft.setCursor(36, 92); tft.print("QUICK");
-  tft.setCursor(36, 168); tft.print("STANDARD");
-  // Right-aligned RM 999.00 still begins at x=180, clear of STANDARD.
-  String quickAmount = quickPrice.length() ? "RM " + quickPrice : "Price unavailable";
-  String standardAmount = standardPrice.length() ? "RM " + standardPrice : "Price unavailable";
-  tft.setTextSize(quickPrice.length() ? 2 : 1);
-  tft.setCursor(288 - quickAmount.length() * (quickPrice.length() ? 12 : 6),
-                quickPrice.length() ? 92 : 98);
-  tft.print(quickAmount);
-  tft.setTextSize(standardPrice.length() ? 2 : 1);
-  tft.setCursor(288 - standardAmount.length() * (standardPrice.length() ? 12 : 6),
-                standardPrice.length() ? 168 : 174);
-  tft.print(standardAmount);
+  heading("Choose program", "UP / DOWN browse   SELECT opens QR");
+  JsonObjectConst programs = machine.data["programs"].as<JsonObjectConst>();
+  int count = programs.size();
+  if (!count) return;
+  if (selectedProgramIndex >= count) selectedProgramIndex = count - 1;
+  int first = selectedProgramIndex < 4 ? 0 : selectedProgramIndex - 3;
+  int index = 0;
+  for (JsonPairConst entry : programs) {
+    if (index >= first && index < first + 4) {
+      int y = 69 + (index - first) * 38;
+      bool active = index == selectedProgramIndex;
+      tft.fillRoundRect(16, y, 288, 34, 4, active ? accent : surface);
+      tft.setTextColor(active ? canvas : ink, active ? accent : surface);
+      tft.setTextSize(1);
+      String name = entry.value()["name"] | "";
+      if (!name.length()) name = String(entry.key().c_str()) == "quick" ? "Quick" :
+        String(entry.key().c_str()) == "standard" ? "Standard" : String(entry.key().c_str());
+      tft.setCursor(26, y + 12); tft.print(name.substring(0, 18));
+      String amount = "RM " + entry.value()["price_myr"].as<String>();
+      tft.setCursor(298 - amount.length() * 6, y + 12); tft.print(amount);
+    }
+    ++index;
+  }
+}
+
+String selectedProgramId() {
+  JsonObjectConst programs = machine.data["programs"].as<JsonObjectConst>();
+  int index = 0;
+  for (JsonPairConst entry : programs)
+    if (index++ == selectedProgramIndex) return String(entry.key().c_str());
+  return "";
+}
+
+void moveProgram(int direction) {
+  if (!checkoutState.isEmpty() || String(machine.data["state"] | "unknown") != "idle") return;
+  int count = machine.data["programs"].as<JsonObjectConst>().size();
+  if (!count) return;
+  selectedProgramIndex = (selectedProgramIndex + count + direction) % count;
+  render();
 }
 
 void onMessage(char *topic, byte *payload, unsigned int length) {
@@ -258,8 +282,6 @@ void onMessage(char *topic, byte *payload, unsigned int length) {
       machinePresenceDirty = true;
       if (String(machine.data["state"] | "unknown") == "running") remoteFinishedAt = 0;
     }
-    quickPrice = machine.program("quick")["price_myr"].as<String>();
-    standardPrice = machine.program("standard")["price_myr"].as<String>();
     render();
     return;
   }
@@ -290,13 +312,7 @@ void onMessage(char *topic, byte *payload, unsigned int length) {
       machine.syncTime(doc["server_epoch_ms"].as<uint64_t>());
       if (!hadClock) machinePresenceDirty = true;
     }
-    String nextQuickPrice = doc["program_prices"]["quick"] | "";
-    String nextStandardPrice = doc["program_prices"]["standard"] | "";
-    bool pricesChanged = nextQuickPrice != quickPrice || nextStandardPrice != standardPrice;
-    quickPrice = nextQuickPrice;
-    standardPrice = nextStandardPrice;
     if (doc["request_id"].as<String>() != requestId) {
-      if (pricesChanged && requestId.isEmpty()) render();
       return;
     }
     bool wasRunning = checkoutState == "confirmed" && commandStatus == "succeeded" && machineState.equalsIgnoreCase("running");
@@ -331,7 +347,9 @@ void selectProgram(const char *program) {
   if (!mqtt.connected()) return;
   if (checkoutState == "waiting" || checkoutState == "ready") return;
   requestId = newUuid();
-  programLabel = program;
+  programLabel = machine.program(program)["name"] | "";
+  if (!programLabel.length()) programLabel = String(program) == "quick" ? "Quick" :
+    String(program) == "standard" ? "Standard" : program;
   checkoutUrl = "";
   priceLabel = "";
   commandStatus = "";
@@ -373,16 +391,12 @@ void setup() {
   tft.init(240, 320);
   tft.setRotation(1);
   machine.begin();
-  if (machine.ready) {
-    quickPrice = machine.program("quick")["price_myr"].as<String>();
-    standardPrice = machine.program("standard")["price_myr"].as<String>();
-  }
   render();
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.begin(TERMINAL_WIFI_SSID, TERMINAL_WIFI_PASSWORD);
   mqtt.setServer(TERMINAL_MQTT_HOST, TERMINAL_MQTT_PORT);
-  mqtt.setBufferSize(4096);
+  mqtt.setBufferSize(6144);
   mqtt.setCallback(onMessage);
 }
 
@@ -456,11 +470,44 @@ void loop() {
   }
   bool quickHigh = digitalRead(TERMINAL_BUTTON_QUICK), standardHigh = digitalRead(TERMINAL_BUTTON_STANDARD);
   bool backHigh = digitalRead(TERMINAL_BUTTON_BACK);
-  static unsigned long lastButton = 0;
-  if (millis() - lastButton > 250) {
-    if (quickWasHigh && !quickHigh) { lastButton = millis(); selectProgram("quick"); }
-    if (standardWasHigh && !standardHigh) { lastButton = millis(); selectProgram("standard"); }
-    if (backWasHigh && !backHigh) { lastButton = millis(); returnToPrograms(); }
+  static unsigned long lastSelect = 0;
+  bool bothLow = !quickHigh && !standardHigh;
+  if (bothLow) {
+    if (!bothPressedAt) bothPressedAt = millis();
+    comboSeen = true;
+    pendingMove = 0;
+    if (!comboTriggered && millis() - bothPressedAt >= 2000 && checkoutState.isEmpty() &&
+        machine.injectLocalWaterFault()) {
+      comboTriggered = true;
+      machinePresenceDirty = true;
+      render();
+    }
+  } else bothPressedAt = 0;
+  if (quickWasHigh && !quickHigh && pendingMove == 1) pendingMove = 0;
+  if (standardWasHigh && !standardHigh && pendingMove == -1) pendingMove = 0;
+  if (!comboSeen && !quickWasHigh && quickHigh && standardHigh) {
+    pendingMove = -1;
+    pendingMoveAt = millis();
+  }
+  if (!comboSeen && !standardWasHigh && standardHigh && quickHigh) {
+    pendingMove = 1;
+    pendingMoveAt = millis();
+  }
+  if (quickHigh && standardHigh) {
+    if (comboSeen) { comboSeen = false; comboTriggered = false; pendingMove = 0; }
+    else if (pendingMove && millis() - pendingMoveAt >= 150) {
+      moveProgram(pendingMove);
+      pendingMove = 0;
+    }
+  }
+  if (backWasHigh && !backHigh && millis() - lastSelect > 250) {
+    lastSelect = millis();
+    if (checkoutState == "ready") returnToPrograms();
+    else if (checkoutState.isEmpty() && quickHigh && standardHigh &&
+             String(machine.data["state"] | "unknown") == "idle") {
+      String id = selectedProgramId();
+      if (id.length()) selectProgram(id.c_str());
+    }
   }
   quickWasHigh = quickHigh;
   standardWasHigh = standardHigh;

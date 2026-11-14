@@ -10,7 +10,7 @@
 // neither the QR screen nor the broker declares a command successful.
 class MachineEngine {
  public:
-  DynamicJsonDocument data{16384};
+  DynamicJsonDocument data{49152};
   String bootId;
   bool ready = false;
   bool interruptedOnBoot = false;
@@ -138,8 +138,10 @@ class MachineEngine {
 
   String programHash(JsonVariantConst settings) const {
     // Matches Python json.dumps(sort_keys=True,separators=(",", ":")).
-    String canonical = "{\"duration_seconds\":" + String(settings["duration_seconds"].as<int>()) +
-      ",\"price_myr\":\"" + settings["price_myr"].as<String>() +
+    String canonical = "{\"duration_seconds\":" + String(settings["duration_seconds"].as<int>());
+    if (settings["name"].is<const char *>())
+      canonical += ",\"name\":\"" + settings["name"].as<String>() + "\"";
+    canonical += ",\"price_myr\":\"" + settings["price_myr"].as<String>() +
       "\",\"program_id\":\"" + settings["program_id"].as<String>() +
       "\",\"spin_rpm\":" + String(settings["spin_rpm"].as<int>()) +
       ",\"target_temperature_c\":" + String(settings["target_temperature_c"].as<int>()) +
@@ -162,7 +164,7 @@ class MachineEngine {
   }
 
   String presencePayload() {
-    DynamicJsonDocument message(1024);
+    DynamicJsonDocument message(4096);
     message["device_id"] = "washer-sim-01";
     message["source_kind"] = "simulated";
     message["boot_id"] = bootId;
@@ -177,7 +179,7 @@ class MachineEngine {
 
   void queueSample() {
     if (!ready) return;
-    DynamicJsonDocument message(1024);
+    DynamicJsonDocument message(4096);
     message["device_id"] = "washer-sim-01";
     message["source_kind"] = "simulated";
     message["boot_id"] = bootId;
@@ -246,6 +248,27 @@ class MachineEngine {
     return false;
   }
 
+  bool enterFault(const char *fault, const char *origin) {
+    if (!ready || !hasClock()) return false;
+    String state = data["state"] | "unknown";
+    if (state != "idle" && state != "running" && state != "paused") return false;
+    if (state == "running") tick();
+    if (state == "running" && String(data["state"] | "unknown") != "running") return false;
+    data["fault_origin"] = origin;
+    finish("faulted");
+    data["state"] = "error";
+    data["fault_code"] = fault;
+    data["remaining_seconds"] = 0;
+    save();
+    return ready;
+  }
+
+  bool injectLocalWaterFault() {
+    if (!enterFault("SIM_WATER", "local_buttons")) return false;
+    queueSample();
+    return ready;
+  }
+
   String execute(JsonVariantConst command) {
     String cid = command["command_id"] | "";
     JsonArray results = data["results"].as<JsonArray>();
@@ -292,21 +315,43 @@ class MachineEngine {
         int spin = args["spin_rpm"] | -1;
         String water = args["water_level"] | "";
         double numericPrice = price.toDouble();
-        if ((id != "quick" && id != "standard") || duration < 1 || duration > 7200 ||
+        String name = args["name"] | "";
+        bool creating = args["create"] | false;
+        JsonObject programs = data["programs"].as<JsonObject>();
+        bool exists = programs.containsKey(id);
+        bool validId = id == "quick" || id == "standard";
+        if (!validId && id.length() == 14 && id.startsWith("p_")) {
+          validId = true;
+          for (int i = 2; i < 14; ++i)
+            if (!isxdigit(id[i]) || isupper(id[i])) validId = false;
+        }
+        bool validName = name.length() <= 18;
+        for (size_t i = 0; i < name.length(); ++i)
+          if (!isalnum(name[i]) && name[i] != ' ' && name[i] != '-') validName = false;
+        if (name.length() && !isalnum(name[0])) validName = false;
+        if (!validId || !validName || (id.startsWith("p_") && !name.length()) ||
+            (creating && exists) || (!creating && !exists) ||
+            (!exists && programs.size() >= 6) || duration < 1 || duration > 7200 ||
             temperature < 0 || temperature > 90 || spin < 0 || spin > 1200 ||
             (water != "low" && water != "medium" && water != "high") ||
             numericPrice < 0 || numericPrice > 999) reason = "invalid_settings";
-        else data["programs"][id] = args;
+        else {
+          JsonObject saved = programs[id].to<JsonObject>();
+          saved["program_id"] = id;
+          if (name.length()) saved["name"] = name;
+          saved["price_myr"] = price;
+          saved["duration_seconds"] = duration;
+          saved["target_temperature_c"] = temperature;
+          saved["spin_rpm"] = spin;
+          saved["water_level"] = water;
+        }
       } else if (action == "inject_fault" && (state == "idle" || state == "running" || state == "paused")) {
         String fault = args["fault_code"] | "";
         if (fault != "SIM_DOOR" && fault != "SIM_WATER" && fault != "SIM_HEAT") reason = "unsupported_fault";
-        else {
-          if (state == "running") tick();
-          finish("faulted"); data["state"] = "error"; data["fault_code"] = fault;
-          data["remaining_seconds"] = 0;
-        }
+        else if (!enterFault(fault.c_str(), "mqtt_command")) reason = "fault_unavailable";
       } else if (action == "clear_fault" && state == "error") {
-        data["state"] = "idle"; data["fault_code"] = nullptr; data["remaining_seconds"] = 0;
+        data["state"] = "idle"; data["fault_code"] = nullptr;
+        data["fault_origin"] = nullptr; data["remaining_seconds"] = 0;
       } else reason = "invalid_transition";
     }
     JsonObject result = results.createNestedObject();

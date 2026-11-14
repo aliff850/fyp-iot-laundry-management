@@ -1,6 +1,6 @@
 # SpinSense demo machine terminal
 
-This is a separate ESP32 from the physical LPG node. It displays the Pi's simulated washer checkout QR and state; it cannot publish machine START commands or declare a payment successful.
+This is a separate ESP32 from the physical LPG node. It owns the simulated washer's saved programs, cycle state and correlated MQTT command results. It displays Pi-issued demo checkout QR links; it cannot declare a payment successful or start a paid cycle from a QR scan alone.
 
 ## Hardware preflight
 
@@ -15,9 +15,9 @@ The reported screen is a 240×320 ST7789V SPI module with `CS`, `DC`, `RST`, `SD
 | TFT `RST` | GPIO17 |
 | TFT `GND` | GND |
 | TFT `VCC` | Module-compatible supply, verified from its documentation |
-| Quick button | GPIO32 to GND |
-| Standard button | GPIO33 to GND |
-| Back button | GPIO25 to GND |
+| Up button (formerly Quick) | GPIO32 to GND |
+| Down button (formerly Standard) | GPIO33 to GND |
+| Select / Back button | GPIO25 to GND |
 
 All three buttons use `INPUT_PULLUP`, so pressing connects the pin to GND. Keep the TFT and buttons on the spare ESP32 only. If the actual board uses different safe pins, change only the private `include/terminal_config.h` before compilation.
 
@@ -35,8 +35,8 @@ Copy `include/terminal_config.example.h` to ignored `include/terminal_config.h`.
 
 Only after the Pi terminal bridge, topic ACL, and private credentials are installed and the wiring is checked, connect the spare ESP32 by USB and upload with PlatformIO's `-t upload` for its actual serial port. An initial placeholder-only build proves compilation, not display wiring, QR readability, Wi-Fi login or MQTT authentication.
 
-Press Quick or Standard while idle to request one short-lived local demo checkout. The screen displays a QR and then the Pi's command/result state. A phone must join `SpinSense-GW` to open the `10.42.0.1:5000` link. The phone's **Complete demo payment** action is simulated; no bank or wallet is contacted. The terminal does not itself authorize a machine cycle.
+While idle, Up and Down move through the ESP32's saved catalog of at most six programs, wrapping at either end. Select requests a short-lived local demo checkout for the highlighted program. Holding Up and Down together for two seconds triggers the simulated water fault; a brief overlap must not select a program. The screen displays a QR and then the Pi's command/result state. A phone must join `SpinSense-GW` to open the `10.42.0.1:5000` link. The phone's **Complete demo payment** action is simulated; no bank or wallet is contacted. The terminal does not itself authorize a machine cycle.
 
 On an unpaid QR, Back asks the Pi to expire that checkout and waits for its response before returning to Choose program. The phone link then cannot start a cycle. Back has no effect after a demo payment has been confirmed or while the machine is running. If the Pi does not confirm cancellation, the QR remains available and Back can be retried; a screen change alone is never treated as cancellation.
 
-The Choose program screen shows each program's saved price on the right. The Pi bridge supplies these prices from fresh simulator telemetry; if that data is unavailable, the screen says “Price unavailable” rather than displaying a hard-coded amount. The checkout itself validates and snapshots the current saved price before it displays a QR.
+The Choose program screen shows the ESP32's saved names and prices. Pi staff may create or edit a program only while the approved washer is fresh and idle; the change is confirmed by a correlated command result and updated machine state. The checkout validates and snapshots the selected program's current saved price before it displays a QR. The terminal's LittleFS program state was backed up before the 2026-11-14 firmware rollout.

@@ -1,10 +1,8 @@
-# SpinSense local monitor
+# SpinSense Pi dashboard
 
-`index.html` is a self-contained diagnostic screen using the existing local Flask API. CSS and icons are inline, so the interface does not require a CDN or internet access. Opening the file directly shows a server-required notice; live readings require serving it at the same origin as the telemetry API.
+The Flask service serves Overview, Machines and LPG & Safety to authenticated local staff on the Pi access point. Installer pairing has separate access control. It reads gateway-scoped MariaDB records; missing or stale data is never shown as an available machine or healthy sensor. The local Tailwind CSS, JavaScript, icons and Manrope font are served from `static/`, so the interface does not require a CDN or internet uplink. See the [deployment runbook](../DEPLOYMENT.md) for the live service and backup procedure.
 
-The screen uses the Data terminal direction, neutral dark surfaces, SpinSense red selection lines, system fonts, and a cylinder silhouette tied to the reported percentage. Refresh, pause/resume, and pending/quarantined filters work entirely against the current API. All diagnostic fields remain in a horizontally scrollable table on small screens.
-
-The existing `dashboard.py` uses Flask's default `templates/` lookup. If deploying this flat directory, place `index.html` in that template directory or configure Flask's template folder to the directory containing the file. No Flask/MariaDB runtime or physical sensor connection was verified during this design change.
+The washer Programs Catalog can add or edit up to six ESP32-saved programs. The Parameters tab remains a read-only vendor reference. Program edits use the durable Pi command queue and appear saved only after the ESP32 returns a correlated result and publishes updated state. Quick and Standard retain their IDs and historical cycle references. The local staff editor is a demo capability; cloud operators may display and start confirmed programs, while cloud program creation remains deferred.
 
 ## Data and behavior
 
@@ -14,7 +12,7 @@ Failed refreshes preserve previous readings with a failure notice. A successful 
 
 ## Verification record
 
-Before the final visual refinements, `node --test pi5/dashboard/dashboard.test.mjs` passed 8 regression checks covering HTTP failures, empty stores, zero/missing values, old records, window sync counts, retained readings, injected markup, and malformed payloads. The browser inspector recorded zero failures at 1440, 768, and 390px on that intermediate version. Further tests and evaluations were skipped at the user's request; these results do not certify the final refinements or hardware behavior.
+The older `dashboard.test.mjs` covers transport and stale-data regressions in the initial inline dashboard, and does not prove the current program editor. Focused Python tests cover simulator and Pi command boundaries. Live ESP32 menu, save, checkout and command-result checks remain necessary.
 
 Run the dependency-free regression checks from the repository root when desired:
 

@@ -23,6 +23,7 @@ backend/.venv-phase2/
 **/.pio/
 **/.vscode/
 firmware/esp32-lpg-monitor/include/device_config.h
+firmware/esp32-machine-terminal/include/terminal_config.h
 pi5/.spinsense_gateway.json
 
 # System / OS

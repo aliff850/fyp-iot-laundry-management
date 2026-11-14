@@ -2,6 +2,8 @@
 
 ## Document status
 
+**Program catalog checkpoint, 2026-11-14:** The Pi's Programs Catalog now has staff-only add/edit controls for up to six ESP32-saved programs. The terminal firmware has an Up/Down/Select menu; the third button remains Back on an unpaid QR. The first firmware upload and backed-up Pi file transfer completed, the affected Pi services restarted, and dashboard health returned HTTP 200. Live add/edit, menu scrolling, checkout and cloud START using a new program remain to be verified end to end. Local staff creation is a demo facility; the web displays and starts confirmed programs but does not create them.
+
 - **Project:** SpinSense — IoT-Enabled Laundry Management and Performance Monitoring System
 - **Revision:** 2026-11-01
 - **Status:** Approved development direction; requirements below describe the target system, not completed implementation.
@@ -387,7 +389,7 @@ All requirements below are required unless explicitly marked as an extension. Re
 | FM-03 | Demonstrate start from idle, pause while running, resume while paused, and stop while running/paused. Reject invalid transitions. Apply supported settings only while idle; water/spin fields require supported wash capability and cannot be sent to dry-only programs. |
 | FM-04 | Execute assessed controls through the cloud → Pi → local MQTT → simulator ACK path, including expiry, duplicate requests, and unknown outcomes. Door-unlock and emergency-stop claims are outside required controls. |
 | FM-05 | Show raw fault codes and verified descriptions where available. Simulator codes are labeled; unknown vendor codes stay unknown. Service notes do not clear a device fault without subsequent device evidence. |
-| FM-06 | Expose supported program/catalogue and state/program/parameter detail contracts. Only owners/managers may request supported idle-machine edits; machine specialists receive read-only settings and non-financial diagnostics/service. Combined programs validate wash/dry capabilities separately. |
+| FM-06 | Expose supported program/catalogue and state/program/parameter detail contracts. The local washer demo supports up to six ESP32-saved programs with stable IDs, names, prices, durations, temperatures, water levels and spin limits. A program edit is saved only after a correlated device result and updated state; START pins the selected program revision. Only owners/managers may request supported cloud idle-machine edits; machine specialists receive read-only settings and non-financial diagnostics/service. Combined programs validate wash/dry capabilities separately. |
 
 ### 6.4 fuel-and-environment
 
