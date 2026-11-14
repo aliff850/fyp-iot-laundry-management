@@ -85,7 +85,10 @@ export function RemoteMachineView({ branchId, branchOpen, role, initialMachines 
   function send(action: "start" | "pause" | "resume" | "stop" | "set_settings",
                 args: Record<string, unknown> = {}) {
     if (!selected || !canControl) return;
-    if ((action === "stop" || action === "start") && !window.confirm(`Request ${action} for ${selected.label}?`)) return;
+    const confirmation = action === "start"
+      ? `Start ${program === "quick" ? "Quick" : "Standard"} on ${selected.label}?`
+      : `Request ${action} for ${selected.label}?`;
+    if ((action === "stop" || action === "start") && !window.confirm(confirmation)) return;
     setActionMessage(null);
     startTransition(async () => {
       const requestId = crypto.randomUUID();
@@ -150,11 +153,28 @@ export function RemoteMachineView({ branchId, branchOpen, role, initialMachines 
                 <div><dt className="text-xs text-muted">Last update</dt><dd className="text-sm text-ink">{dateLabel(selected.last_update)}</dd></div>
                 {selected.data?.fault_code && <div><dt className="text-xs text-muted">Fault</dt><dd className="text-sm text-negative">{selected.data.fault_code}</dd></div>}
               </dl>
-              {role !== "machine_maintenance" && <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+              {role !== "machine_maintenance" && <div className="space-y-4">
+                <label className="block max-w-sm text-sm text-ink">Program for START
+                  <select value={program} onChange={event => setProgram(event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-control bg-raised px-3 text-sm text-ink focus-visible:outline-2 focus-visible:outline-accent"><option value="standard">Standard</option><option value="quick">Quick</option></select>
+                </label>
+                <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
                 {(["start", "pause", "resume", "stop"] as const).map(action => <button key={action} type="button" disabled={!canControl || (action === "start" ? selected.state !== "idle" : action === "pause" ? selected.state !== "running" : action === "resume" ? selected.state !== "paused" : !["running", "paused"].includes(selected.state))} onClick={() => send(action, action === "start" ? { program_id: program } : {})} className="min-h-11 min-w-11 rounded-md border border-control bg-navy px-5 py-2 text-sm font-semibold uppercase text-ink enabled:hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted">{action}</button>)}
+                </div>
               </div>}
             </div>}
-            {tab === "programs" && <div className="space-y-4"><h3 className="text-base font-semibold text-ink">Saved programs</h3><div className="grid grid-cols-1 gap-4 md:grid-cols-2">{Object.entries(selected.data?.programs ?? {}).map(([id, settings]) => <div key={id} className="rounded-md border border-rule bg-surface px-5 py-4"><h4 className="text-sm font-semibold text-ink">{id === "quick" ? "Quick" : id === "standard" ? "Standard" : id}</h4><dl className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2"><div><dt className="text-xs text-muted">Duration</dt><dd className="text-sm text-ink">{String(settings.duration_seconds ?? "Unknown")} seconds</dd></div>{role !== "machine_maintenance" && <div><dt className="text-xs text-muted">Cycle rate</dt><dd className="text-sm text-ink">RM {String(settings.price_myr ?? "Unknown")}</dd></div>}</dl></div>)}</div>{Object.keys(selected.data?.programs ?? {}).length === 0 && <p className="text-sm text-muted">No verified program data is available.</p>}{role !== "machine_maintenance" && <label className="block max-w-sm text-sm text-ink">Program for START<select value={program} onChange={event => setProgram(event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-control bg-raised px-3 text-sm text-ink focus-visible:outline-2 focus-visible:outline-accent"><option value="standard">Standard</option><option value="quick">Quick</option></select></label>}</div>}
+            {tab === "programs" && <div className="space-y-4">
+              <h3 className="text-base font-semibold text-ink">Saved programs</h3>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {Object.entries(selected.data?.programs ?? {}).map(([id, settings]) => <div key={id} className="rounded-md border border-rule bg-surface px-5 py-4">
+                  <h4 className="text-sm font-semibold text-ink">{id === "quick" ? "Quick" : id === "standard" ? "Standard" : id}</h4>
+                  <dl className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div><dt className="text-xs text-muted">Duration</dt><dd className="text-sm text-ink">{String(settings.duration_seconds ?? "Unknown")} seconds</dd></div>
+                    {role !== "machine_maintenance" && <div><dt className="text-xs text-muted">Cycle rate</dt><dd className="text-sm text-ink">RM {String(settings.price_myr ?? "Unknown")}</dd></div>}
+                  </dl>
+                </div>)}
+              </div>
+              {Object.keys(selected.data?.programs ?? {}).length === 0 && <p className="text-sm text-muted">No verified program data is available.</p>}
+            </div>}
             {tab === "parameters" && <div className="space-y-4"><h3 className="text-base font-semibold text-ink">Current settings</h3><dl className="grid grid-cols-1 gap-4 rounded-md border border-rule bg-surface px-5 py-4 sm:grid-cols-2 md:p-7">{Object.entries(selected.data?.settings ?? {}).filter(([key]) => role !== "machine_maintenance" || key !== "price_myr").map(([key, value]) => <div key={key}><dt className="text-xs text-muted">{key.replaceAll("_", " ")}</dt><dd className="text-sm text-ink">{String(value)}</dd></div>)}</dl>
               {role !== "machine_maintenance" && selected.type === "washer" && <form key={`${selected.source_id}-${program}`} onSubmit={event => {
                 event.preventDefault();
