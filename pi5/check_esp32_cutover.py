@@ -41,8 +41,11 @@ def main():
             cycles = cursor.fetchall()
         if presence:
             age = (datetime.now(timezone.utc).replace(tzinfo=None) - presence["last_seen_at"]).total_seconds()
-            state = json.loads(presence["state_payload"]).get("state", "unknown")
+            state_payload = json.loads(presence["state_payload"])
+            state = state_payload.get("state", "unknown")
             print(f"presence: state={state}, age_seconds={age:.1f}, sequence={presence['sequence']}")
+            print("programs:", [(program_id, program.get("name", program_id))
+                                for program_id, program in state_payload.get("programs", {}).items()])
         else:
             print("presence: absent")
         print(f"trusted washer history: rows={history['total']}, latest={history['latest']}")

@@ -18,6 +18,9 @@ def main():
         state = (row["state_payload"] or {}).get("state", "missing")
         print(f"source={row['source_id']} type={row['device_type']} state={state} "
               f"cloud_age_seconds={round(age) if age is not None else 'missing'}")
+        programs = (row["state_payload"] or {}).get("programs") or {}
+        print("programs:", [(program_id, program.get("name", program_id))
+                            for program_id, program in programs.items()])
     if not rows:
         print("No approved active simulated machines")
 

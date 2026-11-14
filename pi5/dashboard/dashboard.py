@@ -913,7 +913,7 @@ def local_machine_commands(source_id):
                     if not is_create and arguments["program_id"] not in programs:
                         return jsonify({"error": "Program not found"}), 409
                     cursor.execute("""SELECT checkout_id FROM demo_checkouts WHERE gateway_id=%s
-                        AND source_id=%s AND status='awaiting_demo_payment'
+                        AND source_id=%s AND confirmed_at IS NULL
                         AND expires_at>UTC_TIMESTAMP(6) LIMIT 1""", (binding["gateway_id"], source_id))
                     if cursor.fetchone():
                         return jsonify({"error": "Cancel the active checkout before editing programs"}), 409

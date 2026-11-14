@@ -2,7 +2,7 @@
 
 ## Document status
 
-**Program catalog checkpoint, 2026-11-14:** The Pi's Programs Catalog now has staff-only add/edit controls for up to six ESP32-saved programs. The terminal firmware has an Up/Down/Select menu; the third button remains Back on an unpaid QR. The first firmware upload and backed-up Pi file transfer completed, the affected Pi services restarted, and dashboard health returned HTTP 200. Live add/edit, menu scrolling, checkout and cloud START using a new program remain to be verified end to end. Local staff creation is a demo facility; the web displays and starts confirmed programs but does not create them.
+**Program catalog checkpoint, 2026-11-14:** The Pi's Programs Catalog has staff-only add/edit controls for up to six ESP32-saved programs. The terminal firmware has an Up/Down/Select menu; the third button remains Back on an unpaid QR. A backed-up firmware upload and Pi file transfer completed, the affected Pi services restarted, and dashboard health returned HTTP 200. The owner verified menu scrolling, Quick selection and unpaid QR cancellation. A local staff save returned a correlated `set_settings` success, and fresh Pi presence contains a third custom program. Checkout and cloud START using that program remain to be verified. Local staff creation is a demo facility; the web displays and starts confirmed programs but does not create them.
 
 - **Project:** SpinSense — IoT-Enabled Laundry Management and Performance Monitoring System
 - **Revision:** 2026-11-01
