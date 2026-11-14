@@ -424,13 +424,23 @@ def get_branch_overview(branch_id: UUID, user=Depends(_user)):
             "phone": branch["primary_manager_phone"] or "",
         }
 
-        fleet_machines = list(_get_branch_fleet(branch_id).values())
-        running_cnt = sum(1 for m in fleet_machines if m["status"] == "RUNNING")
-        idle_cnt = sum(1 for m in fleet_machines if m["status"] == "IDLE")
-        error_cnt = sum(1 for m in fleet_machines if m["status"] == "ERROR")
-        offline_cnt = sum(1 for m in fleet_machines if m["status"] == "OFFLINE")
-        washers_cnt = sum(1 for m in fleet_machines if m["type"] == "washer")
-        dryers_cnt = sum(1 for m in fleet_machines if m["type"] == "dryer")
+        fleet_machines = conn.execute("""select d.device_type,m.state_payload,
+            m.cloud_seen_at from public.devices d
+            left join public.machine_latest m on m.device_id=d.id
+            where d.branch_id=%s and d.organization_id=%s and d.status='active'
+            and d.device_type in ('washer','dryer','washer_dryer')""",
+            (branch_id, organization)).fetchall()
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        states = [m["state_payload"].get("state", "unknown") if m["state_payload"]
+                  and m["cloud_seen_at"] and now - m["cloud_seen_at"] <= timedelta(seconds=45)
+                  else "unknown" for m in fleet_machines]
+        running_cnt = states.count("running")
+        idle_cnt = states.count("idle")
+        error_cnt = states.count("error")
+        offline_cnt = states.count("unknown")
+        washers_cnt = sum(1 for m in fleet_machines if m["device_type"] == "washer")
+        dryers_cnt = sum(1 for m in fleet_machines if m["device_type"] == "dryer")
 
         return {
             "branch": b_data,
@@ -450,7 +460,7 @@ def get_branch_overview(branch_id: UUID, user=Depends(_user)):
                 "idle": idle_cnt,
                 "error": error_cnt,
                 "offline": offline_cnt,
-                "status": "nominal" if error_cnt == 0 else "error",
+                "status": "error" if error_cnt else "unknown" if offline_cnt or not fleet_machines else "nominal",
             },
             "lpg": {
                 "total_cylinders": 4,
@@ -811,180 +821,6 @@ class MachineParametersUpdate(BaseModel):
     door_locked: bool | None = None
 
 
-_branch_machines_db: dict[UUID, dict[str, dict]] = {}
-
-
-def _init_default_fleet(branch_id: UUID) -> dict[str, dict]:
-    b_str = str(branch_id)
-    return {
-        "W-01": {
-            "id": "W-01",
-            "branch_id": b_str,
-            "name": "Washer #01 (15kg)",
-            "type": "washer",
-            "status": "RUNNING",
-            "remaining_time": 18,
-            "current_cycle": "Standard Cotton 40Â°C",
-            "phase": "Wash",
-            "capacity_kg": 15,
-            "power_w": 1850.0,
-            "water_l": 48.0,
-            "drum_rpm": 800,
-            "fault_code": None,
-            "fault_subsystem": None,
-            "fault_remediation": None,
-            "parameters": {
-                "price": 6.00,
-                "duration_mins": 35,
-                "temp_celsius": 40,
-                "water_level": "High",
-                "spin_speed": 1200,
-                "door_locked": True,
-            },
-        },
-        "W-02": {
-            "id": "W-02",
-            "branch_id": b_str,
-            "name": "Washer #02 (15kg)",
-            "type": "washer",
-            "status": "IDLE",
-            "remaining_time": 0,
-            "current_cycle": None,
-            "phase": "Idle",
-            "capacity_kg": 15,
-            "power_w": 35.0,
-            "water_l": 0.0,
-            "drum_rpm": 0,
-            "fault_code": None,
-            "fault_subsystem": None,
-            "fault_remediation": None,
-            "parameters": {
-                "price": 6.00,
-                "duration_mins": 30,
-                "temp_celsius": 30,
-                "water_level": "Medium",
-                "spin_speed": 800,
-                "door_locked": False,
-            },
-        },
-        "W-03": {
-            "id": "W-03",
-            "branch_id": b_str,
-            "name": "Washer #03 (20kg)",
-            "type": "washer",
-            "status": "RUNNING",
-            "remaining_time": 27,
-            "current_cycle": "Heavy Bedding 60Â°C",
-            "phase": "Rinse",
-            "capacity_kg": 20,
-            "power_w": 2100.0,
-            "water_l": 62.0,
-            "drum_rpm": 650,
-            "fault_code": None,
-            "fault_subsystem": None,
-            "fault_remediation": None,
-            "parameters": {
-                "price": 8.50,
-                "duration_mins": 45,
-                "temp_celsius": 60,
-                "water_level": "High",
-                "spin_speed": 1200,
-                "door_locked": True,
-            },
-        },
-        "D-01": {
-            "id": "D-01",
-            "branch_id": b_str,
-            "name": "Dryer #01 (Gas 16kg)",
-            "type": "dryer",
-            "status": "RUNNING",
-            "remaining_time": 22,
-            "current_cycle": "High Heat Express",
-            "phase": "Dry",
-            "capacity_kg": 16,
-            "power_w": 480.0,
-            "water_l": 0.0,
-            "drum_rpm": 450,
-            "fault_code": None,
-            "fault_subsystem": None,
-            "fault_remediation": None,
-            "parameters": {
-                "price": 5.50,
-                "duration_mins": 30,
-                "temp_celsius": 65,
-                "water_level": "Low",
-                "spin_speed": 400,
-                "door_locked": True,
-            },
-        },
-        "D-02": {
-            "id": "D-02",
-            "branch_id": b_str,
-            "name": "Dryer #02 (Gas 16kg)",
-            "type": "dryer",
-            "status": "IDLE",
-            "remaining_time": 0,
-            "current_cycle": None,
-            "phase": "Idle",
-            "capacity_kg": 16,
-            "power_w": 20.0,
-            "water_l": 0.0,
-            "drum_rpm": 0,
-            "fault_code": None,
-            "fault_subsystem": None,
-            "fault_remediation": None,
-            "parameters": {
-                "price": 5.50,
-                "duration_mins": 30,
-                "temp_celsius": 50,
-                "water_level": "Low",
-                "spin_speed": 400,
-                "door_locked": False,
-            },
-        },
-        "D-03": {
-            "id": "D-03",
-            "branch_id": b_str,
-            "name": "Dryer #03 (Gas 20kg)",
-            "type": "dryer",
-            "status": "RUNNING",
-            "remaining_time": 9,
-            "current_cycle": "Delicates Low Heat",
-            "phase": "Cool Down",
-            "capacity_kg": 20,
-            "power_w": 310.0,
-            "water_l": 0.0,
-            "drum_rpm": 400,
-            "fault_code": None,
-            "fault_subsystem": None,
-            "fault_remediation": None,
-            "parameters": {
-                "price": 7.00,
-                "duration_mins": 35,
-                "temp_celsius": 45,
-                "water_level": "Low",
-                "spin_speed": 400,
-                "door_locked": True,
-            },
-        },
-    }
-
-
-def _get_branch_fleet(branch_id: UUID) -> dict[str, dict]:
-    if branch_id not in _branch_machines_db:
-        _branch_machines_db[branch_id] = _init_default_fleet(branch_id)
-    return _branch_machines_db[branch_id]
-
-
-def _project_machine(m: dict, role: str) -> dict:
-    item = dict(m)
-    item["parameters"] = dict(m["parameters"])
-    # PRD Section 4.4 & FM-06: Maintenance specialists receive read-only non-financial view
-    if role == "machine_maintenance":
-        item["parameters"]["price"] = None
-    return item
-
-
 def _authorize_branch_access(conn, user_id: UUID, branch_id: UUID, allowed_roles: tuple[str, ...]):
     member = _membership(conn, user_id)
     if member["state"] != "active":
@@ -1013,123 +849,22 @@ def _authorize_branch_access(conn, user_id: UUID, branch_id: UUID, allowed_roles
 
 @router.get("/branches/{branch_id}/machines")
 def get_branch_machines(branch_id: UUID, type: str | None = None, user=Depends(_user)):
-    with _database(read_only=True) as conn:
-        member, _ = _authorize_branch_access(
-            conn, user["id"], branch_id, ("owner", "branch_manager", "machine_maintenance")
-        )
-        fleet = _get_branch_fleet(branch_id)
-        role = member["role"]
-        items = list(fleet.values())
-        if type:
-            items = [m for m in items if m["type"] == type.lower()]
-        return {"machines": [_project_machine(m, role) for m in items]}
+    raise HTTPException(410, "Use the persistent machine-state endpoint")
 
 
 @router.get("/branches/{branch_id}/machines/{machine_id}")
 def get_branch_machine(branch_id: UUID, machine_id: str, user=Depends(_user)):
-    with _database(read_only=True) as conn:
-        member, _ = _authorize_branch_access(
-            conn, user["id"], branch_id, ("owner", "branch_manager", "machine_maintenance")
-        )
-        fleet = _get_branch_fleet(branch_id)
-        if machine_id not in fleet:
-            raise HTTPException(404, f"Machine '{machine_id}' not found")
-        return {"machine": _project_machine(fleet[machine_id], member["role"])}
+    raise HTTPException(410, "Use the persistent machine-state endpoint")
 
 
 @router.post("/branches/{branch_id}/machines/{machine_id}/commands")
 def issue_machine_command(branch_id: UUID, machine_id: str, body: MachineCommandRequest, user=Depends(_user)):
-    with _database() as conn:
-        member = _membership(conn, user["id"])
-        if member["role"] == "machine_maintenance":
-            raise HTTPException(403, "Maintenance specialists cannot issue machine commands")
-        member, _ = _authorize_branch_access(
-            conn, user["id"], branch_id, ("owner", "branch_manager")
-        )
-        fleet = _get_branch_fleet(branch_id)
-        if machine_id not in fleet:
-            raise HTTPException(404, f"Machine '{machine_id}' not found")
-
-        m = fleet[machine_id]
-        cmd = body.command
-
-        if cmd == "start":
-            if m["status"] == "ERROR":
-                raise HTTPException(400, "Cannot start machine in ERROR state. Address fault first.")
-            if m["status"] == "RUNNING":
-                raise HTTPException(400, "Machine is already running")
-            if m["status"] == "OFFLINE":
-                raise HTTPException(400, "Machine is offline")
-            m["status"] = "RUNNING"
-            m["phase"] = "Wash" if m["type"] == "washer" else "Dry"
-            m["remaining_time"] = m["parameters"]["duration_mins"]
-            m["parameters"]["door_locked"] = True
-            m["power_w"] = 1850.0 if m["type"] == "washer" else 480.0
-            m["drum_rpm"] = 800 if m["type"] == "washer" else 450
-            if not m.get("current_cycle"):
-                m["current_cycle"] = "Standard Cotton 40Â°C" if m["type"] == "washer" else "High Heat Express"
-        elif cmd == "pause":
-            if m["status"] != "RUNNING":
-                raise HTTPException(400, "Can only pause a running machine")
-            m["status"] = "PAUSED"
-            m["drum_rpm"] = 0
-            m["power_w"] = 40.0
-        elif cmd == "resume":
-            if m["status"] != "PAUSED":
-                raise HTTPException(400, "Can only resume a paused machine")
-            m["status"] = "RUNNING"
-            m["drum_rpm"] = 800 if m["type"] == "washer" else 450
-            m["power_w"] = 1850.0 if m["type"] == "washer" else 480.0
-        elif cmd == "stop":
-            if m["status"] not in ("RUNNING", "PAUSED"):
-                raise HTTPException(400, "Can only stop a running or paused machine")
-            m["status"] = "IDLE"
-            m["phase"] = "Idle"
-            m["remaining_time"] = 0
-            m["drum_rpm"] = 0
-            m["power_w"] = 20.0
-            m["parameters"]["door_locked"] = False
-        elif cmd == "unlock":
-            if m["status"] == "RUNNING":
-                raise HTTPException(400, "Cannot unlock door while machine is running")
-            m["parameters"]["door_locked"] = False
-
-        return {"success": True, "command": cmd, "machine": _project_machine(m, member["role"])}
+    raise HTTPException(410, "Use the durable machine-command endpoint")
 
 
 @router.put("/branches/{branch_id}/machines/{machine_id}/parameters")
 def update_machine_parameters(branch_id: UUID, machine_id: str, body: MachineParametersUpdate, user=Depends(_user)):
-    with _database() as conn:
-        member = _membership(conn, user["id"])
-        if member["role"] == "machine_maintenance":
-            raise HTTPException(403, "Maintenance specialists cannot modify machine parameters")
-        member, _ = _authorize_branch_access(
-            conn, user["id"], branch_id, ("owner", "branch_manager")
-        )
-        fleet = _get_branch_fleet(branch_id)
-        if machine_id not in fleet:
-            raise HTTPException(404, f"Machine '{machine_id}' not found")
-
-        m = fleet[machine_id]
-        if m["status"] != "IDLE":
-            raise HTTPException(400, "Parameters can only be modified while machine is idle")
-
-        params = m["parameters"]
-        if body.price is not None:
-            params["price"] = body.price
-        if body.duration_mins is not None:
-            params["duration_mins"] = body.duration_mins
-        if body.temp_celsius is not None:
-            params["temp_celsius"] = body.temp_celsius
-        if body.water_level is not None and m["type"] == "washer":
-            params["water_level"] = body.water_level
-        if body.spin_speed is not None and m["type"] == "washer":
-            params["spin_speed"] = body.spin_speed
-        if body.door_locked is not None:
-            params["door_locked"] = body.door_locked
-
-        return {"success": True, "machine": _project_machine(m, member["role"])}
-
+    raise HTTPException(410, "Use the durable machine-command endpoint")
 
 # ==========================================
 # LPG FUEL & ENVIRONMENTAL SAFETY API (PRD 4.3, 4.4, 6.4)

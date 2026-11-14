@@ -2,11 +2,32 @@
 
 import { revalidatePath } from "next/cache";
 import {
+  getRemoteMachines,
+  getRemoteMachineCommands,
+  issueRemoteMachineCommand,
+  type RemoteMachine,
+  type RemoteMachineCommand,
   sendMachineCommand,
   updateMachineParameters,
   type MachineItem,
   type MachineParameters,
 } from "@/lib/auth/business";
+
+export async function refreshRemoteMachines(branchId: string) {
+  return getRemoteMachines(branchId);
+}
+
+export async function refreshRemoteMachineCommands(branchId: string, sourceId: string) {
+  return getRemoteMachineCommands(branchId, sourceId);
+}
+
+export async function requestRemoteMachineCommand(branchId: string, sourceId: string,
+  requestId: string, action: "start" | "pause" | "resume" | "stop" | "set_settings",
+  args: Record<string, unknown> = {}) {
+  return issueRemoteMachineCommand(branchId, sourceId, requestId, action, args);
+}
+
+export type { RemoteMachine, RemoteMachineCommand };
 
 export type MachineActionResponse = {
   success: boolean;

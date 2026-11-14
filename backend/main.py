@@ -9,6 +9,7 @@ from onboarding import router as onboarding_router
 from branches import router as branches_router
 from gateways import router as gateways_router
 from edge import router as edge_router
+from machine_operations import router as machine_operations_router
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -32,6 +33,7 @@ app.include_router(onboarding_router)
 app.include_router(branches_router)
 app.include_router(gateways_router)
 app.include_router(edge_router)
+app.include_router(machine_operations_router)
 
 @app.middleware("http")
 async def retire_unsecured_prototype(request, call_next):

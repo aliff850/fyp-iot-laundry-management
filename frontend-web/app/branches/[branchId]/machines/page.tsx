@@ -3,10 +3,10 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Notice } from "@/components/auth/AuthForm";
 import { BranchWorkspaceShell } from "@/components/workspace/layout/BranchWorkspaceShell";
-import { MachineFleetView } from "@/components/workspace/machines/MachineFleetView";
+import { RemoteMachineView } from "@/components/workspace/machines/RemoteMachineView";
 import {
   getBranch,
-  getBranchMachines,
+  getRemoteMachines,
   getMembership,
 } from "@/lib/auth/business";
 
@@ -22,7 +22,7 @@ export default async function BranchMachinesPage({ params }: BranchMachinesPageP
   const [membershipRes, branchRes, machinesRes] = await Promise.all([
     getMembership(),
     getBranch(branchId),
-    getBranchMachines(branchId),
+    getRemoteMachines(branchId),
   ]);
 
   if (!membershipRes.ok && membershipRes.status === 401) {
@@ -108,34 +108,12 @@ export default async function BranchMachinesPage({ params }: BranchMachinesPageP
       organizationName={orgName}
     >
       <div className="space-y-6">
-        {/* Header Eyebrow & Title */}
-        <div className="flex flex-col gap-1">
-          {/* <span className="text-xs text-muted">Branch Fleet Management</span> */}
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-xl font-semibold tracking-tight text-ink">
-              Commercial Washers & Dryers
-            </h2>
-            <div className="flex items-center gap-2">
-              <span className="rounded border border-positive/30 bg-positive/10 px-2 py-0.5 text-xs font-medium text-positive">
-                {machines.filter(m => m.status !== "OFFLINE" && m.status !== "ERROR").length} Operational
-              </span>
-              {machines.filter(m => m.status === "ERROR").length > 0 && (
-                <span className="rounded border border-negative/30 bg-negative/10 px-2 py-0.5 text-xs font-medium text-negative">
-                  {machines.filter(m => m.status === "ERROR").length} Faulted
-                </span>
-              )}
-            </div>
-          </div>
-          {/* <p className="max-w-2xl text-xs text-muted">
-            Real-time telemetry, operational cycle controls, and factory program parameters for all commercial laundry units provisioned at this location.
-          </p> */}
-        </div>
-
-        {/* Fleet View Interactive Component */}
-        <MachineFleetView
+        <h2 className="text-2xl font-semibold tracking-tight text-ink">Machines</h2>
+        <RemoteMachineView
           initialMachines={machines}
           branchId={branchId}
-          userRole={role}
+          branchOpen={branch.service_status === "open"}
+          role={role}
         />
       </div>
     </BranchWorkspaceShell>
