@@ -523,7 +523,7 @@ def test_get_branch_overview_owner_success(monkeypatch):
             "primary_manager_phone": "+60123456789",
         },
     ]
-    conn.execute.return_value.fetchall.return_value = [
+    conn.execute.return_value.fetchall.side_effect = [[
         {
             "user_id": UUID(USER),
             "full_name": "Dr. Owner",
@@ -532,7 +532,7 @@ def test_get_branch_overview_owner_success(monkeypatch):
             "state": "active",
             "is_primary_manager": True,
         }
-    ]
+    ], []]
     @contextmanager
     def db(**_kwargs):
         yield conn
@@ -561,156 +561,19 @@ def test_get_branch_overview_maintenance_forbidden(monkeypatch):
     assert exc.value.status_code == 403
 
 
-def test_get_branch_machines_owner_success(monkeypatch):
-    branch_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.side_effect = [
-        member("owner", "active"),  # _membership
-        {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},  # branch lookup
-    ]
-    @contextmanager
-    def db(**_kwargs):
-        yield conn
-    monkeypatch.setattr(branches, "_database", db)
-
-    res = branches.get_branch_machines(branch_id, None, {"id": USER})
-    assert "machines" in res
-    assert len(res["machines"]) == 6
-    w01 = next(m for m in res["machines"] if m["id"] == "W-01")
-    assert w01["type"] == "washer"
-    assert w01["parameters"]["price"] == 6.00
-
-
-def test_get_branch_machines_maintenance_projection(monkeypatch):
-    branch_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.side_effect = [
-        member("machine_maintenance", "active"),  # _membership
-        {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},  # branch lookup
-        {"exists": 1},  # assignment check
-    ]
-    @contextmanager
-    def db(**_kwargs):
-        yield conn
-    monkeypatch.setattr(branches, "_database", db)
-
-    res = branches.get_branch_machines(branch_id, None, {"id": USER})
-    assert "machines" in res
-    w01 = next(m for m in res["machines"] if m["id"] == "W-01")
-    assert w01["parameters"]["price"] is None
-
-
-def test_get_branch_machines_lpg_specialist_forbidden(monkeypatch):
-    branch_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.return_value = member("lpg_maintenance", "active")
-    @contextmanager
-    def db(**_kwargs):
-        yield conn
-    monkeypatch.setattr(branches, "_database", db)
-
-    with pytest.raises(HTTPException) as exc:
-        branches.get_branch_machines(branch_id, None, {"id": USER})
-    assert exc.value.status_code == 403
-    assert "LPG specialists cannot access machine management" in exc.value.detail
-
-
-def test_issue_machine_command_lifecycle(monkeypatch):
-    branch_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.side_effect = [
-        member("owner", "active"), member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
-        member("owner", "active"), member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
-        member("owner", "active"), member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
-    ]
-    @contextmanager
-    def db(**_kwargs):
-        yield conn
-    monkeypatch.setattr(branches, "_database", db)
-
-    # W-02 is initially IDLE
-    res_start = branches.issue_machine_command(
-        branch_id, "W-02", branches.MachineCommandRequest(command="start"), {"id": USER}
-    )
-    assert res_start["machine"]["status"] == "RUNNING"
-    assert res_start["machine"]["phase"] == "Wash"
-
-    res_pause = branches.issue_machine_command(
-        branch_id, "W-02", branches.MachineCommandRequest(command="pause"), {"id": USER}
-    )
-    assert res_pause["machine"]["status"] == "PAUSED"
-
-    res_stop = branches.issue_machine_command(
-        branch_id, "W-02", branches.MachineCommandRequest(command="stop"), {"id": USER}
-    )
-    assert res_stop["machine"]["status"] == "IDLE"
-    assert res_stop["machine"]["remaining_time"] == 0
-
-
-def test_issue_machine_command_maintenance_forbidden(monkeypatch):
-    branch_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.return_value = member("machine_maintenance", "active")
-    @contextmanager
-    def db(**_kwargs):
-        yield conn
-    monkeypatch.setattr(branches, "_database", db)
-
-    with pytest.raises(HTTPException) as exc:
-        branches.issue_machine_command(
-            branch_id, "W-02", branches.MachineCommandRequest(command="start"), {"id": USER}
-        )
-    assert exc.value.status_code == 403
-    assert "Maintenance specialists cannot issue machine commands" in exc.value.detail
-
-
-def test_issue_machine_command_invalid_transition(monkeypatch):
-    branch_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.side_effect = [
-        member("owner", "active"), member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
-    ]
-    @contextmanager
-    def db(**_kwargs):
-        yield conn
-    monkeypatch.setattr(branches, "_database", db)
-
-    # W-02 is IDLE, pausing it is invalid
-    with pytest.raises(HTTPException) as exc:
-        branches.issue_machine_command(
-            branch_id, "W-02", branches.MachineCommandRequest(command="pause"), {"id": USER}
-        )
-    assert exc.value.status_code == 400
-
-
-def test_update_machine_parameters_idle_only(monkeypatch):
-    branch_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.side_effect = [
-        member("owner", "active"), member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
-        member("owner", "active"), member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
-    ]
-    @contextmanager
-    def db(**_kwargs):
-        yield conn
-    monkeypatch.setattr(branches, "_database", db)
-
-    # W-02 is IDLE, editing succeeds
-    res = branches.update_machine_parameters(
-        branch_id, "W-02", branches.MachineParametersUpdate(price=7.50, duration_mins=40), {"id": USER}
-    )
-    assert res["success"] is True
-    assert res["machine"]["parameters"]["price"] == 7.50
-    assert res["machine"]["parameters"]["duration_mins"] == 40
-
-    # W-01 is RUNNING, editing must fail
-    with pytest.raises(HTTPException) as exc:
-        branches.update_machine_parameters(
-            branch_id, "W-01", branches.MachineParametersUpdate(price=9.00), {"id": USER}
-        )
-    assert exc.value.status_code == 400
-    assert "Parameters can only be modified while machine is idle" in exc.value.detail
-
+@pytest.mark.parametrize("legacy_call", [
+    lambda branch_id: branches.get_branch_machines(branch_id, None, {"id": USER}),
+    lambda branch_id: branches.get_branch_machine(branch_id, "W-02", {"id": USER}),
+    lambda branch_id: branches.issue_machine_command(
+        branch_id, "W-02", branches.MachineCommandRequest(command="start"), {"id": USER}),
+    lambda branch_id: branches.update_machine_parameters(
+        branch_id, "W-02", branches.MachineParametersUpdate(price=7.50), {"id": USER}),
+])
+def test_legacy_fixture_machine_routes_are_retired(legacy_call):
+    """Old fixture endpoints must never report a machine action as successful."""
+    with pytest.raises(HTTPException) as error:
+        legacy_call(UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+    assert error.value.status_code == 410
 
 def test_get_branch_lpg_owner_success(monkeypatch):
     branch_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")

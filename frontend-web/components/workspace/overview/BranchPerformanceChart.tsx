@@ -164,7 +164,7 @@ export function BranchPerformanceChart({
   const [activeMetric, setActiveMetric] = useState<BranchMetricKey>("revenue");
   const [selectedBranchId, setSelectedBranchId] = useState<string>("all");
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const chartInstanceRef = useRef<Chart | null>(null);
+  const chartInstanceRef = useRef<Chart<"line"> | null>(null);
 
   const chartTitleId = useId();
   const branchFilterId = useId();

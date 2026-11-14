@@ -342,6 +342,54 @@ export interface MachineItem {
   parameters: MachineParameters;
 }
 
+export type RemoteMachine = {
+  source_id: string;
+  type: "washer" | "dryer" | "washer_dryer";
+  source: "simulated" | "physical" | "vendor";
+  label: string;
+  capacity_kg: number | null;
+  state: "idle" | "running" | "paused" | "error" | "unknown";
+  freshness: "fresh" | "stale" | "missing";
+  last_update: string | null;
+  data: {
+    remaining_seconds?: number;
+    fault_code?: string | null;
+    settings?: Record<string, unknown>;
+    programs?: Record<string, Record<string, unknown>>;
+  } | null;
+};
+
+export type RemoteMachineCommand = {
+  command_id: string;
+  action: string;
+  status: "queued" | "dispatched" | "succeeded" | "failed" | "expired" | "unknown";
+  reason: string | null;
+  issued_at: string;
+  result_at: string | null;
+};
+
+export async function getRemoteMachines(branchId: string): Promise<Result<RemoteMachine[]>> {
+  const result = await businessRequest<{ machines: RemoteMachine[] }>(`/branches/${branchId}/machine-state`);
+  if (!result.ok) return result;
+  if (!Array.isArray(result.value?.machines)) return invalid();
+  return { ok: true, value: result.value.machines };
+}
+
+export async function getRemoteMachineCommands(branchId: string, sourceId: string): Promise<Result<RemoteMachineCommand[]>> {
+  const result = await businessRequest<{ commands: RemoteMachineCommand[] }>(
+    `/branches/${branchId}/machine-commands/${encodeURIComponent(sourceId)}`);
+  if (!result.ok) return result;
+  if (!Array.isArray(result.value?.commands)) return invalid();
+  return { ok: true, value: result.value.commands };
+}
+
+export async function issueRemoteMachineCommand(branchId: string, sourceId: string,
+  requestId: string, action: "start" | "pause" | "resume" | "stop" | "set_settings",
+  args: Record<string, unknown> = {}): Promise<Result<{ command_id: string; status: string }>> {
+  return businessRequest(`/branches/${branchId}/machine-commands/${encodeURIComponent(sourceId)}`,
+    "POST", { request_id: requestId, action, arguments: args });
+}
+
 export async function getBranchMachines(branchId: string, type?: string): Promise<Result<MachineItem[]>> {
   const query = type ? `?type=${encodeURIComponent(type)}` : "";
   const result = await businessRequest<{ machines: MachineItem[] }>(`/branches/${branchId}/machines${query}`);
