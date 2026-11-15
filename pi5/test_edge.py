@@ -4,14 +4,44 @@ import json
 import os
 import tempfile
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
 import gateway_config
 from machine_simulator import build_sample
 from ingestion_worker import EdgeIngestionWorker
-from sync_worker import EdgeSyncWorker
+from sync_worker import EdgeSyncWorker, run_worker_iteration
+
+
+def test_sync_iteration_keeps_machine_state_commands_and_cycles():
+    worker = MagicMock()
+    worker.status = "active"
+    run_worker_iteration(worker)
+    assert worker.mock_calls == [call.refresh_gateway_state(),
+        call.sync_machine_operations(), call.run_sync_cycle(), call.sync_machine_cycles()]
+
+
+def test_machine_presence_upload_uses_gateway_auth_and_current_local_identity(monkeypatch):
+    worker = EdgeSyncWorker()
+    worker.status = "active"
+    worker.gateway_id = "gateway-1"
+    worker.credential = "private-test-token"
+    read_conn = MagicMock()
+    cursor = read_conn.cursor.return_value.__enter__.return_value
+    cursor.fetchall.side_effect = [[{"source_id": "washer-sim-01", "boot_id": "boot-1",
+        "sequence": 7, "last_seen_at": datetime(2026, 11, 15, 4),
+        "state_payload": json.dumps({"state": "idle", "simulation": True})}], []]
+    monkeypatch.setattr(worker, "get_state_db_connection", lambda: read_conn)
+    worker.session = MagicMock()
+    worker.session.post.return_value.status_code = 200
+    worker.session.get.return_value.json.return_value = {"commands": []}
+    worker.sync_machine_operations()
+    args, kwargs = worker.session.post.call_args_list[0]
+    assert args[0].endswith("/edge/machine-state")
+    assert kwargs["json"]["source_id"] == "washer-sim-01"
+    assert kwargs["json"]["sequence"] == 7
+    assert kwargs["headers"]["Authorization"] == "Bearer private-test-token"
 
 
 def test_cycle_sync_acknowledges_only_submitted_committed_ids(monkeypatch):
