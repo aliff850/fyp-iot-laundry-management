@@ -14,6 +14,45 @@ from ingestion_worker import EdgeIngestionWorker
 from sync_worker import EdgeSyncWorker
 
 
+def test_cycle_sync_acknowledges_only_submitted_committed_ids(monkeypatch):
+    worker = EdgeSyncWorker()
+    worker.gateway_id = "gateway-1"
+    worker.credential = "private-test-token"
+    conn = MagicMock()
+    cursor = conn.cursor.return_value.__enter__.return_value
+    cycle = {"cycle_id": "11111111-1111-1111-1111-111111111111",
+        "source_id": "washer-sim-01", "program_id": "quick", "price_myr": 4,
+        "target_seconds": 30, "running_seconds": 20, "outcome": "completed",
+        "started_at": datetime(2026, 11, 14, 1), "finished_at": datetime(2026, 11, 14, 1, 1)}
+    cursor.fetchall.side_effect = [[cycle], []]
+    monkeypatch.setattr(worker, "get_db_connection", lambda: conn)
+    worker.session = MagicMock()
+    response = worker.session.post.return_value
+    response.json.return_value = {"accepted_cycle_ids": [cycle["cycle_id"]], "rejected": []}
+    assert worker.sync_machine_cycles() == 1
+    assert any("cloud_acknowledged_at=UTC_TIMESTAMP" in call.args[0]
+        for call in cursor.execute.call_args_list)
+    conn.commit.assert_called_once()
+
+
+def test_cycle_sync_rejects_unsubmitted_acknowledgement(monkeypatch):
+    worker = EdgeSyncWorker()
+    worker.gateway_id = "gateway-1"
+    worker.credential = "private-test-token"
+    conn = MagicMock()
+    cursor = conn.cursor.return_value.__enter__.return_value
+    cursor.fetchall.side_effect = [[{"cycle_id": "11111111-1111-1111-1111-111111111111",
+        "source_id": "washer-sim-01", "program_id": "quick", "price_myr": 4,
+        "target_seconds": 30, "running_seconds": 20, "outcome": "completed",
+        "started_at": datetime(2026, 11, 14, 1), "finished_at": datetime(2026, 11, 14, 1, 1)}], []]
+    monkeypatch.setattr(worker, "get_db_connection", lambda: conn)
+    worker.session = MagicMock()
+    worker.session.post.return_value.json.return_value = {
+        "accepted_cycle_ids": ["22222222-2222-2222-2222-222222222222"], "rejected": []}
+    assert worker.sync_machine_cycles() == 0
+    conn.commit.assert_not_called()
+
+
 def test_gateway_credentials_generation():
     with tempfile.TemporaryDirectory() as tmpdir:
         cred_file = os.path.join(tmpdir, "test_gateway.json")

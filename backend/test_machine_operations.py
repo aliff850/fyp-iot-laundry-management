@@ -82,3 +82,33 @@ def test_non_washer_settings_are_rejected_before_queueing(monkeypatch):
         machines.create_machine_command(BRANCH, "dryer-sim-01", body, {"id": uuid4()})
     assert error.value.status_code == 422
     assert not any("insert into public.machine_commands" in call.args[0] for call in conn.execute.call_args_list)
+
+
+def test_cycle_batch_rejects_inconsistent_running_time_without_writing(monkeypatch):
+    conn = MagicMock()
+    monkeypatch.setattr(machines, "_database", mock_db(conn))
+    body = machines.EdgeCycleBatch(cycles=[machines.EdgeCycle(
+        cycle_id=uuid4(), source_id="washer-sim-01", program_id="quick",
+        price_myr="4.00", target_seconds=30, running_seconds=20,
+        outcome="completed", started_at=datetime.now(timezone.utc) - timedelta(seconds=30),
+        finished_at=datetime.now(timezone.utc),
+        daily_runtime=[machines.CycleDay(local_date=datetime.now(timezone.utc).date(),
+                                         running_seconds=19)],
+    )])
+    result = machines.upload_machine_cycles(body, {"id": GATEWAY, "status": "active"})
+    assert result["accepted_cycle_ids"] == []
+    assert result["rejected"][0]["reason"] == "Invalid cycle timing or allocation"
+    conn.execute.assert_not_called()
+
+
+def test_statistics_requires_financially_authorized_membership(monkeypatch):
+    conn = MagicMock()
+    monkeypatch.setattr(machines, "_database", mock_db(conn))
+    def deny(_conn, _user_id, _branch_id, roles):
+        assert roles == ("owner", "branch_manager")
+        raise HTTPException(403, "Not permitted")
+    monkeypatch.setattr(machines, "_authorize_branch_access", deny)
+    with pytest.raises(HTTPException) as error:
+        machines.machine_statistics(BRANCH, "washer-sim-01", "week", {"id": uuid4()})
+    assert error.value.status_code == 403
+    conn.execute.assert_not_called()

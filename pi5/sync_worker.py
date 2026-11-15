@@ -11,6 +11,7 @@ import signal
 import sys
 import time
 import uuid
+from datetime import timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -353,6 +354,7 @@ class EdgeSyncWorker:
 
         # Sync discoveries
         self.sync_discoveries()
+        self.sync_machine_cycles()
 
         # Sync telemetry
         records = self.fetch_pending_telemetry(limit=BATCH_SIZE)
@@ -474,6 +476,86 @@ class EdgeSyncWorker:
         except requests.exceptions.RequestException as err:
             logger.warning("Network failure connecting to cloud (%s). Backing off.", err)
             self.backoff_delay = min(self.backoff_delay * 1.5, MAX_BACKOFF_SECONDS)
+            return 0
+
+    def sync_machine_cycles(self) -> int:
+        """Upload durable simulator outcomes; only explicit committed IDs are acknowledged."""
+        conn = self.get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute("""SELECT cycle_id,source_id,program_id,price_myr,target_seconds,
+                running_seconds,outcome,started_at,finished_at FROM machine_cycles
+                WHERE gateway_id=%s AND cloud_acknowledged_at IS NULL
+                AND cloud_rejection_reason IS NULL
+                ORDER BY finished_at,cycle_id LIMIT 50""", (self.gateway_id,))
+            rows = cursor.fetchall()
+            if not rows:
+                return 0
+            ids = [row["cycle_id"] for row in rows]
+            placeholders = ",".join(["%s"] * len(ids))
+            cursor.execute(f"""SELECT cycle_id,local_date,running_seconds
+                FROM machine_cycle_daily_runtime WHERE gateway_id=%s
+                AND cycle_id IN ({placeholders}) ORDER BY local_date""",
+                (self.gateway_id, *ids))
+            allocations = cursor.fetchall()
+        by_cycle = {}
+        for allocation in allocations:
+            by_cycle.setdefault(allocation["cycle_id"], []).append({
+                "local_date": str(allocation["local_date"]),
+                "running_seconds": allocation["running_seconds"]})
+        payload = []
+        for row in rows:
+            daily = by_cycle.get(row["cycle_id"])
+            if daily is None:
+                # Older outcomes predate daily allocation; allocate to Malaysia end date.
+                from zoneinfo import ZoneInfo
+                day = row["finished_at"].replace(tzinfo=timezone.utc).astimezone(
+                    ZoneInfo("Asia/Kuala_Lumpur")).date()
+                daily = [{"local_date": str(day), "running_seconds": row["running_seconds"]}]
+            payload.append({"cycle_id": row["cycle_id"], "source_id": row["source_id"],
+                "program_id": row["program_id"], "price_myr": str(row["price_myr"]),
+                "target_seconds": row["target_seconds"], "running_seconds": row["running_seconds"],
+                "outcome": row["outcome"],
+                "started_at": row["started_at"].replace(tzinfo=timezone.utc).isoformat(),
+                "finished_at": row["finished_at"].replace(tzinfo=timezone.utc).isoformat(),
+                "daily_runtime": daily})
+        try:
+            response = self.session.post(f"{CLOUD_BASE_URL}/edge/machine-cycles/batch",
+                json={"cycles": payload},
+                headers={"Authorization": f"Bearer {self.credential}"},
+                timeout=API_TIMEOUT_SECONDS)
+            response.raise_for_status()
+            result = response.json()
+            accepted = result.get("accepted_cycle_ids")
+            submitted = set(ids)
+            if (not isinstance(accepted, list) or
+                    any(not isinstance(item, str) or item not in submitted for item in accepted)):
+                logger.warning("Malformed machine cycle acknowledgement; retaining batch")
+                return 0
+            if accepted:
+                with conn.cursor() as cursor:
+                    marks = ",".join(["%s"] * len(accepted))
+                    cursor.execute(f"""UPDATE machine_cycles SET cloud_acknowledged_at=UTC_TIMESTAMP(6)
+                        WHERE gateway_id=%s AND cycle_id IN ({marks})
+                        AND cloud_acknowledged_at IS NULL""", (self.gateway_id, *accepted))
+                conn.commit()
+            rejected = result.get("rejected", [])
+            if isinstance(rejected, list):
+                quarantined = False
+                with conn.cursor() as cursor:
+                    for item in rejected:
+                        if (isinstance(item, dict) and item.get("cycle_id") in submitted
+                                and item.get("reason") == "Conflicting cycle ID"):
+                            cursor.execute("""UPDATE machine_cycles SET cloud_rejection_reason=%s
+                                WHERE gateway_id=%s AND cycle_id=%s AND cloud_acknowledged_at IS NULL""",
+                                (item["reason"], self.gateway_id, item["cycle_id"]))
+                            quarantined = True
+                        if isinstance(item, dict):
+                            logger.warning("Machine cycle rejected by cloud: %s", item.get("reason", "unknown"))
+                if quarantined:
+                    conn.commit()
+            return len(accepted)
+        except requests.exceptions.RequestException as error:
+            logger.warning("Machine cycle sync failed: %s", type(error).__name__)
             return 0
 
     def close(self):

@@ -1,11 +1,13 @@
 """Protected cloud machine state and command boundary for approved simulators."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 import hashlib
 import json
 import re
 from typing import Any, Literal
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -38,12 +40,147 @@ class EdgeCommandResult(BaseModel):
     reason: str | None = Field(default=None, max_length=120)
 
 
+class CycleDay(BaseModel):
+    local_date: date
+    running_seconds: int = Field(ge=0)
+
+
+class EdgeCycle(BaseModel):
+    cycle_id: UUID
+    source_id: str = Field(min_length=1, max_length=100)
+    program_id: str = Field(min_length=1, max_length=32)
+    price_myr: Decimal = Field(ge=0, max_digits=9, decimal_places=2)
+    target_seconds: int = Field(ge=0)
+    running_seconds: int = Field(ge=0)
+    outcome: Literal["completed", "stopped", "faulted", "interrupted"]
+    started_at: datetime
+    finished_at: datetime
+    daily_runtime: list[CycleDay] = Field(max_length=100)
+
+
+class EdgeCycleBatch(BaseModel):
+    cycles: list[EdgeCycle] = Field(max_length=50)
+
+
 def _active_device(conn, gateway_id, source_id):
     return conn.execute("""select id, organization_id, branch_id, gateway_id, source_id,
         device_type, source_kind, label, capacity_kg from public.devices
         where gateway_id=%s and source_id=%s and status='active'
         and source_kind='simulated' and device_type in ('washer','dryer','washer_dryer')""",
         (gateway_id, source_id)).fetchone()
+
+
+@router.post("/edge/machine-cycles/batch")
+def upload_machine_cycles(body: EdgeCycleBatch, gateway=Depends(_gateway)):
+    if gateway["status"] != "active":
+        raise HTTPException(403, "Gateway is not active")
+    if len({cycle.cycle_id for cycle in body.cycles}) != len(body.cycles):
+        raise HTTPException(422, "Repeated cycle ID in batch")
+    acknowledged = []
+    rejected = []
+    with _database() as conn:
+        for cycle in body.cycles:
+            days = [(day.local_date, day.running_seconds) for day in cycle.daily_runtime]
+            if (cycle.started_at.tzinfo is None or cycle.finished_at.tzinfo is None
+                    or cycle.finished_at < cycle.started_at
+                    or len({day for day, _ in days}) != len(days)
+                    or sum(seconds for _, seconds in days) != cycle.running_seconds):
+                rejected.append({"cycle_id": str(cycle.cycle_id), "reason": "Invalid cycle timing or allocation"})
+                continue
+            with conn.transaction():
+                conn.execute("select pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                             (str(cycle.cycle_id),))
+                device = _active_device(conn, gateway["id"], cycle.source_id)
+                if not device:
+                    rejected.append({"cycle_id": str(cycle.cycle_id), "reason": "Approved simulator not found"})
+                    continue
+                stored = conn.execute("""select device_id,program_id,price_myr,target_seconds,running_seconds,
+                    outcome,started_at,finished_at from public.machine_cycles
+                    where gateway_id=%s and cycle_id=%s for update""",
+                    (gateway["id"], cycle.cycle_id)).fetchone()
+                expected = (device["id"], cycle.program_id, cycle.price_myr,
+                    cycle.target_seconds, cycle.running_seconds, cycle.outcome,
+                    cycle.started_at, cycle.finished_at)
+                if stored:
+                    existing_days = conn.execute("""select local_date,running_seconds from public.machine_cycle_daily_runtime
+                        where gateway_id=%s and cycle_id=%s order by local_date""",
+                        (gateway["id"], cycle.cycle_id)).fetchall()
+                    actual = tuple(stored[key] for key in ("device_id", "program_id", "price_myr",
+                        "target_seconds", "running_seconds", "outcome", "started_at", "finished_at"))
+                    if actual != expected or [(r["local_date"], r["running_seconds"]) for r in existing_days] != sorted(days):
+                        rejected.append({"cycle_id": str(cycle.cycle_id), "reason": "Conflicting cycle ID"})
+                        continue
+                else:
+                    conn.execute("""insert into public.machine_cycles
+                        (gateway_id,cycle_id,device_id,branch_id,organization_id,program_id,price_myr,
+                         target_seconds,running_seconds,outcome,started_at,finished_at)
+                        values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        (gateway["id"], cycle.cycle_id, device["id"], gateway["branch_id"],
+                         gateway["organization_id"], cycle.program_id, cycle.price_myr,
+                         cycle.target_seconds, cycle.running_seconds, cycle.outcome,
+                         cycle.started_at, cycle.finished_at))
+                    for day, seconds in days:
+                        conn.execute("""insert into public.machine_cycle_daily_runtime
+                            (gateway_id,cycle_id,local_date,running_seconds) values (%s,%s,%s,%s)""",
+                            (gateway["id"], cycle.cycle_id, day, seconds))
+                acknowledged.append(str(cycle.cycle_id))
+    return {"accepted_cycle_ids": acknowledged, "rejected": rejected}
+
+
+@router.get("/branches/{branch_id}/machines/{source_id}/statistics")
+def machine_statistics(branch_id: UUID, source_id: str,
+                       period: Literal["day", "week", "month"] = "week", user=Depends(_user)):
+    zone = ZoneInfo("Asia/Kuala_Lumpur")
+    today = datetime.now(zone).date()
+    first = today - timedelta(days={"day": 1, "week": 7, "month": 30}[period] - 1)
+    start = datetime.combine(first, datetime.min.time(), tzinfo=zone).astimezone(timezone.utc)
+    with _database(read_only=True) as conn:
+        member, _ = _authorize_branch_access(conn, user["id"], branch_id, ("owner", "branch_manager"))
+        device = conn.execute("""select id from public.devices where branch_id=%s and organization_id=%s
+            and source_id=%s and status='active' and source_kind='simulated'
+            and device_type in ('washer','dryer','washer_dryer')""",
+            (branch_id, member["organization_id"], source_id)).fetchone()
+        if not device:
+            raise HTTPException(404, "Approved simulator not found")
+        rows = conn.execute("""select cycle_id,program_id,price_myr,running_seconds,outcome,finished_at
+            from public.machine_cycles where device_id=%s and finished_at >= %s
+            order by finished_at,cycle_id""", (device["id"], start)).fetchall()
+        daily = conn.execute("""select r.cycle_id,r.local_date,r.running_seconds
+            from public.machine_cycle_daily_runtime r join public.machine_cycles c
+            on c.gateway_id=r.gateway_id and c.cycle_id=r.cycle_id
+            where c.device_id=%s and r.local_date >= %s""", (device["id"], first)).fetchall()
+    buckets = {}
+    def bucket(day):
+        return buckets.setdefault(str(day), {"timestamp": str(day), "cycles": 0,
+            "stopped": 0, "running_seconds": 0, "revenue_myr": Decimal("0.00")})
+    events = []
+    for row in rows:
+        day = row["finished_at"].astimezone(zone).date()
+        if day < first:
+            continue
+        entry = bucket(day)
+        if row["outcome"] == "completed":
+            entry["cycles"] += 1
+            entry["revenue_myr"] += row["price_myr"]
+        if row["outcome"] == "stopped":
+            entry["stopped"] += 1
+        events.append({"cycle_id": str(row["cycle_id"]), "program_id": row["program_id"],
+            "outcome": row["outcome"], "running_seconds": row["running_seconds"],
+            "price_myr": str(row["price_myr"]), "local_date": str(day),
+            "finished_at": row["finished_at"].isoformat()})
+    for row in daily:
+        bucket(row["local_date"])["running_seconds"] += row["running_seconds"]
+    series = [{**item, "revenue_myr": str(item["revenue_myr"])}
+              for _, item in sorted(buckets.items())]
+    return {"source_id": source_id, "period": period, "timezone": "Asia/Kuala_Lumpur",
+        "source_kind": "simulated", "coverage": "recorded_cycles_since_enablement",
+        "summary": {"completed_cycles": sum(item["cycles"] for item in series),
+            "running_seconds": sum(item["running_seconds"] for item in series),
+            "estimated_revenue_myr": str(sum((Decimal(item["revenue_myr"]) for item in series), Decimal("0.00"))),
+            "stopped": sum(event["outcome"] == "stopped" for event in events),
+            "faulted": sum(event["outcome"] == "faulted" for event in events),
+            "interrupted": sum(event["outcome"] == "interrupted" for event in events)},
+        "series": series, "events": events}
 
 
 @router.post("/edge/machine-state")
