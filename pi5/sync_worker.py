@@ -524,7 +524,7 @@ class EdgeSyncWorker:
             response = self.session.post(f"{CLOUD_BASE_URL}/edge/machine-cycles/batch",
                 json={"cycles": payload},
                 headers={"Authorization": f"Bearer {self.credential}"},
-                timeout=API_TIMEOUT_SECONDS)
+                timeout=max(API_TIMEOUT_SECONDS, 45))
             response.raise_for_status()
             result = response.json()
             accepted = result.get("accepted_cycle_ids")
