@@ -30,6 +30,7 @@ def test_cycle_sync_acknowledges_only_submitted_committed_ids(monkeypatch):
     response = worker.session.post.return_value
     response.json.return_value = {"accepted_cycle_ids": [cycle["cycle_id"]], "rejected": []}
     assert worker.sync_machine_cycles() == 1
+    conn.rollback.assert_called_once()
     assert any("cloud_acknowledged_at=UTC_TIMESTAMP" in call.args[0]
         for call in cursor.execute.call_args_list)
     conn.commit.assert_called_once()
@@ -50,6 +51,7 @@ def test_cycle_sync_rejects_unsubmitted_acknowledgement(monkeypatch):
     worker.session.post.return_value.json.return_value = {
         "accepted_cycle_ids": ["22222222-2222-2222-2222-222222222222"], "rejected": []}
     assert worker.sync_machine_cycles() == 0
+    conn.rollback.assert_called_once()
     conn.commit.assert_not_called()
 
 

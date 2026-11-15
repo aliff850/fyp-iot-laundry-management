@@ -489,6 +489,7 @@ class EdgeSyncWorker:
                 ORDER BY finished_at,cycle_id LIMIT 50""", (self.gateway_id,))
             rows = cursor.fetchall()
             if not rows:
+                conn.rollback()
                 return 0
             ids = [row["cycle_id"] for row in rows]
             placeholders = ",".join(["%s"] * len(ids))
@@ -497,6 +498,7 @@ class EdgeSyncWorker:
                 AND cycle_id IN ({placeholders}) ORDER BY local_date""",
                 (self.gateway_id, *ids))
             allocations = cursor.fetchall()
+        conn.rollback()  # Release the read snapshot before the HTTPS request.
         by_cycle = {}
         for allocation in allocations:
             by_cycle.setdefault(allocation["cycle_id"], []).append({
