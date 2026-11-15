@@ -55,6 +55,23 @@ def test_cycle_sync_rejects_unsubmitted_acknowledgement(monkeypatch):
     conn.commit.assert_not_called()
 
 
+def test_cycle_sync_keeps_batch_on_malformed_json(monkeypatch):
+    worker = EdgeSyncWorker()
+    worker.gateway_id = "gateway-1"
+    worker.credential = "private-test-token"
+    conn = MagicMock()
+    cursor = conn.cursor.return_value.__enter__.return_value
+    cursor.fetchall.side_effect = [[{"cycle_id": "11111111-1111-1111-1111-111111111111",
+        "source_id": "washer-sim-01", "program_id": "quick", "price_myr": 4,
+        "target_seconds": 30, "running_seconds": 20, "outcome": "completed",
+        "started_at": datetime(2026, 11, 14, 1), "finished_at": datetime(2026, 11, 14, 1, 1)}], []]
+    monkeypatch.setattr(worker, "get_db_connection", lambda: conn)
+    worker.session = MagicMock()
+    worker.session.post.return_value.json.side_effect = ValueError("invalid JSON")
+    assert worker.sync_machine_cycles() == 0
+    conn.commit.assert_not_called()
+
+
 def test_gateway_credentials_generation():
     with tempfile.TemporaryDirectory() as tmpdir:
         cred_file = os.path.join(tmpdir, "test_gateway.json")

@@ -527,6 +527,9 @@ class EdgeSyncWorker:
                 timeout=max(API_TIMEOUT_SECONDS, 45))
             response.raise_for_status()
             result = response.json()
+            if not isinstance(result, dict):
+                logger.warning("Malformed machine cycle response; retaining batch")
+                return 0
             accepted = result.get("accepted_cycle_ids")
             submitted = set(ids)
             if (not isinstance(accepted, list) or
@@ -556,7 +559,7 @@ class EdgeSyncWorker:
                 if quarantined:
                     conn.commit()
             return len(accepted)
-        except requests.exceptions.RequestException as error:
+        except (requests.exceptions.RequestException, ValueError) as error:
             logger.warning("Machine cycle sync failed: %s", type(error).__name__)
             return 0
 
