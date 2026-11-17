@@ -4,10 +4,19 @@ import React, { useEffect, useRef } from "react";
 import Chart from "chart.js/auto";
 import type { ChartConfiguration } from "chart.js";
 
+export type ChartTokenName =
+  | "accent"
+  | "positive"
+  | "warning"
+  | "navy-selected"
+  | "muted"
+  | "control";
+
 export interface ChartDataset {
   label: string;
   data: number[];
-  color: string;
+  token?: ChartTokenName;
+  color?: string;
   fill?: boolean;
   backgroundColor?: string;
   borderColor?: string;
@@ -18,6 +27,9 @@ export interface MachineStatisticsChartProps {
   subtitle?: string;
   unit: string;
   type?: "line" | "bar";
+  stacked?: boolean;
+  showLegend?: boolean;
+  precision?: number;
   labels: string[];
   datasets: ChartDataset[];
   height?: number;
@@ -25,15 +37,39 @@ export interface MachineStatisticsChartProps {
   ariaLabel?: string;
 }
 
+const TOKEN_FALLBACKS: Record<string, string> = {
+  accent: "#ef6268",
+  positive: "#79c5a6",
+  warning: "#dfb463",
+  "navy-selected": "#223d5b",
+  muted: "#b4b4ba",
+  control: "#8c8a93",
+  ink: "#f2f2f3",
+  line: "#2c2b30",
+  surface: "#131217",
+};
+
+function resolveThemeColor(token: string): string {
+  if (typeof window !== "undefined") {
+    const val = getComputedStyle(document.documentElement)
+      .getPropertyValue(`--color-${token}`)
+      .trim();
+    if (val) return val;
+  }
+  return TOKEN_FALLBACKS[token] ?? "#f2f2f3";
+}
+
 export function MachineStatisticsChart({
   title,
   subtitle,
   unit,
   type = "line",
+  stacked = false,
+  showLegend,
+  precision,
   labels,
   datasets,
-  height = 200,
-  footerNote,
+  footerNote = "Exact values are available in the table below.",
   ariaLabel,
 }: MachineStatisticsChartProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -43,38 +79,44 @@ export function MachineStatisticsChart({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Safely destroy existing chart instance
     if (chartInstanceRef.current) {
       chartInstanceRef.current.destroy();
       chartInstanceRef.current = null;
     }
 
-    const chartDatasets = datasets.map(ds => {
-      const isBar = type === "bar";
+    const inkColor = resolveThemeColor("ink");
+    const mutedColor = resolveThemeColor("muted");
+    const lineColor = resolveThemeColor("line");
+    const surfaceColor = resolveThemeColor("surface");
+
+    const reduceMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
+    const isBar = type === "bar";
+
+    const chartDatasets = datasets.map((ds) => {
+      const resolvedColor =
+        ds.color ?? (ds.token ? resolveThemeColor(ds.token) : resolveThemeColor("accent"));
       const bg =
         ds.backgroundColor ??
-        (isBar
-          ? ds.color
-          : ds.fill
-          ? `${ds.color}20` // 12% opacity tint for area fill
-          : "transparent");
+        (isBar ? resolvedColor : ds.fill ? `${resolvedColor}20` : resolvedColor);
 
       return {
         label: ds.label,
         data: ds.data,
-        borderColor: ds.borderColor ?? ds.color,
+        borderColor: ds.borderColor ?? resolvedColor,
         backgroundColor: bg,
-        borderWidth: isBar ? 0 : 2.5,
-        tension: 0.35,
+        borderWidth: isBar ? 0 : 2,
+        tension: 0.2,
         fill: ds.fill ?? false,
-        borderRadius: isBar ? 4 : 0,
-        pointBackgroundColor: ds.color,
-        pointBorderColor: "#131217",
-        pointBorderWidth: 2,
-        pointRadius: 4,
-        pointHoverRadius: 6,
+        borderRadius: isBar ? 3 : 0,
+        pointRadius: isBar ? 0 : 4,
+        pointHoverRadius: isBar ? 0 : 6,
       };
     });
+
+    const displayLegend = showLegend ?? (isBar || datasets.length > 1);
 
     const config: ChartConfiguration<"line" | "bar"> = {
       type,
@@ -85,33 +127,64 @@ export function MachineStatisticsChart({
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        animation: reduceMotion ? false : { duration: 250 },
+        scales: {
+          x: {
+            stacked: isBar && stacked,
+            ticks: {
+              color: mutedColor,
+              maxRotation: 0,
+              font: {
+                family: "Manrope, ui-sans-serif, system-ui, sans-serif",
+                size: 11,
+              },
+            },
+            grid: {
+              display: false,
+            },
+          },
+          y: {
+            stacked: isBar && stacked,
+            beginAtZero: true,
+            ticks: {
+              color: mutedColor,
+              precision: precision ?? (isBar ? 0 : 1),
+              font: {
+                family: "Manrope, ui-sans-serif, system-ui, sans-serif",
+                size: 11,
+              },
+              callback: (value) => {
+                if (unit === "MYR") return `RM ${value}`;
+                return `${value}`;
+              },
+            },
+            grid: {
+              color: lineColor,
+            },
+          },
+        },
         plugins: {
           legend: {
-            display: datasets.length > 1,
-            position: "top",
-            align: "end",
+            display: displayLegend,
             labels: {
-              color: "#b4b4ba",
-              boxWidth: 10,
-              boxHeight: 10,
-              padding: 12,
+              color: inkColor,
               font: {
-                family: "ui-sans-serif, system-ui, sans-serif",
+                family: "Manrope, ui-sans-serif, system-ui, sans-serif",
                 size: 11,
               },
             },
           },
           tooltip: {
             enabled: true,
-            backgroundColor: "#131217",
-            borderColor: "#2c2b30",
+            backgroundColor: surfaceColor,
+            borderColor: lineColor,
             borderWidth: 1,
-            titleColor: "#f2f2f3",
-            bodyColor: "#b4b4ba",
+            titleColor: inkColor,
+            bodyColor: mutedColor,
             padding: 10,
             cornerRadius: 4,
             callbacks: {
-              label: context => {
+              label: (context) => {
                 const val = context.parsed.y;
                 if (val === null || val === undefined) {
                   return `${context.dataset.label}: —`;
@@ -119,40 +192,10 @@ export function MachineStatisticsChart({
                 if (unit === "MYR") {
                   return `${context.dataset.label}: RM ${val.toFixed(2)}`;
                 }
-                return `${context.dataset.label}: ${val} ${unit}`;
-              },
-            },
-          },
-        },
-        scales: {
-          x: {
-            grid: {
-              color: "#242328",
-              tickColor: "#2c2b30",
-            },
-            ticks: {
-              color: "#94949d",
-              font: {
-                family: "ui-sans-serif, system-ui, sans-serif",
-                size: 11,
-              },
-            },
-          },
-          y: {
-            beginAtZero: true,
-            grid: {
-              color: "#242328",
-              tickColor: "#2c2b30",
-            },
-            ticks: {
-              color: "#94949d",
-              font: {
-                family: "ui-sans-serif, system-ui, sans-serif",
-                size: 11,
-              },
-              callback: value => {
-                if (unit === "MYR") return `RM ${value}`;
-                return `${value}`;
+                if (unit === "min") {
+                  return `${context.dataset.label}: ${val.toFixed(1)} min`;
+                }
+                return `${context.dataset.label}: ${val}${unit ? ` ${unit}` : ""}`;
               },
             },
           },
@@ -168,31 +211,29 @@ export function MachineStatisticsChart({
         chartInstanceRef.current = null;
       }
     };
-  }, [type, labels, datasets, unit]);
+  }, [type, stacked, showLegend, precision, labels, datasets, unit]);
 
   return (
-    <div className="rounded-md border border-line bg-surface p-5 space-y-4">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rule pb-3">
-        <h3 className="text-xs font-semibold text-ink">{title}</h3>
+    <figure className="space-y-4 rounded-md border border-rule bg-raised p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-base font-semibold text-ink">{title}</h3>
         {subtitle && <span className="text-xs text-muted">{subtitle}</span>}
       </div>
 
-      {/* Chart Canvas Container */}
-      <div className="relative w-full overflow-hidden" style={{ height: `${height}px` }}>
+      <div className="relative h-56 w-full sm:h-64">
         <canvas
           ref={canvasRef}
+          className="h-full w-full"
           role="img"
           aria-label={ariaLabel || `${title} visualization`}
         />
-        {/* Screen Reader Data Table Fallback */}
         <div className="sr-only">
           <p>{title}</p>
           <table>
             <thead>
               <tr>
                 <th>Date</th>
-                {datasets.map(ds => (
+                {datasets.map((ds) => (
                   <th key={ds.label}>{ds.label}</th>
                 ))}
               </tr>
@@ -201,7 +242,7 @@ export function MachineStatisticsChart({
               {labels.map((lbl, idx) => (
                 <tr key={lbl}>
                   <td>{lbl}</td>
-                  {datasets.map(ds => (
+                  {datasets.map((ds) => (
                     <td key={ds.label}>
                       {ds.data[idx]} {unit}
                     </td>
@@ -213,13 +254,7 @@ export function MachineStatisticsChart({
         </div>
       </div>
 
-      {/* Optional Contextual Footnote */}
-      {footerNote && (
-        <p className="text-[11px] text-muted border-t border-rule/60 pt-2.5">
-          {footerNote}
-        </p>
-      )}
-    </div>
+      {footerNote && <figcaption className="text-xs text-muted">{footerNote}</figcaption>}
+    </figure>
   );
 }
-

@@ -3,9 +3,11 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Notice } from "@/components/auth/AuthForm";
 import { BranchWorkspaceShell } from "@/components/workspace/layout/BranchWorkspaceShell";
-import { RemoteMachineView } from "@/components/workspace/machines/RemoteMachineView";
+import { RemoteMachineFleet } from "@/components/workspace/machines/RemoteMachineFleet";
+import { BranchRecordsTable } from "@/components/workspace/records/BranchRecordsTable";
 import {
   getBranch,
+  getBranchRecords,
   getRemoteMachines,
   getMembership,
 } from "@/lib/auth/business";
@@ -19,10 +21,11 @@ interface BranchMachinesPageProps {
 
 export default async function BranchMachinesPage({ params }: BranchMachinesPageProps) {
   const { branchId } = await params;
-  const [membershipRes, branchRes, machinesRes] = await Promise.all([
+  const [membershipRes, branchRes, machinesRes, recordsRes] = await Promise.all([
     getMembership(),
     getBranch(branchId),
     getRemoteMachines(branchId),
+    getBranchRecords(branchId, "machines", "all", 1, 10),
   ]);
 
   if (!membershipRes.ok && membershipRes.status === 401) {
@@ -109,11 +112,21 @@ export default async function BranchMachinesPage({ params }: BranchMachinesPageP
     >
       <div className="space-y-6">
         <h2 className="text-2xl font-semibold tracking-tight text-ink">Machines</h2>
-        <RemoteMachineView
+        <RemoteMachineFleet
           initialMachines={machines}
           branchId={branchId}
           branchOpen={branch.service_status === "open"}
           role={role}
+        />
+        <BranchRecordsTable
+          key={`machine-records-${branch.id}`}
+          branchId={branch.id}
+          allowedScopes={["machines"]}
+          defaultScope="machines"
+          title="Machine cycle records"
+          showPrice={role !== "machine_maintenance"}
+          initialData={recordsRes.ok ? recordsRes.value : null}
+          initialError={recordsRes.ok ? null : recordsRes.message}
         />
       </div>
     </BranchWorkspaceShell>

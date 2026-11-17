@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { Building2, Users, WashingMachine } from "lucide-react";
 import { SignOutButton } from "@/components/auth/SignOutButton";
+import { NotificationCenter } from "@/components/workspace/notifications/NotificationCenter";
 import {
   WorkspaceNav,
   type WorkspaceNavItem,
@@ -11,13 +12,20 @@ export function WorkspaceShell({
   title,
   organization,
   owner = false,
+  notificationsEnabled,
+  currentBranchId,
+  userRole = null,
   children,
 }: {
   title: string;
   organization?: string;
   owner?: boolean;
-  children: ReactNode;
+  notificationsEnabled?: boolean;
+  currentBranchId?: string;
+  userRole?: string | null;
+  children?: ReactNode;
 }) {
+  const showNotifications = notificationsEnabled ?? Boolean(organization);
   const isBranches = title === "Branches" || title === "Create branch";
   const isPersonnel = title === "Personnel" || title === "Requests";
   const isAccount = title === "Account";
@@ -61,12 +69,19 @@ export function WorkspaceShell({
             <span>SpinSense</span>
           </Link>
 
-          <div className="flex items-center gap-3 md:gap-4">
+          <div className="flex items-center gap-2 sm:gap-3 md:gap-4">
             <WorkspaceNav
               items={navItems}
               activeId={activeId}
               ariaLabel="Operator navigation"
             />
+
+            {showNotifications && (
+              <NotificationCenter
+                currentBranchId={currentBranchId}
+                userRole={userRole}
+              />
+            )}
 
             <div className="hidden md:block">
               <SignOutButton />

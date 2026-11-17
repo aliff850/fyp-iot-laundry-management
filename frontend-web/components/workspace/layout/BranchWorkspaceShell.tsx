@@ -91,7 +91,14 @@ export function BranchWorkspaceShell({
   ];
 
   return (
-    <WorkspaceShell title="Branches" organization={organizationName} owner={isOwner}>
+    <WorkspaceShell
+      title="Branches"
+      organization={organizationName}
+      owner={isOwner}
+      notificationsEnabled
+      currentBranchId={branch.id}
+      userRole={userRole}
+    >
       <div className="space-y-6 md:space-y-8">
         {/* Breadcrumb Bar */}
         <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-xs text-muted">

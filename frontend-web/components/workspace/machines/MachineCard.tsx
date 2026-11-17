@@ -5,20 +5,23 @@ import {
   Play,
   Pause,
   Square,
-  Unlock,
   SlidersHorizontal,
-  Clock,
-  Tag,
 } from "lucide-react";
-import type { MachineItem } from "@/lib/auth/business";
-import { executeMachineCommand } from "@/app/branches/[branchId]/machines/actions";
+import {
+  requestRemoteMachineCommand,
+  type RemoteMachine,
+} from "@/app/branches/[branchId]/machines/actions";
 
-interface MachineCardProps {
-  machine: MachineItem;
+export type MachineModalTab = "diagnostics" | "statistics" | "programs" | "parameters";
+
+export interface MachineCardProps {
+  machine: RemoteMachine;
   branchId: string;
-  userRole: "owner" | "branch_manager" | "machine_maintenance" | "lpg_maintenance";
-  onOpenDetails: (machine: MachineItem) => void;
-  onMachineUpdated?: (updated: MachineItem) => void;
+  branchOpen: boolean;
+  role: "owner" | "branch_manager" | "machine_maintenance";
+  serviceError?: string | null;
+  onOpenDetails: (machine: RemoteMachine, initialTab?: MachineModalTab) => void;
+  onCommandSent?: () => void;
 }
 
 /**
@@ -28,7 +31,7 @@ export function SimpleWasherSvg({
   status,
   className = "size-28",
 }: {
-  status: MachineItem["status"];
+  status: string;
   className?: string;
 }) {
   return (
@@ -43,19 +46,12 @@ export function SimpleWasherSvg({
       role="img"
       aria-label={`Commercial Washer illustration (${status})`}
     >
-      {/* Cabinet Frame */}
       <rect x="15" y="10" width="70" height="80" rx="6" />
-      {/* Control Panel Divider */}
       <line x1="15" y1="28" x2="85" y2="28" strokeWidth="2" />
-      {/* Detergent Dispenser Drawer */}
       <rect x="23" y="16" width="16" height="7" rx="1.5" strokeWidth="1.5" />
-      {/* Control Dial */}
       <circle cx="73" cy="19.5" r="3.5" strokeWidth="1.5" />
-      {/* Outer Door Ring */}
       <circle cx="50" cy="58" r="23" strokeWidth="2.5" />
-      {/* Inner Drum Window */}
       <circle cx="50" cy="58" r="16" strokeWidth="1.5" strokeDasharray="4 3" />
-      {/* Handle Latch */}
       <path d="M 72 55 L 72 61" strokeWidth="2" />
     </svg>
   );
@@ -68,7 +64,7 @@ export function SimpleDryerSvg({
   status,
   className = "size-28",
 }: {
-  status: MachineItem["status"];
+  status: string;
   className?: string;
 }) {
   return (
@@ -83,369 +79,356 @@ export function SimpleDryerSvg({
       role="img"
       aria-label={`Commercial Dryer illustration (${status})`}
     >
-      {/* Cabinet Frame */}
       <rect x="15" y="10" width="70" height="80" rx="6" />
-      {/* Control Panel Divider */}
       <line x1="15" y1="28" x2="85" y2="28" strokeWidth="2" />
-      {/* Heat Control Dials */}
       <circle cx="27" cy="19.5" r="3.5" strokeWidth="1.5" />
       <circle cx="39" cy="19.5" r="3.5" strokeWidth="1.5" />
-      {/* Lint Trap / Display Screen */}
       <rect x="58" y="16" width="18" height="7" rx="1.5" strokeWidth="1.5" />
-      {/* Outer Door Ring */}
       <circle cx="50" cy="58" r="23" strokeWidth="2.5" />
-      {/* Tumbler Drum & Air Vents */}
       <circle cx="50" cy="58" r="16" strokeWidth="1.5" />
       <line x1="42" y1="54" x2="58" y2="54" strokeWidth="1.5" />
       <line x1="40" y1="58" x2="60" y2="58" strokeWidth="1.5" />
       <line x1="42" y1="62" x2="58" y2="62" strokeWidth="1.5" />
-      {/* Handle Latch */}
       <path d="M 72 55 L 72 61" strokeWidth="2" />
     </svg>
   );
 }
 
+export function formatDateLabel(value: string | null): string {
+  if (!value) return "—";
+  const time = new Date(value);
+  return Number.isNaN(time.getTime()) ? "Time unknown" : time.toLocaleString("en-MY");
+}
+
+export function freshnessText(freshness: RemoteMachine["freshness"]): string {
+  if (freshness === "fresh") return "Fresh";
+  if (freshness === "stale") return "Stale";
+  if (freshness === "missing") return "No approved observation";
+  return "Time unknown";
+}
+
+export function sourceText(source: RemoteMachine["source"]): string {
+  if (source === "simulated") return "Simulator";
+  if (source === "physical") return "Physical source";
+  if (source === "vendor") return "Vendor source, capabilities unverified";
+  return "Source unknown";
+}
+
+export function programDisplayName(
+  id: string,
+  program?: Record<string, unknown> | null,
+): string {
+  if (program && typeof program.name === "string" && program.name.trim()) {
+    return program.name;
+  }
+  if (id === "quick") return "Quick";
+  if (id === "standard") return "Standard";
+  return id;
+}
+
+export function getMachineStatusBadge(machine: RemoteMachine): {
+  effectiveStatus: "RUNNING" | "IDLE" | "PAUSED" | "ERROR" | "OFFLINE";
+  label: string;
+  wrapper: string;
+  dot: string;
+} {
+  if (machine.freshness === "missing") {
+    return {
+      effectiveStatus: "OFFLINE",
+      wrapper: "border-line bg-raised text-muted",
+      dot: "bg-muted",
+      label: "No approved observation",
+    };
+  }
+  const rawUpper = machine.state.toUpperCase();
+  if (machine.freshness !== "fresh") {
+    return {
+      effectiveStatus: "OFFLINE",
+      wrapper: "border-line bg-raised text-muted",
+      dot: "bg-muted",
+      label: `Current state unknown (last reported ${rawUpper})`,
+    };
+  }
+  switch (rawUpper) {
+    case "RUNNING":
+      return {
+        effectiveStatus: "RUNNING",
+        wrapper: "border-control bg-raised text-ink",
+        dot: "bg-muted",
+        label: "Running",
+      };
+    case "IDLE":
+      return {
+        effectiveStatus: "IDLE",
+        wrapper: "border-positive/30 bg-positive/10 text-positive",
+        dot: "bg-positive",
+        label: "Idle / Available",
+      };
+    case "PAUSED":
+      return {
+        effectiveStatus: "PAUSED",
+        wrapper: "border-control bg-raised text-ink",
+        dot: "bg-muted",
+        label: "Paused",
+      };
+    case "ERROR":
+      return {
+        effectiveStatus: "ERROR",
+        wrapper: "border-negative/40 bg-negative/10 text-negative",
+        dot: "bg-negative",
+        label: machine.data?.fault_code
+          ? `Fault: ${machine.data.fault_code}`
+          : "Error",
+      };
+    default:
+      return {
+        effectiveStatus: "OFFLINE",
+        wrapper: "border-line bg-raised text-muted",
+        dot: "bg-muted",
+        label: "Offline",
+      };
+  }
+}
+
 export function MachineCard({
   machine,
   branchId,
-  userRole,
+  branchOpen,
+  role,
+  serviceError,
   onOpenDetails,
-  onMachineUpdated,
+  onCommandSent,
 }: MachineCardProps) {
   const [isPending, startTransition] = useTransition();
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const isOperator = userRole === "owner" || userRole === "branch_manager";
-  const isWasher = machine.type === "washer";
+  const isFresh = machine.freshness === "fresh";
+  const badge = getMachineStatusBadge(machine);
+  const effectiveStatus = badge.effectiveStatus;
+  const isWasher = machine.type !== "dryer";
 
-  // Status visual variants adhering to DESIGN.md Section 4.5 & 4.8
-  const getStatusBadge = () => {
-    switch (machine.status) {
-      case "RUNNING":
-        return {
-          wrapper: "border-accent/40 bg-accent/10 text-ink",
-          dot: "bg-accent",
-          label: "Running",
-        };
-      case "IDLE":
-        return {
-          wrapper: "border-positive/30 bg-positive/10 text-positive",
-          dot: "bg-positive",
-          label: "Idle / Available",
-        };
-      case "PAUSED":
-        return {
-          wrapper: "border-warning/30 bg-warning/10 text-warning",
-          dot: "bg-warning",
-          label: "Paused",
-        };
-      case "ERROR":
-        return {
-          wrapper: "border-negative/40 bg-negative/10 text-negative",
-          dot: "bg-negative",
-          label: machine.fault_code ? `Fault: ${machine.fault_code}` : "Error",
-        };
-      case "OFFLINE":
-      default:
-        return {
-          wrapper: "border-line bg-raised text-muted",
-          dot: "bg-muted",
-          label: "Offline",
-        };
+  const canControl =
+    branchOpen &&
+    !serviceError &&
+    !isPending &&
+    role !== "machine_maintenance" &&
+    machine.source === "simulated" &&
+    isFresh;
+
+  const canStart =
+    canControl && (effectiveStatus === "IDLE" || effectiveStatus === "PAUSED");
+  const canPause = canControl && effectiveStatus === "RUNNING";
+  const canStop =
+    canControl && (effectiveStatus === "RUNNING" || effectiveStatus === "PAUSED");
+
+  const remainingSecs =
+    isFresh && typeof machine.data?.remaining_seconds === "number"
+      ? machine.data.remaining_seconds
+      : null;
+  const remainingMins =
+    remainingSecs !== null ? Math.max(0, Math.ceil(remainingSecs / 60)) : null;
+  const remEstimateVal =
+    isFresh && remainingSecs !== null
+      ? `${remainingSecs} s (${remainingMins} min)`
+      : "—";
+
+  const capacityText =
+    typeof machine.capacity_kg === "number" && Number.isFinite(machine.capacity_kg)
+      ? `${machine.capacity_kg.toFixed(1)} kg`
+      : "Unavailable";
+
+  const machineStateText =
+    effectiveStatus === "RUNNING"
+      ? "Running"
+      : effectiveStatus === "PAUSED"
+        ? "Paused"
+        : effectiveStatus === "IDLE"
+          ? "Idle"
+          : effectiveStatus === "ERROR"
+            ? machine.data?.fault_code
+              ? `Fault (${machine.data.fault_code})`
+              : "Fault"
+            : "Offline";
+
+  const categoryText =
+    machine.type === "washer_dryer"
+      ? "Washer / Dryer"
+      : isWasher
+        ? "Washer"
+        : "Dryer";
+
+  const showCycleControls =
+    machine.source === "simulated" && role !== "machine_maintenance";
+
+  const renderRowBox = (rows: readonly [string, string][]) => (
+    <dl className="flex flex-col justify-between gap-2.5 rounded-md border border-line bg-raised/40 p-3.5 md:p-4">
+      {rows.map(([label, valText], idx) => (
+        <div
+          key={label}
+          className={idx > 0 ? "min-w-0 border-t border-rule/60 pt-2.5" : "min-w-0"}
+        >
+          <dt className="truncate text-xs leading-normal text-muted">{label}</dt>
+          <dd
+            className="mt-1 min-w-0 break-words text-sm font-semibold leading-normal tabular-nums text-ink"
+            suppressHydrationWarning
+          >
+            {valText}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+
+  const handleCardCommand = (action: "pause" | "resume" | "stop") => {
+    if (!canControl) return;
+    if (
+      action === "stop" &&
+      !window.confirm(`Request stop for ${machine.label}?`)
+    ) {
+      return;
     }
-  };
-
-  const status = getStatusBadge();
-
-  // Control action handler stopping propagation so card click is not triggered
-  const handleCommand = (
-    e: React.MouseEvent,
-    cmd: "start" | "pause" | "resume" | "stop" | "unlock"
-  ) => {
-    e.stopPropagation();
     setActionError(null);
     startTransition(async () => {
-      const res = await executeMachineCommand(branchId, machine.id, cmd);
-      if (!res.success) {
-        setActionError(res.message || `Failed to execute ${cmd}`);
-      } else if (res.machine && onMachineUpdated) {
-        onMachineUpdated(res.machine);
+      const requestId = crypto.randomUUID();
+      const result = await requestRemoteMachineCommand(
+        branchId,
+        machine.source_id,
+        requestId,
+        action,
+        {},
+      );
+      if (!result.ok) {
+        setActionError(result.message || `Failed to execute ${action}`);
+        return;
       }
+      onCommandSent?.();
     });
   };
 
-  // State-validated button states for Start, Pause, Stop
-  const canStart =
-    isOperator &&
-    !isPending &&
-    (machine.status === "IDLE" || machine.status === "PAUSED");
-
-  const canPause =
-    isOperator &&
-    !isPending &&
-    machine.status === "RUNNING";
-
-  const canStop =
-    isOperator &&
-    !isPending &&
-    (machine.status === "RUNNING" || machine.status === "PAUSED");
-
-  // Remaining time formatted string
-  const getRemainingTimeText = () => {
-    if (machine.status === "RUNNING") {
-      return `${machine.remaining_time} min remaining`;
-    }
-    if (machine.status === "PAUSED") {
-      return `${machine.remaining_time} min remaining (Paused)`;
-    }
-    if (machine.status === "IDLE") {
-      return machine.parameters.duration_mins
-        ? `Ready (${machine.parameters.duration_mins} min cycle)`
-        : "Ready for cycle";
-    }
-    if (machine.status === "ERROR") {
-      return "Cycle interrupted";
-    }
-    return "Unavailable";
-  };
-
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={() => {
-        if (typeof window !== "undefined" && window.innerWidth < 640) return;
-        onOpenDetails(machine);
-      }}
-      onKeyDown={e => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          if (typeof window !== "undefined" && window.innerWidth < 640) return;
-          onOpenDetails(machine);
-        }
-      }}
-      className="group flex min-w-0 flex-col justify-between rounded-md border border-line bg-surface p-5 transition-all hover:border-control hover:bg-surface/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent cursor-pointer"
-      aria-label={`Machine card for ${machine.name}, status ${status.label}. Click to inspect details.`}
+    <article
+      aria-label={`${machine.label} (${badge.label})`}
+      className="group flex min-w-0 w-full flex-col gap-4 rounded-md border border-line bg-surface p-4 sm:p-5 md:p-6"
     >
-      <div className="space-y-3.5">
-        {/* 1. TITLE SECTION (Frontend-Specs.md Line 211) */}
-        <div className="flex min-w-0 items-start justify-between gap-2">
-          <div className="min-w-0">
-            <h3 className="text-base font-semibold tracking-tight text-ink truncate group-hover:text-accent transition-colors">
-              {machine.name}
-            </h3>
-            {/* <p className="mt-0.5 text-xs text-muted">
-              {isWasher ? "Commercial High-Spin Washer" : "Commercial Gas-Heated Dryer"} · {machine.capacity_kg} kg
-            </p> */}
-          </div>
-
-          {/* <div
-            className="flex size-7 shrink-0 items-center justify-center rounded border border-rule bg-raised/40 text-muted transition-colors group-hover:border-control group-hover:text-ink"
-            title="Inspect machine details and parameters"
-          >
-            <SlidersHorizontal className="size-3.5" aria-hidden="true" />
-          </div> */}
-        </div>
-
-        {/* 2. FULL SIZED MONO-COLORED SVG IMAGE (Frontend-Specs.md Line 213) */}
-        <div className="relative flex h-36 w-full items-center justify-center rounded-md border border-rule/60 bg-raised/20 p-3">
+      {/* Tier 1: Machine Identity (Device ID only) & Status Badge Row (matching Pi 5 machineRowCard) */}
+      <div className="flex min-w-0 items-center gap-3.5">
+        <div className="flex size-16 shrink-0 items-center justify-center rounded-md border border-rule bg-raised/40 p-1.5">
           {isWasher ? (
-            <SimpleWasherSvg status={machine.status} />
+            <SimpleWasherSvg status={effectiveStatus} className="size-12 shrink-0" />
           ) : (
-            <SimpleDryerSvg status={machine.status} />
-          )}
-
-          {/* Fault Indicator Overlay if ERROR */}
-          {machine.status === "ERROR" && (
-            <div className="absolute inset-x-2 bottom-2 rounded bg-negative/90 px-2.5 py-1 text-center backdrop-blur-xs">
-              <span className="text-xs font-semibold text-surface">
-                {machine.fault_code ? `Fault: ${machine.fault_code}` : "Safety Fault"}
-              </span>
-            </div>
+            <SimpleDryerSvg status={effectiveStatus} className="size-12 shrink-0" />
           )}
         </div>
 
-        {/* 3. MACHINE STATUS SECTION (Frontend-Specs.md Line 215) */}
-        <div className="flex flex-col gap-2.5 rounded-md border border-rule bg-raised/30 p-3">
-          {/* Operational Status (Flex Column) */}
-          <div className="flex flex-col gap-1 items-start">
-            <span className="text-xs text-muted">Operational Status</span>
+        <div className="flex min-w-0 flex-1 flex-col gap-2 lg:flex-row lg:items-center lg:justify-between lg:gap-4">
+          <div className="min-w-0">
+            <h3 className="min-w-0 break-words text-base font-semibold leading-normal text-ink">
+              {machine.label}
+            </h3>
+            <dl className="mt-2 grid grid-cols-1 gap-y-1 text-xs">
+              <div className="min-w-0">
+                <dt className="text-faint">Device ID</dt>
+                <dd className="mt-0.5 break-all text-muted">{machine.source_id}</dd>
+              </div>
+            </dl>
+          </div>
+
+          <div className="flex shrink-0 max-w-full flex-wrap items-center gap-2">
             <span
-              className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-1 text-sm font-medium ${status.wrapper}`}
+              className={`inline-flex max-w-full shrink-0 items-center gap-2 whitespace-normal break-words rounded border px-2.5 py-1 text-xs font-medium ${badge.wrapper}`}
             >
-              <span className={`size-2 rounded-full ${status.dot}`} aria-hidden="true" />
-              <span>{status.label}</span>
-            </span>
-          </div>
-
-          {/* Cycle Program (Flex Column) */}
-          <div className="flex flex-col gap-0.5 border-t border-rule/60 pt-2.5">
-            <span className="text-xs text-muted">Cycle Program</span>
-            <span className="text-sm font-semibold text-ink truncate">
-              {machine.current_cycle || (machine.status === "IDLE" ? "Standby" : "—")}
-            </span>
-          </div>
-        </div>
-
-        {/* 4. REMAINING CYCLE TIME & RATE SECTION (Frontend-Specs.md Line 217) */}
-        <div className="flex flex-col gap-2.5 rounded-md border border-rule bg-raised/30 p-3">
-          {/* Cycle Time (Flex Column) */}
-          <div className="flex flex-col gap-1">
-            <div className="flex items-center gap-1.5 text-xs text-muted">
-              <Clock className="size-3.5 text-faint" aria-hidden="true" />
-              <span>Cycle Time</span>
-            </div>
-            <span className="text-sm font-semibold text-ink tabular-nums">
-              {getRemainingTimeText()}
-            </span>
-          </div>
-
-          {/* Progress Bar for Running Cycle (native SVG per DESIGN.md Section 2.3) */}
-          {machine.status === "RUNNING" && (
-            <svg
-              viewBox="0 0 100 4"
-              preserveAspectRatio="none"
-              className="h-1.5 w-full overflow-hidden rounded-full bg-raised"
-              role="progressbar"
-              aria-valuenow={Math.round(
-                Math.max(
-                  15,
-                  Math.min(
-                    100,
-                    ((machine.parameters.duration_mins - machine.remaining_time) /
-                      (machine.parameters.duration_mins || 35)) *
-                      100
-                  )
-                )
-              )}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-label="Cycle progress"
-            >
-              <rect
-                x="0"
-                y="0"
-                width={Math.round(
-                  Math.max(
-                    15,
-                    Math.min(
-                      100,
-                      ((machine.parameters.duration_mins - machine.remaining_time) /
-                        (machine.parameters.duration_mins || 35)) *
-                        100
-                    )
-                  )
-                )}
-                height="4"
-                className="fill-accent"
+              <span
+                className={`size-2 shrink-0 rounded-full ${badge.dot}`}
+                aria-hidden="true"
               />
-            </svg>
-          )}
-
-          {/* Cycle Rate (Flex Column) */}
-          <div className="flex flex-col gap-1 border-t border-rule/60 pt-2.5">
-            <div className="flex items-center gap-1.5 text-xs text-muted">
-              <Tag className="size-3.5 text-faint" aria-hidden="true" />
-              <span>Cycle Rate</span>
-            </div>
-            <span className="text-sm font-semibold text-ink tabular-nums">
-              {machine.parameters.price !== null && machine.parameters.price !== undefined
-                ? `RM ${machine.parameters.price.toFixed(2)}`
-                : "—"}
+              <span>{badge.label}</span>
             </span>
           </div>
         </div>
-
-        {/* Error Feedback Message if Command Failed */}
-        {actionError && (
-          <p className="text-xs text-negative" role="alert">
-            {actionError}
-          </p>
-        )}
       </div>
 
-      {/* 5. THREE BUTTONS SECTION: START, PAUSE, STOP (Frontend-Specs.md Line 219) */}
-      <div className="mt-4 border-t border-rule pt-3.5">
-        {isOperator ? (
-          <div className="grid grid-cols-3 gap-2" role="group" aria-label="Machine operational cycle controls">
-            {/* 1. START / RESUME BUTTON */}
+      {/* Tier 2: Horizontal 3-Box Detail Grid */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {renderRowBox([
+          ["Machine state", machineStateText],
+          ["Remaining estimate", remEstimateVal],
+        ])}
+        {renderRowBox([
+          ["Capacity", capacityText],
+          ["Category", categoryText],
+        ])}
+        {renderRowBox([
+          ["Last sample", formatDateLabel(machine.last_update)],
+          ["Freshness", freshnessText(machine.freshness)],
+        ])}
+      </div>
+
+      {/* Tier 3: Action Controls & Modal Trigger Footer */}
+      <div className="flex flex-col gap-3 border-t border-rule pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+        {showCycleControls && (
+          <div
+            role="group"
+            aria-label="Cycle controls"
+            className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center"
+          >
             <button
               type="button"
               disabled={!canStart}
-              onClick={e => handleCommand(e, machine.status === "PAUSED" ? "resume" : "start")}
-              className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-ink bg-ink px-2 py-1.5 text-xs font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control/50 disabled:bg-raised disabled:text-muted/60"
-              title={
-                machine.status === "PAUSED"
-                  ? "Resume paused cycle"
-                  : canStart
-                    ? "Start wash cycle"
-                    : "Start unavailable while machine is active or faulted"
-              }
+              onClick={() => {
+                if (effectiveStatus === "PAUSED") {
+                  handleCardCommand("resume");
+                } else {
+                  onOpenDetails(machine, "diagnostics");
+                }
+              }}
+              className="inline-flex min-h-11 min-w-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-3.5 py-2 text-xs font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted"
             >
-              <Play className="size-3" aria-hidden="true" />
-              <span>{isPending ? "…" : machine.status === "PAUSED" ? "Resume" : "Start"}</span>
+              <Play className="size-3.5 shrink-0" aria-hidden="true" />
+              <span>{effectiveStatus === "PAUSED" ? "Resume" : "Start"}</span>
             </button>
 
-            {/* 2. PAUSE BUTTON */}
             <button
               type="button"
               disabled={!canPause}
-              onClick={e => handleCommand(e, "pause")}
-              className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-control bg-navy px-2 py-1.5 text-xs font-medium text-ink transition-colors duration-150 enabled:hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control/50 disabled:bg-raised disabled:text-muted/60"
-              title={canPause ? "Pause running cycle" : "Pause is only available when machine is running"}
+              onClick={() => handleCardCommand("pause")}
+              className="inline-flex min-h-11 min-w-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-xs font-medium text-ink transition-colors duration-150 enabled:hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted"
             >
-              <Pause className="size-3" aria-hidden="true" />
-              <span>{isPending ? "…" : "Pause"}</span>
+              <Pause className="size-3.5 shrink-0" aria-hidden="true" />
+              <span>Pause</span>
             </button>
 
-            {/* 3. STOP BUTTON */}
             <button
               type="button"
               disabled={!canStop}
-              onClick={e => handleCommand(e, "stop")}
-              className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-negative/40 bg-negative/15 px-2 py-1.5 text-xs font-medium text-negative transition-colors duration-150 enabled:hover:bg-negative/25 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control/50 disabled:bg-raised disabled:text-muted/60"
-              title={canStop ? "Stop active cycle" : "Stop is only available when machine is active"}
+              onClick={() => handleCardCommand("stop")}
+              className="inline-flex min-h-11 min-w-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-negative bg-negative px-3.5 py-2 text-xs font-semibold text-surface transition-colors duration-150 enabled:hover:border-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted"
             >
-              <Square className="size-3" aria-hidden="true" />
-              <span>{isPending ? "…" : "Stop"}</span>
-            </button>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-0.5 py-1 text-xs text-faint">
-            <span>Diagnostics only</span>
-            <span>Operator controls restricted</span>
-          </div>
-        )}
-
-        {/* Quick Door Unlock for operators when door is locked and machine not running */}
-        {isOperator && (machine.status === "IDLE" || machine.status === "ERROR") && machine.parameters.door_locked && (
-          <div className="mt-2 flex justify-end">
-            <button
-              type="button"
-              disabled={isPending}
-              onClick={e => handleCommand(e, "unlock")}
-              className="inline-flex items-center gap-1 text-xs font-medium text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-              title="Unlock door interlock"
-            >
-              <Unlock className="size-3" aria-hidden="true" />
-              <span>Unlock Door</span>
+              <Square className="size-3.5 shrink-0" aria-hidden="true" />
+              <span>Stop</span>
             </button>
           </div>
         )}
 
-        {/* Full-width Details & Parameters button (Hidden on mobile <640px, visible on tablet & desktop >=640px) */}
-        <button
-          type="button"
-          onClick={e => {
-            e.stopPropagation();
-            onOpenDetails(machine);
-          }}
-          className="mt-3 hidden sm:flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-control bg-raised/50 px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-        >
-          <SlidersHorizontal className="size-3.5 text-muted" aria-hidden="true" />
-          <span>Details & Parameters</span>
-        </button>
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+          <button
+            type="button"
+            onClick={() => onOpenDetails(machine, "diagnostics")}
+            className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-xs font-medium text-ink transition-colors duration-150 hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:w-auto"
+          >
+            <SlidersHorizontal className="size-4 shrink-0 text-muted" aria-hidden="true" />
+            <span>Details &amp; parameters</span>
+          </button>
+        </div>
       </div>
-    </div>
+
+      {actionError && (
+        <p
+          role="alert"
+          className="rounded-md border-l-2 border-negative bg-raised px-4 py-3 text-xs text-ink"
+        >
+          {actionError}
+        </p>
+      )}
+    </article>
   );
 }

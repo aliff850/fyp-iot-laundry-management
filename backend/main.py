@@ -10,6 +10,11 @@ from branches import router as branches_router
 from gateways import router as gateways_router
 from edge import router as edge_router
 from machine_operations import router as machine_operations_router
+from lpg_operations import router as lpg_operations_router
+from branch_analytics import router as branch_analytics_router
+from branch_records import router as branch_records_router
+from notifications import router as notifications_router
+from push_notifications import router as push_notifications_router
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -34,12 +39,17 @@ app.include_router(branches_router)
 app.include_router(gateways_router)
 app.include_router(edge_router)
 app.include_router(machine_operations_router)
+app.include_router(lpg_operations_router)
+app.include_router(branch_analytics_router)
+app.include_router(branch_records_router)
+app.include_router(notifications_router)
+app.include_router(push_notifications_router)
 
 @app.middleware("http")
 async def retire_unsecured_prototype(request, call_next):
     path = request.url.path
     allowed = (
-        path in {"/api", "/api/status", "/public/organizations", "/me", "/onboarding", "/join-requests", "/branches", "/branches/manager-options", "/personnel"}
+        path in {"/api", "/api/status", "/public/organizations", "/me", "/onboarding", "/join-requests", "/branches", "/branches/manager-options", "/organization/analytics", "/personnel", "/notifications", "/push/public-key", "/push/subscriptions"}
         or path.startswith("/join-requests/")
         or path.startswith("/branches/")
         or path.startswith("/personnel/")

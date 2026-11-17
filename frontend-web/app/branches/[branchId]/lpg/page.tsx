@@ -4,11 +4,14 @@ import { redirect } from "next/navigation";
 import { Notice } from "@/components/auth/AuthForm";
 import { BranchWorkspaceShell } from "@/components/workspace/layout/BranchWorkspaceShell";
 import { LpgWorkspaceView } from "@/components/workspace/lpg/LpgWorkspaceView";
+import { BranchRecordsTable } from "@/components/workspace/records/BranchRecordsTable";
 import {
   getBranch,
-  getBranchLpg,
+  getBranchLpgSafety,
+  getBranchRecords,
   getMembership,
 } from "@/lib/auth/business";
+import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "LPG Fuel & Safety" };
 export const dynamic = "force-dynamic";
@@ -19,11 +22,20 @@ interface BranchLpgPageProps {
 
 export default async function BranchLpgPage({ params }: BranchLpgPageProps) {
   const { branchId } = await params;
-  const [membershipRes, branchRes, lpgRes] = await Promise.all([
+  const supabaseClient = await createClient();
+  const [membershipRes, branchRes, lpgRes, recordsRes, identityRes] = await Promise.all([
     getMembership(),
     getBranch(branchId),
-    getBranchLpg(branchId),
+    getBranchLpgSafety(branchId),
+    getBranchRecords(branchId, "lpg", "all", 1, 10),
+    supabaseClient
+      ? supabaseClient.auth.getUser().catch(() => ({ data: { user: null } }))
+      : Promise.resolve({ data: { user: null } }),
   ]);
+
+  const rawFullName = identityRes?.data?.user?.user_metadata?.full_name;
+  const defaultActorName =
+    typeof rawFullName === "string" && rawFullName.trim().length > 0 ? rawFullName.trim() : null;
 
   if (!membershipRes.ok && membershipRes.status === 401) {
     redirect(`/login?next=%2Fbranches%2F${branchId}%2Flpg`);
@@ -105,11 +117,22 @@ export default async function BranchLpgPage({ params }: BranchLpgPageProps) {
       activeTab="lpg"
       userRole={role}
     >
-      <LpgWorkspaceView
-        initialData={lpgData}
-        branchId={branchId}
-        userRole={role}
-      />
+      <div className="space-y-8">
+        <LpgWorkspaceView
+          initialSnapshot={lpgData}
+          branchId={branchId}
+          defaultActorName={defaultActorName}
+        />
+        <BranchRecordsTable
+          key={`lpg-records-${branch.id}`}
+          branchId={branch.id}
+          allowedScopes={["lpg", "env"]}
+          defaultScope="lpg"
+          title="LPG & environmental records"
+          initialData={recordsRes.ok ? recordsRes.value : null}
+          initialError={recordsRes.ok ? null : recordsRes.message}
+        />
+      </div>
     </BranchWorkspaceShell>
   );
 }

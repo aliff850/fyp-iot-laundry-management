@@ -40,6 +40,10 @@ try:
     import demo_checkout
 except ImportError:
     from pi5 import demo_checkout
+try:
+    import lpg_interpreter
+except ImportError:
+    from pi5 import lpg_interpreter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("spinsense.dashboard")
@@ -95,6 +99,31 @@ def _command_history_query(period: str, page_value: str, now: datetime) -> tuple
     else:
         start = now - timedelta(days=7 if period == "week" else 30)
     return start.astimezone(timezone.utc).replace(tzinfo=None), page
+
+
+def _telemetry_history_query(
+    category: str,
+    period: str,
+    delivery: str,
+    page_value: str,
+    now: datetime,
+) -> tuple[str, str, str, Optional[datetime], int]:
+    if (
+        category not in ("lpg", "machine")
+        or period not in ("all", "today", "week", "month")
+        or delivery not in ("all", "pending", "quarantined")
+        or not re.fullmatch(r"[1-9][0-9]{0,5}", page_value)
+    ):
+        raise ValueError("Invalid local records filter")
+    page = int(page_value)
+    if period == "all":
+        return category, period, delivery, None, page
+    if period == "today":
+        local = now.astimezone(ZoneInfo("Asia/Kuala_Lumpur"))
+        start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        start = now - timedelta(days=7 if period == "week" else 30)
+    return category, period, delivery, start.astimezone(timezone.utc).replace(tzinfo=None), page
 
 
 def _staff_configured() -> bool:
@@ -565,7 +594,7 @@ def _observation(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     age = max(0, (datetime.now(timezone.utc).replace(tzinfo=None) - sample_time).total_seconds()) if sample_time else None
     freshness = "unknown" if age is None else "offline" if age > 60 else "stale" if age > 15 else "fresh"
     values = {key: _finite_number(payload.get(key)) for key in (
-        "lpg_weight_kg", "gross_weight_kg", "lpg_percent", "mq6_raw_adc", "voltage",
+        "lpg_weight_kg", "gross_weight_kg", "lpg_percent", "mq6_raw_adc", "voltage", "estimated_ppm",
         "temperature", "humidity", "remaining_seconds", "price", "duration_seconds",
         "target_temperature_c", "water_level", "spin_rpm",
     )}
@@ -596,6 +625,7 @@ def _observation(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         "state": state.upper() if isinstance(state, str) and state.upper() in ("IDLE", "RUNNING", "PAUSED", "ERROR") else "UNKNOWN",
         "phase": payload.get("phase") if isinstance(payload.get("phase"), str) else None,
         "fault_code": payload.get("fault_code") if isinstance(payload.get("fault_code"), str) else None,
+        "maintenance_mode": bool(payload.get("maintenance_mode") or quality.get("maintenance_mode")),
         "settings": payload.get("settings") if isinstance(payload.get("settings"), dict) else None,
         "programs": payload.get("programs") if isinstance(payload.get("programs"), dict) else None,
     }
@@ -619,6 +649,48 @@ def _machine_presence_observation(row: Optional[Dict[str, Any]]) -> Optional[Dic
     return result
 
 
+def _load_lpg_node_extras(conn, gateway_id: str) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """Load per-node MQ-6/tank config and active local maintenance sessions."""
+    configs: Dict[str, Dict[str, Any]] = {}
+    sessions: Dict[str, Dict[str, Any]] = {}
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """SELECT source_id, mq6_vcc_v, mq6_rl_kohm, mq6_divider_ratio, mq6_ro_kohm,
+                          mq6_baseline_v, gas_warn_ppm, gas_crit_ppm, cylinder_tare_kg,
+                          rated_capacity_kg, stability_tolerance_kg
+                   FROM lpg_node_config WHERE gateway_id=%s""",
+                (gateway_id,),
+            )
+            for row in cursor.fetchall():
+                if isinstance(row, dict) and "mq6_vcc_v" in row and "source_id" in row:
+                    configs[row["source_id"]] = row
+            cursor.execute(
+                """SELECT session_id, source_id, started_by, service_note, started_at
+                   FROM lpg_maintenance_sessions
+                   WHERE gateway_id=%s AND status='active'
+                   ORDER BY started_at DESC""",
+                (gateway_id,),
+            )
+            for row in cursor.fetchall():
+                if isinstance(row, dict) and "session_id" in row and "source_id" in row:
+                    sessions.setdefault(row["source_id"], row)
+    except Exception as error:
+        logger.debug("Optional LPG extras lookup skipped (%s)", type(error).__name__)
+    return configs, sessions
+
+
+def _serialize_maintenance_session(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not row:
+        return None
+    return {
+        "session_id": row["session_id"],
+        "started_by": row.get("started_by") or "Local staff",
+        "service_note": row.get("service_note") or "",
+        "started_at": _utc_iso(row.get("started_at")),
+    }
+
+
 def _dashboard_snapshot() -> Dict[str, Any]:
     conn = get_db_connection()
     try:
@@ -632,10 +704,11 @@ def _dashboard_snapshot() -> Dict[str, Any]:
         if gateway.get("status") != "active" or not gateway.get("branch_id"):
             return result
         gateway_id = gateway["gateway_id"]
+        lpg_configs, lpg_maint_sessions = _load_lpg_node_extras(conn, gateway_id)
         with conn.cursor() as cursor:
             cursor.execute(
-                """SELECT source_id, device_type, source_kind, label, capacity_kg
-                   FROM device_registry WHERE gateway_id=%s AND status='active'
+                """SELECT source_id, device_type, source_kind, label, capacity_kg, status
+                   FROM device_registry WHERE gateway_id=%s AND status IN ('active', 'maintenance')
                    ORDER BY device_type, label, source_id""",
                 (gateway_id,),
             )
@@ -663,12 +736,60 @@ def _dashboard_snapshot() -> Dict[str, Any]:
                     observation = _machine_presence_observation(presence)
                 else:
                     observation = _observation(row)
+                active_session = lpg_maint_sessions.get(device["source_id"])
+                is_maint = (
+                    bool(active_session)
+                    or str(device.get("status") or "active").strip().lower() == "maintenance"
+                    or bool(observation and observation.get("freshness") in ("fresh", "stale") and observation.get("maintenance_mode"))
+                )
+                node_cfg = lpg_interpreter.normalize_node_config(lpg_configs.get(device["source_id"]))
+                gas_interpretation = None
+                lpg_cfg_summary = None
+                if device["device_type"] == "lpg_edge_node":
+                    obs_values = (observation or {}).get("values") or {}
+                    gas_interpretation = lpg_interpreter.estimate_mq6_telemetry(
+                        obs_values.get("voltage"),
+                        node_cfg,
+                    )
+                    if observation is not None and isinstance(observation.get("values"), dict):
+                        observation["values"]["estimated_ppm"] = gas_interpretation["estimated_ppm"]
+                        if (
+                            not is_maint
+                            and node_cfg.get("cylinder_tare_kg") is not None
+                            and node_cfg.get("rated_capacity_kg")
+                            and obs_values.get("gross_weight_kg") is not None
+                        ):
+                            recomputed = lpg_interpreter.recompute_fuel_metrics(
+                                obs_values.get("gross_weight_kg"),
+                                node_cfg["cylinder_tare_kg"],
+                                node_cfg["rated_capacity_kg"],
+                            )
+                            if recomputed is not None:
+                                observation["values"]["lpg_weight_kg"], observation["values"]["lpg_percent"] = recomputed
+                    lpg_cfg_summary = {
+                        "mq6_ro_kohm": node_cfg.get("mq6_ro_kohm"),
+                        "mq6_baseline_v": node_cfg.get("mq6_baseline_v"),
+                        "mq6_rl_kohm": node_cfg.get("mq6_rl_kohm"),
+                        "mq6_divider_ratio": node_cfg.get("mq6_divider_ratio"),
+                        "mq6_vcc_v": node_cfg.get("mq6_vcc_v"),
+                        "gas_warn_ppm": node_cfg.get("gas_warn_ppm"),
+                        "gas_crit_ppm": node_cfg.get("gas_crit_ppm"),
+                        "cylinder_tare_kg": node_cfg.get("cylinder_tare_kg"),
+                        "rated_capacity_kg": node_cfg.get("rated_capacity_kg") or _finite_number(device.get("capacity_kg")),
+                        "stability_tolerance_kg": node_cfg.get("stability_tolerance_kg"),
+                    }
                 result["devices"].append({
                     "source_id": device["source_id"],
                     "type": device["device_type"],
                     "source_kind": device["source_kind"],
                     "label": device["label"],
                     "capacity_kg": _finite_number(device.get("capacity_kg")),
+                    "status": str(device.get("status") or "active").strip().lower(),
+                    "maintenance_mode": is_maint,
+                    "weight_evaluation_paused": device["device_type"] == "lpg_edge_node" and is_maint,
+                    "maintenance_session": _serialize_maintenance_session(active_session),
+                    "gas_interpretation": gas_interpretation,
+                    "lpg_config": lpg_cfg_summary,
                     "observation": observation,
                 })
             cursor.execute(
@@ -676,7 +797,7 @@ def _dashboard_snapshot() -> Dict[str, Any]:
                           d.last_seen_at, d.is_synced, d.rejection_reason
                    FROM device_discoveries d
                    LEFT JOIN device_registry r ON r.gateway_id=d.gateway_id
-                     AND r.source_id=d.source_id AND r.status='active'
+                     AND r.source_id=d.source_id AND r.status IN ('active', 'maintenance')
                    WHERE d.gateway_id=%s AND r.source_id IS NULL
                    ORDER BY d.last_seen_at DESC, d.source_id""",
                 (gateway_id,),
@@ -729,6 +850,350 @@ def _dashboard_response(kind: str):
 @_staff_auth_required
 def dashboard_overview():
     return _dashboard_response("overview")
+
+
+def _analytics_time_buckets(period: str, now_utc: Optional[datetime] = None) -> tuple[str, datetime, list[Dict[str, str]], ZoneInfo]:
+    """Return (granularity, utc_cutoff_naive, ordered_buckets, local_zone) for day|week|month."""
+    zone = ZoneInfo("Asia/Kuala_Lumpur")
+    current_utc = now_utc or datetime.now(timezone.utc)
+    if current_utc.tzinfo is None:
+        current_utc = current_utc.replace(tzinfo=timezone.utc)
+    now_local = current_utc.astimezone(zone)
+    today = now_local.date()
+
+    if period == "day":
+        first_local = datetime.combine(today, datetime.min.time(), zone)
+        buckets = [
+            {"bucket": f"{today.isoformat()}T{hour:02d}:00", "label": f"{hour:02d}:00"}
+            for hour in range(now_local.hour + 1)
+        ]
+        granularity = "hour"
+    else:
+        days = 7 if period == "week" else 30
+        first_day = today - timedelta(days=days - 1)
+        first_local = datetime.combine(first_day, datetime.min.time(), zone)
+        buckets = []
+        for offset in range(days):
+            day = first_day + timedelta(days=offset)
+            buckets.append({"bucket": day.isoformat(), "label": day.strftime("%d %b")})
+        granularity = "day"
+
+    cutoff_utc = first_local.astimezone(timezone.utc).replace(tzinfo=None)
+    return granularity, cutoff_utc, buckets, zone
+
+
+def _bucket_key_for_utc(dt: Any, granularity: str, zone: ZoneInfo) -> Optional[str]:
+    if not isinstance(dt, datetime):
+        return None
+    aware = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    local_dt = aware.astimezone(zone)
+    if granularity == "hour":
+        return f"{local_dt.date().isoformat()}T{local_dt.hour:02d}:00"
+    return local_dt.date().isoformat()
+
+
+def _resolve_program_labels(machines: list[Dict[str, Any]], program_ids: set[str]) -> list[Dict[str, str]]:
+    """Build deterministic [{program_id, label}] using saved device program catalogs before fallback formatting."""
+    catalog_names: Dict[str, str] = {}
+    for machine in machines:
+        state = safe_parse_payload(machine.get("state_payload"))
+        programs = state.get("programs") if isinstance(state, dict) else None
+        if not isinstance(programs, dict):
+            continue
+        for pid, entry in programs.items():
+            if isinstance(pid, str) and isinstance(entry, dict) and isinstance(entry.get("name"), str) and entry["name"].strip():
+                catalog_names.setdefault(pid, entry["name"].strip())
+
+    def sort_key(pid: str) -> tuple[int, str]:
+        return (0 if pid == "quick" else 1 if pid == "standard" else 2, catalog_names.get(pid) or _format_program_label(pid) or pid)
+
+    resolved: list[Dict[str, str]] = []
+    for pid in sorted(program_ids, key=sort_key):
+        label = catalog_names.get(pid) or _format_program_label(pid) or pid
+        resolved.append({"program_id": pid, "label": label})
+    return resolved
+
+
+def _aggregate_overview_analytics(
+    period: str,
+    machines: list[Dict[str, Any]],
+    lpg_nodes: list[Dict[str, Any]],
+    lpg_configs: Dict[str, Dict[str, Any]],
+    cycle_rows: list[Dict[str, Any]],
+    daily_runtime_rows: list[Dict[str, Any]],
+    telemetry_rows: list[Dict[str, Any]],
+    now_utc: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Pure aggregation for cumulative machine KPIs, revenue curve, multi-node gas PPM, and deferred complaints."""
+    granularity, _cutoff, buckets, zone = _analytics_time_buckets(period, now_utc=now_utc)
+    bucket_keys = {entry["bucket"] for entry in buckets}
+    first_day_str = buckets[0]["bucket"][:10] if buckets else ""
+
+    machine_stats: Dict[str, Dict[str, Any]] = {
+        m["source_id"]: {
+            "source_id": m["source_id"],
+            "label": m.get("label") or m["source_id"],
+            "device_type": m.get("device_type") or "washer",
+            "completed_cycles": 0,
+            "running_seconds": 0,
+            "estimated_revenue_myr": Decimal("0.00"),
+            "cycles_by_program": {},
+        }
+        for m in machines
+    }
+    allocations: Dict[str, list[Dict[str, Any]]] = {}
+    for entry in daily_runtime_rows:
+        allocations.setdefault(entry["cycle_id"], []).append(entry)
+
+    observed_program_ids: set[str] = set()
+    revenue_by_bucket: Dict[str, Decimal] = {entry["bucket"]: Decimal("0.00") for entry in buckets}
+    for row in cycle_rows:
+        source_id = row.get("source_id")
+        if source_id not in machine_stats:
+            continue
+        target = machine_stats[source_id]
+        bucket_key = _bucket_key_for_utc(row.get("finished_at"), granularity, zone)
+        if row.get("outcome") == "completed":
+            price = row.get("price_myr") if isinstance(row.get("price_myr"), Decimal) else Decimal(str(row.get("price_myr") or "0.00"))
+            raw_pid = row.get("program_id")
+            pid = raw_pid.strip() if isinstance(raw_pid, str) and raw_pid.strip() else "unspecified"
+            observed_program_ids.add(pid)
+            target["cycles_by_program"][pid] = target["cycles_by_program"].get(pid, 0) + 1
+            target["completed_cycles"] += 1
+            target["estimated_revenue_myr"] += price
+            if bucket_key in revenue_by_bucket:
+                revenue_by_bucket[bucket_key] += price
+
+        cycle_allocs = allocations.get(row.get("cycle_id"))
+        if cycle_allocs:
+            for alloc in cycle_allocs:
+                if str(alloc["local_date"]) >= first_day_str:
+                    target["running_seconds"] += int(alloc.get("running_seconds") or 0)
+        else:
+            target["running_seconds"] += int(row.get("running_seconds") or 0)
+
+    running_total = Decimal("0.00")
+    revenue_series = []
+    for entry in buckets:
+        period_rev = revenue_by_bucket[entry["bucket"]]
+        running_total += period_rev
+        revenue_series.append({
+            "bucket": entry["bucket"],
+            "label": entry["label"],
+            "period_revenue_myr": str(period_rev.quantize(Decimal("0.01"))),
+            "cumulative_revenue_myr": str(running_total.quantize(Decimal("0.01"))),
+        })
+
+    normalized_lpg_cfgs = {
+        node["source_id"]: lpg_interpreter.normalize_node_config(lpg_configs.get(node["source_id"]))
+        for node in lpg_nodes
+    }
+    lpg_labels = {node["source_id"]: node.get("label") or node["source_id"] for node in lpg_nodes}
+    bucket_node_sums: Dict[str, Dict[str, list[float]]] = {entry["bucket"]: {} for entry in buckets}
+    node_totals: Dict[str, list[float]] = {node["source_id"]: [0.0, 0] for node in lpg_nodes}
+
+    for row in telemetry_rows:
+        source_id = row.get("source_id")
+        cfg = normalized_lpg_cfgs.get(source_id)
+        if not cfg or cfg.get("mq6_ro_kohm") is None:
+            continue
+        bucket_key = _bucket_key_for_utc(row.get("recorded_at"), granularity, zone)
+        if bucket_key not in bucket_keys:
+            continue
+        voltage = row.get("voltage")
+        if voltage is None and "data_payload" in row:
+            voltage = safe_parse_payload(row.get("data_payload")).get("voltage")
+        gas = lpg_interpreter.estimate_mq6_telemetry(voltage, cfg)
+        if not gas.get("ppm_calibrated") or gas.get("estimated_ppm") is None:
+            continue
+        ppm = float(gas["estimated_ppm"])
+        node_acc = bucket_node_sums[bucket_key].setdefault(source_id, [0.0, 0])
+        node_acc[0] += ppm
+        node_acc[1] += 1
+        node_totals[source_id][0] += ppm
+        node_totals[source_id][1] += 1
+
+    calibrated_node_ids = [
+        node["source_id"] for node in lpg_nodes
+        if normalized_lpg_cfgs[node["source_id"]].get("mq6_ro_kohm") is not None
+    ]
+    nodes_summary = []
+    contributing_period_avgs = []
+    for node in lpg_nodes:
+        sid = node["source_id"]
+        is_cal = normalized_lpg_cfgs[sid].get("mq6_ro_kohm") is not None
+        total_sum, total_cnt = node_totals[sid]
+        node_avg = round(total_sum / total_cnt, 1) if (is_cal and total_cnt > 0) else None
+        if node_avg is not None:
+            contributing_period_avgs.append(node_avg)
+        nodes_summary.append({
+            "source_id": sid,
+            "label": lpg_labels[sid],
+            "calibrated": is_cal,
+            "period_avg_ppm": node_avg,
+            "sample_count": total_cnt,
+        })
+
+    gas_bucket_series = []
+    for entry in buckets:
+        per_node = bucket_node_sums[entry["bucket"]]
+        node_means = [acc[0] / acc[1] for acc in per_node.values() if acc[1] > 0]
+        gas_bucket_series.append({
+            "bucket": entry["bucket"],
+            "label": entry["label"],
+            "avg_ppm": round(sum(node_means) / len(node_means), 1) if node_means else None,
+            "contributing_nodes": len(node_means),
+        })
+
+    if not calibrated_node_ids:
+        gas_mode = "uncalibrated"
+    elif len(calibrated_node_ids) == 1:
+        gas_mode = "single_node"
+    else:
+        gas_mode = "multi_node_average"
+
+    overall_gas_avg = (
+        round(sum(contributing_period_avgs) / len(contributing_period_avgs), 1)
+        if contributing_period_avgs else None
+    )
+
+    programs_catalog = _resolve_program_labels(machines, observed_program_ids)
+
+    machine_list = [
+        {
+            "source_id": item["source_id"],
+            "label": item["label"],
+            "device_type": item["device_type"],
+            "completed_cycles": item["completed_cycles"],
+            "running_minutes": round(item["running_seconds"] / 60.0, 1),
+            "estimated_revenue_myr": str(item["estimated_revenue_myr"].quantize(Decimal("0.01"))),
+            "cycles_by_program": dict(item["cycles_by_program"]),
+        }
+        for item in machine_stats.values()
+    ]
+    total_cycles = sum(m["completed_cycles"] for m in machine_list)
+    total_running_min = round(sum(item["running_seconds"] for item in machine_stats.values()) / 60.0, 1)
+    total_revenue = sum((item["estimated_revenue_myr"] for item in machine_stats.values()), Decimal("0.00"))
+
+    return {
+        "period": period,
+        "granularity": granularity,
+        "timezone": "Asia/Kuala_Lumpur",
+        "summary": {
+            "completed_cycles": total_cycles,
+            "running_minutes": total_running_min,
+            "estimated_revenue_myr": str(total_revenue.quantize(Decimal("0.01"))),
+            "avg_gas_ppm": overall_gas_avg,
+            "gas_node_count": len(calibrated_node_ids),
+            "gas_aggregation_mode": gas_mode,
+        },
+        "programs": programs_catalog,
+        "machines": machine_list,
+        "revenue_series": revenue_series,
+        "gas_series": {
+            "aggregation_mode": gas_mode,
+            "node_count": len(calibrated_node_ids),
+            "nodes": nodes_summary,
+            "series": gas_bucket_series,
+        },
+        "complaints": {
+            "implemented": False,
+            "source": "deferred_customer_app",
+            "total": None,
+            "series": [],
+        },
+    }
+
+
+@app.route("/api/dashboard/overview/analytics")
+@_staff_auth_required
+def dashboard_overview_analytics():
+    period = request.args.get("period", "day")
+    if period not in ("day", "week", "month"):
+        return jsonify({"error": "Invalid period"}), 400
+    now_utc = datetime.now(timezone.utc)
+    _granularity, cutoff_utc, _buckets, _zone = _analytics_time_buckets(period, now_utc=now_utc)
+    try:
+        conn = get_db_connection()
+        try:
+            stored = gateway_config.get_stored_gateway_credentials()
+            binding = gateway_config.load_gateway_db_state(conn, stored[0] if stored else None)
+            if binding.get("status") != "active":
+                return jsonify({"error": "Gateway is not active"}), 409
+            gateway_id = binding["gateway_id"]
+            lpg_configs, _ = _load_lpg_node_extras(conn, gateway_id)
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """SELECT r.source_id, r.device_type, r.source_kind, r.label, p.state_payload
+                       FROM device_registry r
+                       LEFT JOIN machine_presence p
+                         ON p.gateway_id=r.gateway_id AND p.source_id=r.source_id
+                       WHERE r.gateway_id=%s AND r.status IN ('active', 'maintenance')
+                       ORDER BY r.device_type, r.label, r.source_id""",
+                    (gateway_id,),
+                )
+                devices = cursor.fetchall()
+                machines = [d for d in devices if d.get("device_type") in ("washer", "dryer", "washer_dryer")]
+                lpg_nodes = [d for d in devices if d.get("device_type") == "lpg_edge_node"]
+
+                cycle_rows = []
+                daily_rows = []
+                if machines:
+                    machine_ids = [m["source_id"] for m in machines]
+                    placeholders = ", ".join(["%s"] * len(machine_ids))
+                    cursor.execute(
+                        f"""SELECT cycle_id, source_id, program_id, price_myr, running_seconds, outcome, finished_at
+                            FROM machine_cycles
+                            WHERE gateway_id=%s AND source_id IN ({placeholders}) AND finished_at>=%s
+                            ORDER BY finished_at ASC, cycle_id ASC""",
+                        (gateway_id, *machine_ids, cutoff_utc),
+                    )
+                    cycle_rows = cursor.fetchall()
+                    cursor.execute(
+                        f"""SELECT d.cycle_id, d.local_date, d.running_seconds
+                            FROM machine_cycle_daily_runtime d
+                            JOIN machine_cycles c ON c.gateway_id=d.gateway_id AND c.cycle_id=d.cycle_id
+                            WHERE d.gateway_id=%s AND c.source_id IN ({placeholders}) AND c.finished_at>=%s""",
+                        (gateway_id, *machine_ids, cutoff_utc),
+                    )
+                    daily_rows = cursor.fetchall()
+
+                telemetry_rows = []
+                calibrated_lpg_ids = [
+                    n["source_id"] for n in lpg_nodes
+                    if lpg_interpreter.normalize_node_config(lpg_configs.get(n["source_id"])).get("mq6_ro_kohm") is not None
+                ]
+                if calibrated_lpg_ids:
+                    placeholders = ", ".join(["%s"] * len(calibrated_lpg_ids))
+                    cursor.execute(
+                        f"""SELECT source_id, recorded_at,
+                                   CAST(JSON_UNQUOTE(JSON_EXTRACT(data_payload, '$.voltage')) AS DOUBLE) AS voltage
+                            FROM sensor_telemetry
+                            WHERE gateway_id=%s AND source_id IN ({placeholders})
+                              AND quarantine_reason IS NULL AND recorded_at>=%s
+                            ORDER BY recorded_at ASC""",
+                        (gateway_id, *calibrated_lpg_ids, cutoff_utc),
+                    )
+                    telemetry_rows = cursor.fetchall()
+
+            payload = _aggregate_overview_analytics(
+                period=period,
+                machines=machines,
+                lpg_nodes=lpg_nodes,
+                lpg_configs=lpg_configs,
+                cycle_rows=cycle_rows,
+                daily_runtime_rows=daily_rows,
+                telemetry_rows=telemetry_rows,
+                now_utc=now_utc,
+            )
+            payload["gateway"] = {"status": binding["status"], "branch_id": binding.get("branch_id")}
+            payload["checked_at"] = now_utc.isoformat().replace("+00:00", "Z")
+            return jsonify(payload)
+        finally:
+            conn.close()
+    except Exception as error:
+        logger.warning("Overview analytics unavailable (%s)", type(error).__name__)
+        return jsonify({"error": "Overview analytics unavailable"}), 503
 
 
 @app.route("/api/dashboard/machines")
@@ -884,7 +1349,7 @@ def local_machine_commands(source_id):
                     return jsonify({"error": "JSON object required"}), 400
                 action = body.get("action")
                 arguments = body.get("arguments") or {}
-                if action not in ("start", "pause", "resume", "stop", "set_settings", "clear_fault"):
+                if action not in ("start", "pause", "resume", "stop", "set_settings", "delete_program", "clear_fault"):
                     return jsonify({"error": "Unsupported action"}), 422
                 if not isinstance(arguments, dict):
                     return jsonify({"error": "Invalid arguments"}), 422
@@ -919,6 +1384,21 @@ def local_machine_commands(source_id):
                         return jsonify({"error": "Cancel the active checkout before editing programs"}), 409
                     if is_create:
                         arguments["create"] = True
+                elif action == "delete_program":
+                    program_id = arguments.get("program_id")
+                    if set(arguments) != {"program_id"} or not isinstance(program_id, str) or not re.fullmatch(r"p_[a-f0-9]{12}", program_id):
+                        return jsonify({"error": "Only created custom programs can be deleted"}), 422
+                    if str(state_payload.get("state", "")).upper() != "IDLE":
+                        return jsonify({"error": "Machine must be idle before deleting programs"}), 409
+                    programs = state_payload.get("programs")
+                    if not isinstance(programs, dict) or program_id not in programs:
+                        return jsonify({"error": "Program not found"}), 409
+                    cursor.execute("""SELECT checkout_id FROM demo_checkouts WHERE gateway_id=%s
+                        AND source_id=%s AND confirmed_at IS NULL
+                        AND expires_at>UTC_TIMESTAMP(6) LIMIT 1""", (binding["gateway_id"], source_id))
+                    if cursor.fetchone():
+                        return jsonify({"error": "Cancel the active checkout before deleting programs"}), 409
+                    arguments = {"program_id": program_id}
                 elif arguments:
                     return jsonify({"error": "Arguments not supported"}), 422
                 command_id = str(uuid.uuid4())
@@ -941,26 +1421,737 @@ def dashboard_safety():
     return _dashboard_response("safety")
 
 
+def _recent_lpg_samples(conn, gateway_id: str, source_id: str, limit: int = 10) -> list[Dict[str, Any]]:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """SELECT record_id, recorded_at, gateway_receipt_at, source_time_quality,
+                      quality_metadata, data_payload
+               FROM sensor_telemetry
+               WHERE gateway_id=%s AND source_id=%s AND is_synced >= 0
+               ORDER BY gateway_receipt_at DESC, record_id DESC
+               LIMIT %s""",
+            (gateway_id, source_id, limit),
+        )
+        rows = cursor.fetchall()
+    samples: list[Dict[str, Any]] = []
+    for row in rows:
+        payload = safe_parse_payload(row.get("data_payload"))
+        quality = safe_parse_payload(row.get("quality_metadata"))
+        if not isinstance(payload, dict) or not isinstance(quality, dict):
+            payload, quality = {}, {}
+        receipt = row.get("gateway_receipt_at")
+        source = row.get("recorded_at")
+        trusted_source_time = row.get("source_time_quality") in ("device_reported", "assumed_utc")
+        sample_time = (
+            min(source, receipt)
+            if trusted_source_time and source and receipt and source <= receipt + timedelta(seconds=60)
+            else receipt or source
+        )
+        if isinstance(sample_time, datetime) and sample_time.tzinfo is None:
+            sample_time = sample_time.replace(tzinfo=timezone.utc)
+        samples.append({
+            "record_id": row.get("record_id"),
+            "sample_at": sample_time,
+            "recorded_at": sample_time,
+            "gross_weight_kg": _finite_number(payload.get("gross_weight_kg")),
+            "weight_valid": quality.get("weight_valid") is not False,
+            "voltage": _finite_number(payload.get("voltage")),
+        })
+    return samples
+
+
+def _lpg_device_context(conn, source_id: str):
+    stored = gateway_config.get_stored_gateway_credentials()
+    binding = gateway_config.load_gateway_db_state(conn, stored[0] if stored else None)
+    if binding.get("status") != "active" or not binding.get("branch_id"):
+        return None, (jsonify({"error": "Gateway is not active"}), 409)
+    gateway_id = binding["gateway_id"]
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """SELECT source_id, device_type, source_kind, label, capacity_kg, status
+               FROM device_registry
+               WHERE gateway_id=%s AND source_id=%s AND status IN ('active', 'maintenance')
+                 AND device_type='lpg_edge_node'""",
+            (gateway_id, source_id),
+        )
+        device = cursor.fetchone()
+    if not device:
+        return None, (jsonify({"error": "LPG edge node not found"}), 404)
+    lpg_configs, lpg_maint_sessions = _load_lpg_node_extras(conn, gateway_id)
+    node_cfg = lpg_interpreter.normalize_node_config(lpg_configs.get(source_id))
+    if node_cfg.get("rated_capacity_kg") is None and device.get("capacity_kg") is not None:
+        node_cfg["rated_capacity_kg"] = _finite_number(device.get("capacity_kg"))
+    return {
+        "gateway_id": gateway_id,
+        "device": device,
+        "config": node_cfg,
+        "active_session": lpg_maint_sessions.get(source_id),
+    }, None
+
+
+def _clean_text(value: Any, max_len: int, default: str = "") -> str:
+    if not isinstance(value, str):
+        return default
+    cleaned = " ".join(value.strip().split())
+    return cleaned[:max_len] if cleaned else default
+
+
+def _optional_float(body: Dict[str, Any], key: str, low: float, high: float, label: str) -> Optional[float]:
+    raw = body.get(key)
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, bool):
+        raise ValueError(f"{label} must be numeric")
+    try:
+        num = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} must be numeric")
+    if not math.isfinite(num) or num < low or num > high:
+        raise ValueError(f"{label} must be between {low} and {high}")
+    return round(num, 3)
+
+
+@app.route("/api/dashboard/lpg/<source_id>/maintenance-status", methods=["GET"])
+@_staff_auth_required
+def lpg_maintenance_status(source_id):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", source_id):
+        return jsonify({"error": "Invalid LPG node identity"}), 400
+    try:
+        conn = get_db_connection()
+        try:
+            ctx, err = _lpg_device_context(conn, source_id)
+            if err:
+                return err
+            samples = _recent_lpg_samples(conn, ctx["gateway_id"], source_id, limit=10)
+            stability = lpg_interpreter.evaluate_swap_stability(
+                samples,
+                tolerance_kg=ctx["config"]["stability_tolerance_kg"],
+            )
+            return jsonify({
+                "source_id": source_id,
+                "maintenance_mode": bool(ctx["active_session"]) or ctx["device"].get("status") == "maintenance",
+                "session": _serialize_maintenance_session(ctx["active_session"]),
+                "stability": stability,
+                "lpg_config": ctx["config"],
+            })
+        finally:
+            conn.close()
+    except Exception as error:
+        logger.warning("LPG maintenance status unavailable (%s)", type(error).__name__)
+        return jsonify({"error": "LPG maintenance data unavailable"}), 503
+
+
+@app.route("/api/dashboard/lpg/<source_id>/maintenance/start", methods=["POST"])
+@_staff_auth_required
+def lpg_maintenance_start(source_id):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", source_id):
+        return jsonify({"error": "Invalid LPG node identity"}), 400
+    if not _valid_staff_csrf():
+        return jsonify({"error": "Invalid request token"}), 403
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    started_by = _clean_text(body.get("started_by"), 80, "Local staff")
+    service_note = _clean_text(body.get("service_note"), 240, "")
+    try:
+        conn = get_db_connection()
+        try:
+            ctx, err = _lpg_device_context(conn, source_id)
+            if err:
+                return err
+            if ctx["active_session"] is not None:
+                return jsonify({"error": "Maintenance mode is already active for this cylinder"}), 409
+            session_id = str(uuid.uuid4())
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO lpg_maintenance_sessions
+                       (session_id, gateway_id, source_id, status, started_by, service_note, started_at)
+                       VALUES (%s, %s, %s, 'active', %s, %s, UTC_TIMESTAMP(6))""",
+                    (session_id, ctx["gateway_id"], source_id, started_by, service_note or None),
+                )
+                cursor.execute(
+                    """UPDATE device_registry SET status='maintenance'
+                       WHERE gateway_id=%s AND source_id=%s AND device_type='lpg_edge_node'""",
+                    (ctx["gateway_id"], source_id),
+                )
+            conn.commit()
+            return jsonify({
+                "status": "active",
+                "session_id": session_id,
+                "source_id": source_id,
+                "started_by": started_by,
+                "service_note": service_note,
+            }), 201
+        finally:
+            conn.close()
+    except Exception as error:
+        logger.warning("Failed to start LPG maintenance (%s)", type(error).__name__)
+        return jsonify({"error": "Failed to start tank swap maintenance"}), 503
+
+
+@app.route("/api/dashboard/lpg/<source_id>/maintenance/complete", methods=["POST"])
+@_staff_auth_required
+def lpg_maintenance_complete(source_id):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", source_id):
+        return jsonify({"error": "Invalid LPG node identity"}), 400
+    if not _valid_staff_csrf():
+        return jsonify({"error": "Invalid request token"}), 403
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    try:
+        new_tare_kg = _optional_float(body, "tare_kg", 0.5, 200.0, "Cylinder tare weight")
+        new_capacity_kg = _optional_float(body, "rated_capacity_kg", 1.0, 500.0, "Rated LPG capacity")
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 422
+    completed_by = _clean_text(body.get("completed_by"), 80, "Local staff")
+    try:
+        conn = get_db_connection()
+        try:
+            ctx, err = _lpg_device_context(conn, source_id)
+            if err:
+                return err
+            session = ctx["active_session"]
+            if session is None:
+                return jsonify({"error": "Maintenance mode is not active for this cylinder"}), 409
+            samples = _recent_lpg_samples(conn, ctx["gateway_id"], source_id, limit=10)
+            stability = lpg_interpreter.evaluate_swap_stability(
+                samples,
+                tolerance_kg=ctx["config"]["stability_tolerance_kg"],
+            )
+            if not stability["stable"]:
+                return jsonify({
+                    "error": stability["reason"],
+                    "stability": stability,
+                }), 409
+            effective_tare = new_tare_kg if new_tare_kg is not None else ctx["config"].get("cylinder_tare_kg")
+            effective_cap = new_capacity_kg if new_capacity_kg is not None else ctx["config"].get("rated_capacity_kg")
+            with conn.cursor() as cursor:
+                if new_tare_kg is not None or new_capacity_kg is not None:
+                    cursor.execute(
+                        """INSERT INTO lpg_node_config
+                           (gateway_id, source_id, cylinder_tare_kg, rated_capacity_kg, updated_by)
+                           VALUES (%s, %s, %s, %s, %s)
+                           ON DUPLICATE KEY UPDATE
+                             cylinder_tare_kg=COALESCE(VALUES(cylinder_tare_kg), cylinder_tare_kg),
+                             rated_capacity_kg=COALESCE(VALUES(rated_capacity_kg), rated_capacity_kg),
+                             updated_by=VALUES(updated_by)""",
+                        (ctx["gateway_id"], source_id, effective_tare, effective_cap, completed_by),
+                    )
+                if effective_cap is not None:
+                    cursor.execute(
+                        """UPDATE device_registry SET status='active', capacity_kg=%s
+                           WHERE gateway_id=%s AND source_id=%s AND device_type='lpg_edge_node'""",
+                        (effective_cap, ctx["gateway_id"], source_id),
+                    )
+                else:
+                    cursor.execute(
+                        """UPDATE device_registry SET status='active'
+                           WHERE gateway_id=%s AND source_id=%s AND device_type='lpg_edge_node'""",
+                        (ctx["gateway_id"], source_id),
+                    )
+                cursor.execute(
+                    """UPDATE lpg_maintenance_sessions
+                       SET status='completed',
+                           completed_at=UTC_TIMESTAMP(6),
+                           completed_by=%s,
+                           new_tare_kg=%s,
+                           new_capacity_kg=%s,
+                           verified_samples_json=%s
+                       WHERE session_id=%s AND status='active'""",
+                    (
+                        completed_by,
+                        effective_tare,
+                        effective_cap,
+                        json.dumps(stability.get("samples") or []),
+                        session["session_id"],
+                    ),
+                )
+            conn.commit()
+            return jsonify({
+                "status": "completed",
+                "session_id": session["session_id"],
+                "source_id": source_id,
+                "tare_kg": effective_tare,
+                "rated_capacity_kg": effective_cap,
+                "stability": stability,
+            })
+        finally:
+            conn.close()
+    except Exception as error:
+        logger.warning("Failed to complete LPG maintenance (%s)", type(error).__name__)
+        return jsonify({"error": "Failed to complete tank swap"}), 503
+
+
+@app.route("/api/dashboard/lpg/<source_id>/gas-baseline", methods=["POST"])
+@_staff_auth_required
+def lpg_gas_baseline(source_id):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", source_id):
+        return jsonify({"error": "Invalid LPG node identity"}), 400
+    if not _valid_staff_csrf():
+        return jsonify({"error": "Invalid request token"}), 403
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    reset = body.get("reset") is True
+    save_settings_only = body.get("save_settings_only") is True and not reset
+    updated_by = _clean_text(body.get("updated_by"), 80, "Local staff")
+    try:
+        conn = get_db_connection()
+        try:
+            ctx, err = _lpg_device_context(conn, source_id)
+            if err:
+                return err
+            cfg = ctx["config"]
+            try:
+                rl_kohm = _optional_float(body, "rl_kohm", 0.1, 200.0, "Load resistor (kOhm)") or cfg["mq6_rl_kohm"]
+                divider_ratio = _optional_float(body, "divider_ratio", 0.1, 10.0, "Voltage divider ratio") or cfg["mq6_divider_ratio"]
+                vcc_v = _optional_float(body, "vcc_v", 2.5, 12.0, "Supply voltage") or cfg["mq6_vcc_v"]
+                warn_ppm = _optional_float(body, "gas_warn_ppm", 10.0, 10000.0, "Warning threshold ppm") or cfg["gas_warn_ppm"]
+                crit_ppm = _optional_float(body, "gas_crit_ppm", 20.0, 20000.0, "Critical threshold ppm") or cfg["gas_crit_ppm"]
+            except ValueError as error:
+                return jsonify({"error": str(error)}), 422
+            if crit_ppm <= warn_ppm:
+                return jsonify({"error": "Critical ppm threshold must exceed warning threshold"}), 422
+
+            if reset:
+                ro_kohm = None
+                baseline_v = None
+            elif save_settings_only:
+                baseline_v = cfg.get("mq6_baseline_v")
+                if baseline_v is not None:
+                    ro_kohm = lpg_interpreter.derive_ro_from_clean_air(
+                        baseline_v,
+                        vcc_v=vcc_v,
+                        rl_kohm=rl_kohm,
+                        divider_ratio=divider_ratio,
+                    )
+                    if ro_kohm is None:
+                        return jsonify({"error": "Saved baseline voltage is out of valid sensor range for updated circuit settings"}), 409
+                else:
+                    ro_kohm = cfg.get("mq6_ro_kohm")
+                if ro_kohm is None:
+                    return jsonify({"error": "Capture a clean-air baseline before saving alert limits"}), 409
+            else:
+                samples = _recent_lpg_samples(conn, ctx["gateway_id"], source_id, limit=5)
+                latest_fresh = None
+                now_utc = datetime.now(timezone.utc)
+                for sample in samples:
+                    recorded = sample.get("recorded_at")
+                    if (
+                        isinstance(recorded, datetime)
+                        and (now_utc - recorded).total_seconds() <= 60
+                        and sample.get("voltage") is not None
+                    ):
+                        latest_fresh = sample
+                        break
+                if latest_fresh is None:
+                    return jsonify({"error": "Fresh valid MQ-6 voltage reading is required to capture clean-air baseline"}), 409
+                ro_kohm = lpg_interpreter.derive_ro_from_clean_air(
+                    latest_fresh["voltage"],
+                    vcc_v=vcc_v,
+                    rl_kohm=rl_kohm,
+                    divider_ratio=divider_ratio,
+                )
+                if ro_kohm is None:
+                    return jsonify({"error": "MQ-6 voltage reading is out of valid sensor range"}), 409
+                baseline_v = round(float(latest_fresh["voltage"]), 4)
+
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO lpg_node_config
+                       (gateway_id, source_id, mq6_vcc_v, mq6_rl_kohm, mq6_divider_ratio,
+                        mq6_ro_kohm, mq6_baseline_v, gas_warn_ppm, gas_crit_ppm, updated_by)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON DUPLICATE KEY UPDATE
+                         mq6_vcc_v=VALUES(mq6_vcc_v),
+                         mq6_rl_kohm=VALUES(mq6_rl_kohm),
+                         mq6_divider_ratio=VALUES(mq6_divider_ratio),
+                         mq6_ro_kohm=VALUES(mq6_ro_kohm),
+                         mq6_baseline_v=VALUES(mq6_baseline_v),
+                         gas_warn_ppm=VALUES(gas_warn_ppm),
+                         gas_crit_ppm=VALUES(gas_crit_ppm),
+                         updated_by=VALUES(updated_by)""",
+                    (
+                        ctx["gateway_id"],
+                        source_id,
+                        vcc_v,
+                        rl_kohm,
+                        divider_ratio,
+                        ro_kohm,
+                        baseline_v,
+                        warn_ppm,
+                        crit_ppm,
+                        updated_by,
+                    ),
+                )
+            conn.commit()
+            return jsonify({
+                "status": "cleared" if reset else ("updated" if save_settings_only else "calibrated"),
+                "source_id": source_id,
+                "mq6_ro_kohm": ro_kohm,
+                "mq6_baseline_v": baseline_v,
+                "mq6_rl_kohm": rl_kohm,
+                "mq6_divider_ratio": divider_ratio,
+                "mq6_vcc_v": vcc_v,
+                "gas_warn_ppm": warn_ppm,
+                "gas_crit_ppm": crit_ppm,
+            })
+        finally:
+            conn.close()
+    except Exception as error:
+        logger.warning("Failed to update MQ-6 baseline (%s)", type(error).__name__)
+        return jsonify({"error": "Failed to save MQ-6 clean-air baseline"}), 503
+
+
+def _format_program_label(program_id: Any) -> Optional[str]:
+    if not isinstance(program_id, str) or not program_id.strip():
+        return None
+    normalized = program_id.strip().lower()
+    if normalized == "quick":
+        return "Quick"
+    if normalized == "standard":
+        return "Standard"
+    return normalized.replace("_", " ").title()
+
+
+def _recent_machine_cycles(gateway_id: str, limit: int = 30) -> list[Dict[str, Any]]:
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """SELECT cycle_id, source_id, program_id, price_myr, target_seconds,
+                          running_seconds, outcome, started_at, finished_at
+                   FROM machine_cycles
+                   WHERE gateway_id=%s
+                   ORDER BY finished_at DESC, started_at DESC
+                   LIMIT %s""",
+                (gateway_id, limit),
+            )
+            return list(cursor.fetchall())
+    finally:
+        conn.close()
+
+
+def _notification_device_summary(device: Dict[str, Any]) -> Dict[str, Any]:
+    obs = device.get("observation")
+    fresh = bool(obs and obs.get("freshness") == "fresh")
+    values = (obs or {}).get("values") or {}
+    settings = (obs or {}).get("settings") or {}
+    gas_info = device.get("gas_interpretation") or {}
+    ppm_calibrated = bool(gas_info.get("ppm_calibrated"))
+    return {
+        "source_id": device["source_id"],
+        "label": device.get("label") or device["source_id"],
+        "type": device["type"],
+        "status": device.get("status") or "active",
+        "maintenance_mode": bool(device.get("maintenance_mode")),
+        "freshness": obs.get("freshness") if obs else "unknown",
+        "state": obs.get("state") if fresh else "UNKNOWN",
+        "fault_code": obs.get("fault_code") if fresh else None,
+        "program_id": settings.get("program_id") if fresh and isinstance(settings, dict) else None,
+        "lpg_percent": values.get("lpg_percent") if fresh else None,
+        "ppm_calibrated": ppm_calibrated,
+        "gas_condition": gas_info.get("gas_condition") if (fresh and ppm_calibrated) else None,
+        "estimated_ppm": gas_info.get("estimated_ppm") if (fresh and ppm_calibrated) else None,
+        "sample_at": obs.get("sample_at") if obs else None,
+    }
+
+
+def _build_notification_events(snapshot: Dict[str, Any], cycles: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    checked_at = snapshot.get("checked_at") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    devices = snapshot.get("devices") or []
+    labels_by_id = {d["source_id"]: d.get("label") or d["source_id"] for d in devices if d.get("source_id")}
+    events: list[Dict[str, Any]] = []
+
+    for device in devices:
+        source_id = device["source_id"]
+        label = device.get("label") or source_id
+        obs = device.get("observation")
+        fresh = bool(obs and obs.get("freshness") == "fresh")
+        sample_at = (obs or {}).get("sample_at") or checked_at
+
+        if device.get("type") in ("washer", "dryer", "washer_dryer") and fresh:
+            state = obs.get("state")
+            if state == "ERROR":
+                fault_code = obs.get("fault_code")
+                detail = f"{label} reported fault {fault_code}" if fault_code else f"{label} entered fault state"
+                events.append({
+                    "id": f"live:machine:{source_id}:error",
+                    "category": "machine",
+                    "kind": "machine_fault",
+                    "severity": "negative",
+                    "title": "Machine fault",
+                    "detail": detail,
+                    "source_id": source_id,
+                    "device_label": label,
+                    "occurred_at": sample_at,
+                    "active": True,
+                })
+            elif state == "RUNNING":
+                prog = _format_program_label((obs.get("settings") or {}).get("program_id"))
+                detail = f"{label} is running {prog}" if prog else f"{label} is running"
+                events.append({
+                    "id": f"live:machine:{source_id}:running",
+                    "category": "machine",
+                    "kind": "machine_running",
+                    "severity": "info",
+                    "title": "Machine running",
+                    "detail": detail,
+                    "source_id": source_id,
+                    "device_label": label,
+                    "occurred_at": sample_at,
+                    "active": True,
+                })
+
+        elif device.get("type") == "lpg_edge_node":
+            if device.get("maintenance_mode"):
+                events.append({
+                    "id": f"live:lpg:{source_id}:maintenance",
+                    "category": "lpg",
+                    "kind": "lpg_maintenance",
+                    "severity": "warning",
+                    "title": "LPG undergoing maintenance",
+                    "detail": f"{label} is undergoing maintenance",
+                    "source_id": source_id,
+                    "device_label": label,
+                    "occurred_at": sample_at,
+                    "active": True,
+                })
+            if fresh and not device.get("maintenance_mode"):
+                pct = (obs.get("values") or {}).get("lpg_percent")
+                if isinstance(pct, (int, float)) and math.isfinite(pct):
+                    if pct < 5:
+                        events.append({
+                            "id": f"live:lpg:{source_id}:critical",
+                            "category": "lpg",
+                            "kind": "lpg_critical",
+                            "severity": "negative",
+                            "title": "LPG gas critically low",
+                            "detail": f"{label} at {pct:.1f}% remaining",
+                            "source_id": source_id,
+                            "device_label": label,
+                            "occurred_at": sample_at,
+                            "active": True,
+                        })
+                    elif pct < 15:
+                        events.append({
+                            "id": f"live:lpg:{source_id}:low",
+                            "category": "lpg",
+                            "kind": "lpg_low",
+                            "severity": "warning",
+                            "title": "LPG gas level low",
+                            "detail": f"{label} at {pct:.1f}% remaining",
+                            "source_id": source_id,
+                            "device_label": label,
+                            "occurred_at": sample_at,
+                            "active": True,
+                        })
+            if fresh:
+                gas_info = device.get("gas_interpretation") or {}
+                gas_cond = str(gas_info.get("gas_condition") or "")
+                est_ppm = gas_info.get("estimated_ppm")
+                if gas_cond == "critical" and isinstance(est_ppm, (int, float)):
+                    events.append({
+                        "id": f"live:lpg:{source_id}:gas_critical",
+                        "category": "lpg",
+                        "kind": "lpg_gas_critical",
+                        "severity": "negative",
+                        "title": "LPG gas leak critical",
+                        "detail": f"{label} estimated {est_ppm:.0f} ppm (MQ-6)",
+                        "source_id": source_id,
+                        "device_label": label,
+                        "occurred_at": sample_at,
+                        "active": True,
+                    })
+                elif gas_cond == "warning" and isinstance(est_ppm, (int, float)):
+                    events.append({
+                        "id": f"live:lpg:{source_id}:gas_warning",
+                        "category": "lpg",
+                        "kind": "lpg_gas_warning",
+                        "severity": "warning",
+                        "title": "LPG gas elevated",
+                        "detail": f"{label} estimated {est_ppm:.0f} ppm (MQ-6)",
+                        "source_id": source_id,
+                        "device_label": label,
+                        "occurred_at": sample_at,
+                        "active": True,
+                    })
+
+    for row in cycles:
+        outcome = str(row.get("outcome") or "").strip().lower()
+        source_id = row["source_id"]
+        label = labels_by_id.get(source_id, source_id)
+        prog = _format_program_label(row.get("program_id")) or "cycle"
+        dur_s = int(row.get("running_seconds") or 0)
+        occurred_at = _utc_iso(row.get("finished_at")) or _utc_iso(row.get("started_at")) or checked_at
+
+        if outcome in ("fault", "error"):
+            kind, severity, title = "machine_fault", "negative", "Machine fault"
+            detail = f"{label} stopped with fault during {prog} ({dur_s} s)"
+        elif outcome == "completed":
+            kind, severity, title = "machine_completed", "positive", "Cycle completed"
+            detail = f"{label} finished {prog} ({dur_s} s)"
+        else:
+            kind, severity, title = "machine_stopped", "neutral", "Cycle stopped"
+            detail = f"{label} stopped {prog} ({dur_s} s)"
+
+        events.append({
+            "id": f"cycle:{row['cycle_id']}:{outcome or 'event'}",
+            "category": "machine",
+            "kind": kind,
+            "severity": severity,
+            "title": title,
+            "detail": detail,
+            "source_id": source_id,
+            "device_label": label,
+            "occurred_at": occurred_at,
+            "active": False,
+        })
+
+    events.sort(key=lambda item: (item.get("occurred_at") or "", 1 if item.get("active") else 0), reverse=True)
+    return events
+
+
+@app.route("/api/dashboard/notifications")
+@_staff_auth_required
+def dashboard_notifications():
+    category = (request.args.get("category") or "all").strip().lower()
+    if category not in ("all", "machine", "lpg"):
+        return jsonify({"error": "Invalid notification category"}), 400
+    limit_raw = request.args.get("limit")
+    if limit_raw is None or limit_raw == "":
+        limit = 100
+    else:
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            return jsonify({"error": "Invalid notification limit"}), 400
+        if not 1 <= limit <= 200:
+            return jsonify({"error": "Invalid notification limit"}), 400
+
+    try:
+        snapshot = _dashboard_snapshot()
+        gateway = snapshot.get("gateway") or {}
+        if gateway.get("status") != "active" or not gateway.get("branch_id"):
+            return jsonify({
+                "gateway": gateway,
+                "checked_at": snapshot.get("checked_at"),
+                "devices": [],
+                "events": [],
+            })
+        stored = gateway_config.get_stored_gateway_credentials()
+        gateway_id = stored[0] if stored else None
+        cycles = _recent_machine_cycles(gateway_id, limit=100) if gateway_id else []
+    except Exception as error:
+        logger.warning("Local notifications unavailable (%s)", type(error).__name__)
+        return jsonify({"error": "Local dashboard data unavailable"}), 503
+
+    events = _build_notification_events(snapshot, cycles)
+    if category != "all":
+        events = [event for event in events if event["category"] == category]
+
+    return jsonify({
+        "gateway": gateway,
+        "checked_at": snapshot.get("checked_at"),
+        "devices": [_notification_device_summary(device) for device in snapshot.get("devices") or []],
+        "events": events[:limit],
+    })
+
+
 @app.route("/api/dashboard/history")
 @_staff_auth_required
 def dashboard_history():
     """Diagnostic recent records for this gateway; never used as current state."""
+    try:
+        category, period, delivery, since, page = _telemetry_history_query(
+            request.args.get("category", "lpg"),
+            request.args.get("period", "all"),
+            request.args.get("delivery", "all"),
+            request.args.get("page", "1"),
+            datetime.now(timezone.utc),
+        )
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+    page_size = 10
     try:
         conn = get_db_connection()
         try:
             stored = gateway_config.get_stored_gateway_credentials()
             gateway = gateway_config.load_gateway_db_state(conn, stored[0] if stored else None)
             if gateway.get("status") != "active":
-                return jsonify({"records": []})
+                return jsonify({
+                    "category": category,
+                    "period": period,
+                    "delivery": delivery,
+                    "page": 1,
+                    "page_size": page_size,
+                    "total": 0,
+                    "total_pages": 1,
+                    "records": [],
+                })
+            gateway_id = gateway["gateway_id"]
             with conn.cursor() as cursor:
                 cursor.execute(
-                    """SELECT record_id, source_id, recorded_at, gateway_receipt_at,
-                              source_time_quality, source_kind, quality_metadata, data_payload,
-                              is_synced, quarantine_reason
-                       FROM sensor_telemetry WHERE gateway_id=%s ORDER BY id DESC LIMIT 20""",
-                    (gateway["gateway_id"],),
+                    """SELECT source_id, device_type
+                       FROM device_registry
+                       WHERE gateway_id=%s""",
+                    (gateway_id,),
                 )
-                return jsonify({"records": [_observation(row) for row in cursor.fetchall()]})
+                reg_rows = cursor.fetchall()
+                target_ids = [
+                    row["source_id"] for row in reg_rows
+                    if (category == "lpg" and row.get("device_type") == "lpg_edge_node")
+                    or (category == "machine" and row.get("device_type") in ("washer", "dryer", "washer_dryer"))
+                ]
+
+                if target_ids:
+                    placeholders = ", ".join(["%s"] * len(target_ids))
+                    where_parts = ["gateway_id=%s", f"source_id IN ({placeholders})"]
+                    params: tuple[Any, ...] = (gateway_id, *target_ids)
+                else:
+                    fallback_kind = "physical" if category == "lpg" else "simulated"
+                    where_parts = ["gateway_id=%s", "source_id IS NOT NULL", "source_kind=%s"]
+                    params = (gateway_id, fallback_kind)
+
+                if delivery == "pending":
+                    where_parts.append("quarantine_reason IS NULL AND is_synced=0")
+                elif delivery == "quarantined":
+                    where_parts.append("(quarantine_reason IS NOT NULL OR is_synced=-1)")
+
+                if since is not None:
+                    where_parts.append("recorded_at>=%s")
+                    params = (*params, since)
+
+                where_sql = " AND ".join(where_parts)
+                cursor.execute(f"SELECT COUNT(*) AS total FROM sensor_telemetry WHERE {where_sql}", params)
+                count_row = cursor.fetchone()
+                total = int(count_row["total"]) if count_row else 0
+                total_pages = max(1, math.ceil(total / page_size))
+                page = min(page, total_pages)
+                offset = (page - 1) * page_size
+
+                cursor.execute(
+                    f"""SELECT record_id, source_id, recorded_at, gateway_receipt_at,
+                               source_time_quality, source_kind, quality_metadata, data_payload,
+                               is_synced, quarantine_reason
+                        FROM sensor_telemetry
+                        WHERE {where_sql}
+                        ORDER BY id DESC
+                        LIMIT %s OFFSET %s""",
+                    (*params, page_size, offset),
+                )
+                return jsonify({
+                    "category": category,
+                    "period": period,
+                    "delivery": delivery,
+                    "page": page,
+                    "page_size": page_size,
+                    "total": total,
+                    "total_pages": total_pages,
+                    "records": [_observation(row) for row in cursor.fetchall()],
+                })
         finally:
             conn.close()
     except Exception as error:

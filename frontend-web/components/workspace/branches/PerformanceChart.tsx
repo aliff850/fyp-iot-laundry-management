@@ -1,189 +1,507 @@
 "use client";
 
-import React, { useId, useMemo, useState } from "react";
-import { Activity, BarChart3, Building2, Calendar, DollarSign, Flame, WashingMachine } from "lucide-react";
-import type { WorkspaceBranch } from "@/lib/auth/business";
+import React, { useMemo, useRef, useState, useTransition } from "react";
+import type { ChartConfiguration } from "chart.js/auto";
+import {
+  fetchBranchOverviewAnalytics,
+  type FetchOverviewAnalyticsResult,
+} from "@/app/branches/[branchId]/overview/actions";
+import type {
+  BranchOverviewAnalytics,
+  OverviewAnalyticsPeriod,
+  WorkspaceBranch,
+} from "@/lib/auth/business";
+import {
+  ChartCanvas,
+  withHexAlpha,
+  type ResolvedTheme,
+} from "@/components/workspace/branches/ChartCanvas";
+import { BusinessInsightsSections } from "@/components/workspace/branches/BusinessInsightsSections";
 
-export type TimeframeMode = "daily" | "weekly" | "monthly";
-export type MetricKey = "revenue" | "cycles" | "utilization" | "lpg";
-
-export interface PerformanceDataPoint {
-  timestamp: string;
-  label: string;
-  revenue_myr?: number;
-  cycle_count?: number;
-  utilization_pct?: number;
-  lpg_kg?: number;
-}
+export type MachineMetricView = "cycles" | "runtime" | "revenue";
 
 export interface PerformanceChartProps {
-  branches: WorkspaceBranch[];
-  data?: PerformanceDataPoint[];
+  branchId: string;
+  initialAnalytics: BranchOverviewAnalytics | null;
+  initialError?: string | null;
+  branches?: Array<Pick<WorkspaceBranch, "id" | "name">>;
+  showMachineMetrics?: boolean;
+  showBusinessInsights?: boolean;
+  onFetchPeriod?: (
+    branchId: string,
+    period: OverviewAnalyticsPeriod
+  ) => Promise<FetchOverviewAnalyticsResult>;
 }
 
-interface MetricConfig {
-  key: MetricKey;
-  label: string;
-  shortLabel: string;
-  unit: string;
-  formatValue: (v: number | undefined) => string;
-  color: string;
-  icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" | "false" }>;
+const PERIOD_OPTIONS: { key: OverviewAnalyticsPeriod; label: string }[] = [
+  { key: "day", label: "Today" },
+  { key: "week", label: "7 days" },
+  { key: "month", label: "30 days" },
+];
+
+const METRIC_OPTIONS: { key: MachineMetricView; label: string }[] = [
+  { key: "cycles", label: "Completed cycles" },
+  { key: "runtime", label: "Running minutes" },
+  { key: "revenue", label: "Estimated revenue" },
+];
+
+function emptyFallbackAnalytics(branchId: string, period: OverviewAnalyticsPeriod): BranchOverviewAnalytics {
+  return {
+    branch_id: branchId,
+    period,
+    granularity: period === "day" ? "hour" : "day",
+    timezone: "Asia/Kuala_Lumpur",
+    coverage: "recorded_cloud_telemetry",
+    summary: {
+      completed_cycles: 0,
+      running_seconds: 0,
+      running_minutes: 0,
+      estimated_revenue_myr: "0.00",
+      avg_gas_ppm: null,
+      gas_node_count: 0,
+      total_lpg_nodes: 0,
+      gas_aggregation_mode: "uncalibrated",
+      complaints_total: null,
+    },
+    programs: [],
+    machines: [],
+    revenue_series: [],
+    gas_series: {
+      aggregation_mode: "uncalibrated",
+      node_count: 0,
+      nodes: [],
+      series: [],
+    },
+    complaints: {
+      implemented: false,
+      source: "deferred_customer_app",
+      total: null,
+      series: [],
+    },
+  };
 }
 
-const METRICS: Record<MetricKey, MetricConfig> = {
-  revenue: {
-    key: "revenue",
-    label: "Total Revenue",
-    shortLabel: "Revenue",
-    unit: "MYR",
-    formatValue: v => (v !== undefined ? `RM ${v.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"),
-    color: "#79c5a6", // positive mint token
-    icon: DollarSign,
-  },
-  cycles: {
-    key: "cycles",
-    label: "Machine Cycles",
-    shortLabel: "Cycles",
-    unit: "cycles",
-    formatValue: v => (v !== undefined ? v.toLocaleString() : "—"),
-    color: "#ef6268", // accent coral token
-    icon: WashingMachine,
-  },
-  utilization: {
-    key: "utilization",
-    label: "Fleet Utilization",
-    shortLabel: "Utilization",
-    unit: "%",
-    formatValue: v => (v !== undefined ? `${v.toFixed(1)}%` : "—"),
-    color: "#dfb463", // warning amber token
-    icon: Activity,
-  },
-  lpg: {
-    key: "lpg",
-    label: "LPG Consumed",
-    shortLabel: "LPG Gas",
-    unit: "kg",
-    formatValue: v => (v !== undefined ? `${v.toFixed(1)} kg` : "—"),
-    color: "#b4b4ba", // muted text token
-    icon: Flame,
-  },
-};
+export function PerformanceChart({
+  branchId,
+  initialAnalytics,
+  initialError = null,
+  branches,
+  showMachineMetrics = true,
+  showBusinessInsights = false,
+  onFetchPeriod,
+}: PerformanceChartProps) {
+  const multiBranchMode = branches !== undefined;
+  const [selectedBranchId, setSelectedBranchId] = useState<string>(
+    multiBranchMode ? branchId || "all" : branchId
+  );
+  const [period, setPeriod] = useState<OverviewAnalyticsPeriod>(
+    initialAnalytics?.period ?? "day"
+  );
+  const [metricView, setMetricView] = useState<MachineMetricView>("cycles");
+  const [analytics, setAnalytics] = useState<BranchOverviewAnalytics | null>(initialAnalytics);
+  const [errorMessage, setErrorMessage] = useState<string | null>(initialError);
+  const [isPending, startTransition] = useTransition();
+  const requestSeqRef = useRef(0);
 
-export function PerformanceChart({ branches, data = [] }: PerformanceChartProps) {
-  const [timeframe, setTimeframe] = useState<TimeframeMode>("daily");
-  const [activeMetric, setActiveMetric] = useState<MetricKey>("revenue");
-  const [selectedBranchId, setSelectedBranchId] = useState<string>("all");
+  const activeData = analytics ?? emptyFallbackAnalytics(selectedBranchId, period);
+  const viewingAllBranches =
+    multiBranchMode &&
+    (analytics ? analytics.branch_id === "all" : selectedBranchId === "all");
+  const fetchFn = onFetchPeriod ?? fetchBranchOverviewAnalytics;
 
-  const chartTitleId = useId();
+  function fetchAnalytics(nextBranchId: string, nextPeriod: OverviewAnalyticsPeriod) {
+    const requestId = ++requestSeqRef.current;
+    startTransition(async () => {
+      const res = await fetchFn(nextBranchId, nextPeriod);
+      if (requestSeqRef.current !== requestId) return;
+      if (res.ok) {
+        setAnalytics(res.data);
+        setErrorMessage(null);
+      } else {
+        setErrorMessage(res.message);
+      }
+    });
+  }
 
-  // Generate truthful placeholder timeline labels for the selected timeframe
-  const timelineTicks = useMemo(() => {
-    if (timeframe === "daily") {
-      const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-      return days.map(d => ({ label: d }));
+  function handleSelectPeriod(nextPeriod: OverviewAnalyticsPeriod) {
+    if (nextPeriod === period && analytics !== null && !errorMessage) return;
+    setPeriod(nextPeriod);
+    fetchAnalytics(selectedBranchId, nextPeriod);
+  }
+
+  function handleSelectBranch(nextBranchId: string) {
+    if (nextBranchId === selectedBranchId && analytics !== null && !errorMessage) return;
+    setSelectedBranchId(nextBranchId);
+    fetchAnalytics(nextBranchId, period);
+  }
+
+  const gasLabel = useMemo(() => {
+    const gas = activeData.gas_series;
+    if (gas.aggregation_mode === "uncalibrated") {
+      return "Calibration required";
     }
-    if (timeframe === "weekly") {
-      return [{ label: "W1" }, { label: "W2" }, { label: "W3" }, { label: "W4" }];
+    if (gas.aggregation_mode === "single_node") {
+      const calNode = gas.nodes.find((n) => n.calibrated);
+      if (!calNode) return "Single LPG node";
+      return viewingAllBranches && calNode.branch_name
+        ? `${calNode.label} (${calNode.branch_name})`
+        : calNode.label;
     }
-    return [
-      { label: "Jan" },
-      { label: "Feb" },
-      { label: "Mar" },
-      { label: "Apr" },
-      { label: "May" },
-      { label: "Jun" },
-      { label: "Jul" },
-      { label: "Aug" },
-      { label: "Sep" },
-      { label: "Oct" },
-      { label: "Nov" },
-      { label: "Dec" },
-    ];
-  }, [timeframe]);
+    return `${gas.node_count} nodes averaged`;
+  }, [activeData, viewingAllBranches]);
 
-  const activeBranchLabel = useMemo(() => {
-    if (selectedBranchId === "all") return "All branches";
-    const found = branches.find(b => b.id === selectedBranchId);
-    return found ? found.name : "All branches";
-  }, [branches, selectedBranchId]);
+  const machineChartConfig = useMemo(() => {
+    return (theme: ResolvedTheme): ChartConfiguration => {
+      const labels = activeData.machines.map((m) => {
+        const name = m.label || m.source_id;
+        return viewingAllBranches && m.branch_name ? [name, m.branch_name] : name;
+      });
+      const programColors = [
+        theme.accent,
+        theme.positive,
+        theme.warning,
+        theme.control,
+        theme.ink,
+        theme.negative,
+      ];
 
-  const metric = METRICS[activeMetric];
+      if (metricView === "cycles") {
+        const programs = activeData.programs;
+        const datasets =
+          programs.length > 0
+            ? programs.map((prog, idx) => {
+                const color = programColors[idx % programColors.length];
+                return {
+                  label: prog.label,
+                  data: activeData.machines.map(
+                    (m) => m.cycles_by_program[prog.program_id] ?? 0
+                  ),
+                  backgroundColor: color,
+                  borderRadius: 3,
+                };
+              })
+            : [
+                {
+                  label: "Completed cycles",
+                  data: activeData.machines.map((m) => m.completed_cycles),
+                  backgroundColor: theme.accent,
+                  borderRadius: 3,
+                },
+              ];
 
-  // SVG Chart Dimensions
-  const svgWidth = 800;
-  const svgHeight = 220;
-  const padLeft = 45;
-  const padRight = 20;
-  const padTop = 25;
-  const padBottom = 35;
-  const plotWidth = svgWidth - padLeft - padRight;
-  const plotHeight = svgHeight - padTop - padBottom;
+        return {
+          type: "bar",
+          data: { labels, datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: theme.reducedMotion ? false : undefined,
+            plugins: {
+              legend: {
+                display: programs.length > 0,
+                position: "bottom",
+                labels: { color: theme.muted, boxWidth: 12, padding: 14 },
+              },
+            },
+            scales: {
+              x: {
+                stacked: true,
+                ticks: { color: theme.muted },
+                grid: { color: theme.rule },
+              },
+              y: {
+                stacked: true,
+                beginAtZero: true,
+                title: { display: true, text: "Cycles", color: theme.muted },
+                ticks: { color: theme.muted, precision: 0 },
+                grid: { color: theme.rule },
+              },
+            },
+          },
+        };
+      }
 
-  const hasData = data.length > 0;
+      if (metricView === "runtime") {
+        return {
+          type: "bar",
+          data: {
+            labels,
+            datasets: [
+              {
+                label: "Running minutes",
+                data: activeData.machines.map((m) => m.running_minutes),
+                backgroundColor: theme.positive,
+                borderRadius: 3,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: theme.reducedMotion ? false : undefined,
+            plugins: {
+              legend: { display: false },
+            },
+            scales: {
+              x: {
+                ticks: { color: theme.muted },
+                grid: { color: theme.rule },
+              },
+              y: {
+                beginAtZero: true,
+                title: { display: true, text: "Minutes", color: theme.muted },
+                ticks: { color: theme.muted },
+                grid: { color: theme.rule },
+              },
+            },
+          },
+        };
+      }
+
+      return {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [
+            {
+              label: "Estimated revenue (RM)",
+              data: activeData.machines.map((m) => Number(m.estimated_revenue_myr || 0)),
+              backgroundColor: theme.warning,
+              borderRadius: 3,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: theme.reducedMotion ? false : undefined,
+          plugins: {
+            legend: { display: false },
+          },
+          scales: {
+            x: {
+              ticks: { color: theme.muted },
+              grid: { color: theme.rule },
+            },
+            y: {
+              beginAtZero: true,
+              title: { display: true, text: "RM", color: theme.muted },
+              ticks: { color: theme.muted },
+              grid: { color: theme.rule },
+            },
+          },
+        },
+      };
+    };
+  }, [activeData.machines, activeData.programs, metricView, viewingAllBranches]);
+
+  const revenueChartConfig = useMemo(() => {
+    return (theme: ResolvedTheme): ChartConfiguration => {
+      const series = activeData.revenue_series;
+      return {
+        type: "line",
+        data: {
+          labels: series.map((pt) => pt.label),
+          datasets: [
+            {
+              label: "Cumulative revenue (RM)",
+              data: series.map((pt) => Number(pt.cumulative_revenue_myr || 0)),
+              borderColor: theme.accent,
+              backgroundColor: withHexAlpha(theme.accent, "26"),
+              fill: true,
+              tension: 0.25,
+              pointRadius: series.length > 24 ? 2 : 3,
+              pointHoverRadius: 5,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: theme.reducedMotion ? false : undefined,
+          plugins: {
+            legend: { display: false },
+          },
+          scales: {
+            x: {
+              title: {
+                display: true,
+                text: activeData.granularity === "hour" ? "Hourly MYT" : "Daily MYT",
+                color: theme.faint,
+              },
+              ticks: { color: theme.muted, maxRotation: 0, autoSkip: true },
+              grid: { color: theme.rule },
+            },
+            y: {
+              beginAtZero: true,
+              title: { display: true, text: "RM", color: theme.muted },
+              ticks: { color: theme.muted },
+              grid: { color: theme.rule },
+            },
+          },
+        },
+      };
+    };
+  }, [activeData.granularity, activeData.revenue_series]);
+
+  const gasChartConfig = useMemo(() => {
+    return (theme: ResolvedTheme): ChartConfiguration => {
+      const series = activeData.gas_series.series;
+      return {
+        type: "line",
+        data: {
+          labels: series.map((pt) => pt.label),
+          datasets: [
+            {
+              label: "Average gas (PPM)",
+              data: series.map((pt) => pt.avg_ppm),
+              borderColor: theme.positive,
+              backgroundColor: withHexAlpha(theme.positive, "22"),
+              fill: true,
+              spanGaps: false,
+              tension: 0.2,
+              pointRadius: series.length > 24 ? 2 : 3,
+              pointHoverRadius: 5,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: theme.reducedMotion ? false : undefined,
+          plugins: {
+            legend: { display: false },
+          },
+          scales: {
+            x: {
+              title: {
+                display: true,
+                text: activeData.granularity === "hour" ? "Hourly MYT" : "Daily MYT",
+                color: theme.faint,
+              },
+              ticks: { color: theme.muted, maxRotation: 0, autoSkip: true },
+              grid: { color: theme.rule },
+            },
+            y: {
+              beginAtZero: true,
+              title: { display: true, text: "PPM", color: theme.muted },
+              ticks: { color: theme.muted },
+              grid: { color: theme.rule },
+            },
+          },
+        },
+      };
+    };
+  }, [activeData.gas_series.series, activeData.granularity]);
+
+  const complaintsChartConfig = useMemo(() => {
+    return (theme: ResolvedTheme): ChartConfiguration => {
+      const series = activeData.complaints.series;
+      return {
+        type: "bar",
+        data: {
+          labels: series.map((pt) => pt.label),
+          datasets: [
+            {
+              label: "Complaints",
+              data: series.map((pt) => pt.count),
+              backgroundColor: theme.control,
+              borderRadius: 3,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: theme.reducedMotion ? false : undefined,
+          plugins: {
+            legend: { display: false },
+          },
+          scales: {
+            x: {
+              ticks: { color: theme.muted, maxRotation: 0, autoSkip: true },
+              grid: { color: theme.rule },
+            },
+            y: {
+              beginAtZero: true,
+              suggestedMax: 5,
+              title: { display: true, text: "Reports", color: theme.muted },
+              ticks: { color: theme.muted, precision: 0 },
+              grid: { color: theme.rule },
+            },
+          },
+        },
+      };
+    };
+  }, [activeData.complaints.series]);
+
+  const summary = activeData.summary;
+  const formattedRevenue = `RM ${Number(summary.estimated_revenue_myr || 0).toFixed(2)}`;
+  const formattedRuntime = `${Number(summary.running_minutes || 0).toFixed(1)} min`;
+  const formattedGas =
+    summary.avg_gas_ppm !== null && summary.avg_gas_ppm !== undefined
+      ? `${Number(summary.avg_gas_ppm).toFixed(1)} ppm`
+      : "—";
 
   return (
     <section
-      className="rounded-md border border-line bg-surface p-5 md:p-6"
-      aria-labelledby={chartTitleId}
+      aria-labelledby="branch-analytics-heading"
+      className="space-y-4 rounded-md border border-line bg-surface p-4 sm:space-y-6 sm:p-5"
     >
-      {/* Header Row: Title, Subtitle, and Timeframe / Branch Controls */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-rule pb-3">
-        <div>
-          <h2 id={chartTitleId} className="text-base font-semibold text-ink">
-            Operations Performance
-          </h2>
-          <p className="mt-0.5 text-xs text-muted">
-            Multi-branch summary across revenue, completed cycles, utilization and fuel
-          </p>
-        </div>
+      {/* Top Toolbar: Heading + Optional Branch Filter + Period Selector */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h2
+          id="branch-analytics-heading"
+          className="text-base font-bold text-ink"
+        >
+          Branch analytics
+        </h2>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Branch Filter (if multiple branches exist) */}
-          {branches.length > 1 && (
-            <div className="flex items-center gap-1.5">
-              <label htmlFor="branch-filter" className="sr-only">
-                Filter by branch
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+          {multiBranchMode && (
+            <div className="min-w-0">
+              <label htmlFor="branch-analytics-filter" className="sr-only">
+                Filter analytics by branch
               </label>
-              <div className="relative inline-flex items-center">
-                <Building2 className="pointer-events-none absolute left-2.5 size-3.5 text-faint" aria-hidden="true" />
-                <select
-                  id="branch-filter"
-                  value={selectedBranchId}
-                  onChange={e => setSelectedBranchId(e.target.value)}
-                  className="min-h-8 rounded-md border border-line bg-navy pl-8 pr-6 py-1 text-xs text-ink transition-colors hover:border-control focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                >
-                  <option value="all">All branches ({branches.length})</option>
-                  {branches.map(b => (
-                    <option key={b.id} value={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <select
+                id="branch-analytics-filter"
+                aria-label="Filter analytics by branch"
+                value={selectedBranchId}
+                disabled={isPending}
+                onChange={(e) => handleSelectBranch(e.target.value)}
+                className="min-h-11 w-full rounded-md border border-control bg-canvas px-3 py-2 text-sm text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 sm:w-auto"
+              >
+                <option value="all">All branches</option>
+                {branches.map((branch) => (
+                  <option key={branch.id} value={branch.id}>
+                    {branch.name}
+                  </option>
+                ))}
+              </select>
             </div>
           )}
 
-          {/* Timeframe Filter (Daily, Weekly, Monthly) */}
           <div
-            className="inline-flex items-center gap-1 rounded-md border border-line bg-navy p-1 text-xs"
             role="group"
-            aria-label="Select analytics timeframe"
+            aria-label="Analytics timeframe"
+            className="flex flex-wrap gap-2"
           >
-            {(["daily", "weekly", "monthly"] as const).map(tf => {
-              const isSelected = timeframe === tf;
+            {PERIOD_OPTIONS.map((opt) => {
+              const active = period === opt.key;
               return (
                 <button
-                  key={tf}
+                  key={opt.key}
                   type="button"
-                  onClick={() => setTimeframe(tf)}
-                  aria-pressed={isSelected}
-                  className={`inline-flex min-h-7 items-center rounded px-2.5 py-1 text-xs capitalize transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none ${isSelected
-                    ? "bg-navy-selected font-semibold text-ink border border-line"
-                    : "text-muted hover:text-ink"
-                    }`}
+                  aria-pressed={active}
+                  disabled={isPending}
+                  onClick={() => handleSelectPeriod(opt.key)}
+                  className={
+                    active
+                      ? "min-h-11 whitespace-nowrap rounded-md border border-navy-selected bg-navy-selected px-3.5 py-2 text-xs font-semibold text-ink transition-colors focus-visible:outline-2 focus-visible:outline-accent"
+                      : "min-h-11 whitespace-nowrap rounded-md border border-control bg-canvas px-3.5 py-2 text-xs font-semibold text-muted transition-colors hover:border-ink/40 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+                  }
                 >
-                  {tf}
+                  {opt.label}
                 </button>
               );
             })}
@@ -191,172 +509,242 @@ export function PerformanceChart({ branches, data = [] }: PerformanceChartProps)
         </div>
       </div>
 
-      {/* 4 Summary Metric Tiles */}
-      <div
-        className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4"
-        aria-label="Performance indicators summary"
-      >
-        {(Object.keys(METRICS) as MetricKey[]).map(key => {
-          const cfg = METRICS[key];
-          const Icon = cfg.icon;
-          const isActive = activeMetric === key;
-          return (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setActiveMetric(key)}
-              aria-pressed={isActive}
-              className={`flex flex-col justify-between rounded-md border p-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${isActive
-                ? "border-line bg-navy"
-                : "border-line bg-surface hover:bg-raised"
-                }`}
-            >
-              <div className="flex items-center justify-between text-muted">
-                <span className="flex items-center gap-1.5 text-xs">
-                  <Icon className="size-3.5" aria-hidden="true" />
-                  {cfg.shortLabel}
-                </span>
-                <span className="text-[11px] text-faint capitalize">{timeframe}</span>
-              </div>
-              <div className="mt-2 flex items-baseline">
-                <span className="text-xl font-semibold text-ink tabular-nums">
-                  {cfg.formatValue(undefined)}
-                </span>
-                {cfg.unit && (
-                  <span className="ml-1 text-xs text-muted font-normal">
-                    {cfg.unit}
-                  </span>
-                )}
-              </div>
-              <span className="mt-1 text-[11px] text-faint">
-                Awaiting telemetry
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Metric Focus Navigation Tabs */}
-      <div className="mt-4 flex min-w-0 gap-4 overflow-x-auto border-b border-line text-xs">
-        {(Object.keys(METRICS) as MetricKey[]).map(key => {
-          const cfg = METRICS[key];
-          const isSelected = activeMetric === key;
-          return (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setActiveMetric(key)}
-              aria-pressed={isSelected}
-              className={`min-h-9 shrink-0 whitespace-nowrap border-b-2 py-2 font-medium transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none ${isSelected
-                ? "border-accent text-ink font-semibold"
-                : "border-transparent text-muted"
-                }`}
-            >
-              {cfg.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Chart Canvas Area */}
-      <div className="relative mt-4 rounded-md border border-rule bg-canvas/60 p-3 md:p-5 overflow-hidden">
-        <svg
-          viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-          className="w-full h-56 md:h-64 select-none"
-          aria-label={`${metric.label} chart for ${timeframe} timeframe`}
-          role="img"
+      {/* Inline Service Error Alert (preserves existing data rather than showing fake zeros) */}
+      {errorMessage && (
+        <div
+          role="alert"
+          className="rounded-md border border-warning/40 bg-warning/10 p-3.5 text-sm text-warning"
         >
-          {/* Horizontal Background Gridlines */}
-          {[0, 0.33, 0.66, 1].map((ratio, index) => {
-            const y = padTop + plotHeight * ratio;
-            return (
-              <g key={index}>
-                <line
-                  x1={padLeft}
-                  y1={y}
-                  x2={svgWidth - padRight}
-                  y2={y}
-                  stroke="#242328"
-                  strokeWidth="1"
-                  strokeDasharray="4 4"
-                />
-                <text
-                  x={padLeft - 8}
-                  y={y + 4}
-                  textAnchor="end"
-                  className="fill-[#94949d] text-[10px] tabular-nums"
-                >
-                  —
-                </text>
-              </g>
-            );
-          })}
+          {errorMessage}
+        </div>
+      )}
 
-          {/* X-Axis Timeline Ticks */}
-          {timelineTicks.map((tick, index) => {
-            const step = plotWidth / (timelineTicks.length - 1 || 1);
-            const x = padLeft + index * step;
-            return (
-              <g key={index}>
-                <line
-                  x1={x}
-                  y1={padTop + plotHeight}
-                  x2={x}
-                  y2={padTop + plotHeight + 5}
-                  stroke="#2c2b30"
-                  strokeWidth="1"
-                />
-                <text
-                  x={x}
-                  y={padTop + plotHeight + 18}
-                  textAnchor="middle"
-                  className="fill-[#94949d] text-[11px] tabular-nums"
-                >
-                  {tick.label}
-                </text>
-              </g>
-            );
-          })}
-        </svg>
+      {/* 4 Summary KPI Tiles */}
+      <dl
+        aria-label="Overview performance summary"
+        className="grid grid-cols-2 gap-3 lg:grid-cols-4"
+      >
+        <div className="min-w-0 rounded-md border border-rule bg-raised p-3.5 sm:p-4">
+          <dt className="text-xs font-medium text-muted">Completed cycles</dt>
+          <dd className="mt-1 text-lg font-extrabold tabular-nums text-ink sm:text-2xl">
+            {analytics ? summary.completed_cycles : "—"}
+          </dd>
+        </div>
+        <div className="min-w-0 rounded-md border border-rule bg-raised p-3.5 sm:p-4">
+          <dt className="text-xs font-medium text-muted">Total runtime</dt>
+          <dd className="mt-1 text-lg font-extrabold tabular-nums text-ink sm:text-2xl">
+            {analytics ? formattedRuntime : "—"}
+          </dd>
+        </div>
+        <div className="min-w-0 rounded-md border border-rule bg-raised p-3.5 sm:p-4">
+          <dt className="text-xs font-medium text-muted">Est. revenue</dt>
+          <dd className="mt-1 text-lg font-extrabold tabular-nums text-ink sm:text-2xl">
+            {analytics ? formattedRevenue : "—"}
+          </dd>
+        </div>
+        <div className="min-w-0 rounded-md border border-rule bg-raised p-3.5 sm:p-4">
+          <dt className="text-xs font-medium text-muted">Avg gas PPM</dt>
+          <dd className="mt-1 text-lg font-extrabold tabular-nums text-ink sm:text-2xl">
+            {analytics ? formattedGas : "—"}
+          </dd>
+        </div>
+      </dl>
 
-        {/* Blank / Pending State Overlay (Truthful Presentation per DESIGN.md Section 5.2) */}
-        {!hasData && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center backdrop-blur-[1px]">
-            <div className="max-w-md rounded-md border border-line bg-surface/95 px-6 py-5 shadow-lg">
-              <div className="inline-flex size-10 items-center justify-center rounded-md border border-line bg-raised mb-3">
-                <BarChart3 className="size-5 text-accent" aria-hidden="true" />
-              </div>
-              <h3 className="text-sm font-semibold text-ink">
-                No {metric.shortLabel.toLowerCase()} records recorded yet
-              </h3>
-              <p className="mt-1 text-xs text-muted leading-relaxed">
-                Aggregated {timeframe} metrics for {metric.label.toLowerCase()} across {activeBranchLabel.toLowerCase()} will appear once physical gateway telemetry or machine service syncs are active.
-              </p>
-              {/* Pointless message */}
-              {/* <div className="mt-3.5 inline-flex items-center gap-1.5 rounded border border-line bg-raised px-2.5 py-1 text-xs text-muted">
-                <Activity className="size-3 text-warning" aria-hidden="true" />
-                <span>Status: Awaiting gateway batch sync</span>
-              </div> */}
-            </div>
+      {/* Section 1: Machine Metrics Bar Chart (Toggleable) + Exact Breakdown Table */}
+      {showMachineMetrics && (
+      <div className="rounded-md border border-rule bg-raised p-4 sm:p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <h3 className="text-base font-bold text-ink">Machine metrics</h3>
+
+          <div
+            role="group"
+            aria-label="Machine metric chart"
+            className="flex flex-wrap gap-2"
+          >
+            {METRIC_OPTIONS.map((opt) => {
+              const active = metricView === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => setMetricView(opt.key)}
+                  className={
+                    active
+                      ? "min-h-11 whitespace-nowrap rounded-md border border-navy-selected bg-navy-selected px-3.5 py-2 text-xs font-semibold text-ink transition-colors focus-visible:outline-2 focus-visible:outline-accent"
+                      : "min-h-11 whitespace-nowrap rounded-md border border-control bg-canvas px-3.5 py-2 text-xs font-semibold text-muted transition-colors hover:border-ink/40 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+                  }
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
           </div>
+        </div>
+
+        <div className="mt-4 h-64 w-full min-w-0 sm:h-72">
+          {activeData.machines.length === 0 ? (
+            <div className="flex h-full items-center justify-center rounded-md border border-rule bg-canvas/50 p-4 text-center text-sm text-muted">
+              {viewingAllBranches
+                ? (branches?.length ?? 0) === 0
+                  ? "No branches recorded yet."
+                  : "No approved machines across branches."
+                : "No approved machines in this branch."}
+            </div>
+          ) : (
+            <ChartCanvas
+              ariaLabel={`Machine metrics bar chart showing ${metricView}`}
+              buildConfig={machineChartConfig}
+            />
+          )}
+        </div>
+
+        <div className="mt-4 overflow-x-auto rounded-md border border-rule">
+          <table className="min-w-full divide-y divide-rule text-left text-sm">
+            <thead className="bg-surface/80">
+              <tr>
+                <th scope="col" className="whitespace-nowrap px-3.5 py-2.5 text-xs font-semibold text-muted">
+                  Machine
+                </th>
+                {viewingAllBranches && (
+                  <th scope="col" className="whitespace-nowrap px-3.5 py-2.5 text-xs font-semibold text-muted">
+                    Branch
+                  </th>
+                )}
+                <th scope="col" className="whitespace-nowrap px-3.5 py-2.5 text-right text-xs font-semibold text-muted">
+                  Cycles
+                </th>
+                <th scope="col" className="whitespace-nowrap px-3.5 py-2.5 text-right text-xs font-semibold text-muted">
+                  Runtime (min)
+                </th>
+                <th scope="col" className="whitespace-nowrap px-3.5 py-2.5 text-right text-xs font-semibold text-muted">
+                  Revenue (RM)
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-rule bg-surface">
+              {activeData.machines.length === 0 ? (
+                <tr>
+                  <td colSpan={viewingAllBranches ? 5 : 4} className="px-3.5 py-3 text-sm text-muted">
+                    No recorded machine activity for this timeframe.
+                  </td>
+                </tr>
+              ) : (
+                activeData.machines.map((machine) => (
+                  <tr
+                    key={`${machine.branch_id ?? ""}:${machine.source_id}`}
+                    className="hover:bg-raised/30"
+                  >
+                    <td className="whitespace-nowrap px-3.5 py-2.5 font-medium text-ink">
+                      {machine.label || machine.source_id}
+                    </td>
+                    {viewingAllBranches && (
+                      <td className="whitespace-nowrap px-3.5 py-2.5 text-muted">
+                        {machine.branch_name || "—"}
+                      </td>
+                    )}
+                    <td className="whitespace-nowrap px-3.5 py-2.5 text-right tabular-nums text-ink">
+                      {machine.completed_cycles}
+                    </td>
+                    <td className="whitespace-nowrap px-3.5 py-2.5 text-right tabular-nums text-ink">
+                      {machine.running_minutes.toFixed(1)}
+                    </td>
+                    <td className="whitespace-nowrap px-3.5 py-2.5 text-right tabular-nums text-ink">
+                      {Number(machine.estimated_revenue_myr || 0).toFixed(2)}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      )}
+
+      {showBusinessInsights && (
+        <BusinessInsightsSections
+          analytics={activeData}
+          viewingAllBranches={viewingAllBranches}
+          hasLoadedData={analytics !== null}
+        />
+      )}
+
+      {/* Section 2: Cumulative Estimated Revenue */}
+      <div className="rounded-md border border-rule bg-raised p-4 sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-base font-bold text-ink">
+            Cumulative estimated revenue
+          </h3>
+          <span className="text-xs font-medium text-faint">
+            {activeData.granularity === "hour" ? "Hourly MYT" : "Daily MYT"}
+          </span>
+        </div>
+
+        <div className="mt-4 h-64 w-full min-w-0">
+          {activeData.revenue_series.length === 0 ? (
+            <div className="flex h-full items-center justify-center rounded-md border border-rule bg-canvas/50 p-4 text-center text-sm text-muted">
+              No revenue intervals recorded yet.
+            </div>
+          ) : (
+            <ChartCanvas
+              ariaLabel="Cumulative estimated revenue line chart"
+              buildConfig={revenueChartConfig}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Section 3: Average Environmental Gas (PPM) */}
+      <div className="rounded-md border border-rule bg-raised p-4 sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-base font-bold text-ink">
+            Average environmental gas
+          </h3>
+          <span className="text-xs font-medium text-muted">{gasLabel}</span>
+        </div>
+
+        <div className="mt-4 h-64 w-full min-w-0">
+          {activeData.gas_series.series.length === 0 ? (
+            <div className="flex h-full items-center justify-center rounded-md border border-rule bg-canvas/50 p-4 text-center text-sm text-muted">
+              No gas telemetry recorded for this timeframe.
+            </div>
+          ) : (
+            <ChartCanvas
+              ariaLabel="Average environmental gas PPM line chart"
+              buildConfig={gasChartConfig}
+            />
+          )}
+        </div>
+
+        {activeData.gas_series.aggregation_mode === "uncalibrated" && (
+          <p className="mt-3 text-xs text-muted">
+            Gas PPM readings require a calibrated LPG edge node.
+          </p>
         )}
       </div>
 
-      {/* Footer Provenance & Scope */}
-      {/* Not needed */}
-      {/* <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-rule pt-3 text-xs text-faint">
-        <div className="flex items-center gap-1.5">
-          <Calendar className="size-3.5 text-faint" aria-hidden="true" />
-          <span>
-            Scope: {activeBranchLabel} · Currency: Malaysian Ringgit (MYR)
+      {/* Section 4: Customer Complaints */}
+      <div className="rounded-md border border-rule bg-raised p-4 sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-base font-bold text-ink">Customer complaints</h3>
+          <span className="text-xs font-medium text-faint">
+            {activeData.complaints.implemented ? "Count" : "Deferred"}
           </span>
         </div>
-        <div className="flex items-center gap-2">
-          <span>Telemetry provider: Cloud sync</span>
-          <span className="inline-block size-1.5 rounded-full bg-warning" aria-hidden="true" />
-          <span className="text-muted">No measurements available yet</span>
+
+        <div className="mt-4 h-56 w-full min-w-0">
+          <ChartCanvas
+            ariaLabel="Customer complaints bar chart"
+            buildConfig={complaintsChartConfig}
+          />
         </div>
-      </div> */}
+
+        {!activeData.complaints.implemented && (
+          <p className="mt-3 text-xs text-muted">
+            Customer complaints integration is not yet connected.
+          </p>
+        )}
+      </div>
     </section>
   );
 }

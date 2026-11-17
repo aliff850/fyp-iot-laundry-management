@@ -47,7 +47,13 @@ export default async function PersonnelPage() {
   );
 
   return (
-    <WorkspaceShell title="Personnel" organization={orgName} owner={owner}>
+    <WorkspaceShell
+      title="Personnel"
+      organization={orgName}
+      owner={owner}
+      notificationsEnabled
+      userRole={current.value.role}
+    >
       <div className="space-y-8">
         {/* Heading & Subpage Action Row */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">

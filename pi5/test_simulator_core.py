@@ -113,6 +113,24 @@ class SimulatorCoreTests(unittest.TestCase):
         self.machine.tick(60)
         self.assertEqual(self.machine.pending_events()[0]["price_myr"], "7.50")
 
+    def test_delete_custom_program_and_protect_builtin(self):
+        custom = {**defaults("washer"), "program_id": "p_00000000000a", "name": "Delicate", "price_myr": "8.50"}
+        self.assertEqual(self.machine.execute(self.command("set_settings", {**custom, "create": True}))["status"], "applied")
+        self.assertEqual(self.machine.state["settings"]["program_id"], "p_00000000000a")
+
+        for protected_id in ("quick", "standard", "not-valid"):
+            rejected = self.machine.execute(self.command("delete_program", {"program_id": protected_id}))
+            self.assertEqual(rejected["status"], "rejected")
+
+        self.assertEqual(self.machine.execute(self.command("delete_program", {"program_id": "p_00000000000a"}))["status"], "applied")
+        self.assertNotIn("p_00000000000a", self.machine.state["programs"])
+        self.assertEqual(self.machine.state["settings"]["program_id"], "standard")
+        self.assertEqual(self.machine.execute(self.command("delete_program", {"program_id": "p_00000000000a"}))["reason"], "Program not found")
+
+        self.assertEqual(self.machine.execute(self.command("set_settings", {**custom, "create": True}))["status"], "applied")
+        self.assertEqual(self.machine.execute(self.command("start"))["status"], "applied")
+        self.assertEqual(self.machine.execute(self.command("delete_program", {"program_id": "p_00000000000a"}))["reason"], "invalid_transition")
+
 
 if __name__ == "__main__":
     unittest.main()

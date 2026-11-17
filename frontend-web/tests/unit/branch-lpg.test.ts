@@ -2,9 +2,11 @@ import { describe, it, expect, vi } from "vitest";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import { LpgCylinderCard } from "@/components/workspace/lpg/LpgCylinderCard";
+import { LpgGasBaselineModal } from "@/components/workspace/lpg/LpgGasBaselineModal";
 import { LpgSafetyPanel } from "@/components/workspace/lpg/LpgSafetyPanel";
+import { LpgTankSwapModal } from "@/components/workspace/lpg/LpgTankSwapModal";
 import { LpgWorkspaceView } from "@/components/workspace/lpg/LpgWorkspaceView";
-import type { LpgBranchData, LpgCylinderItem } from "@/lib/auth/business";
+import type { LpgSafetySnapshot, SafetyNodeDevice } from "@/lib/auth/business";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
@@ -12,269 +14,311 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@/app/branches/[branchId]/lpg/actions", () => ({
-  executeStartReplacement: vi.fn().mockResolvedValue({ success: true }),
-  executeCompleteReplacement: vi.fn().mockResolvedValue({ success: true }),
-  executeCancelReplacement: vi.fn().mockResolvedValue({ success: true }),
-  executeEmergencyShutoff: vi.fn().mockResolvedValue({ success: true }),
+  refreshBranchLpgSafety: vi.fn(),
+  fetchLpgMaintenanceStatus: vi.fn(),
+  startBranchLpgTankSwap: vi.fn(),
+  completeBranchLpgTankSwap: vi.fn(),
+  calibrateBranchLpgGasBaseline: vi.fn(),
+  fetchLpgCommandStatus: vi.fn(),
 }));
 
-const mockCylinderPhysical: LpgCylinderItem = {
-  id: "cyl-1",
-  label: "Cylinder #01 (Station A)",
-  position: 1,
+const freshDevice: SafetyNodeDevice = {
+  id: "88888888-8888-8888-8888-888888888888",
+  source_id: "esp32-lpg-01",
+  type: "lpg_edge_node",
   source_kind: "physical",
-  gross_mass_kg: 26.8,
-  cylinder_tare_kg: 15.0,
-  rated_fuel_capacity_kg: 14.0,
-  remaining_fuel_kg: 11.8,
-  fill_percent: 84.3,
-  status: "NORMAL",
-  quality: "valid",
-  maintenance_mode: false,
-  is_connected: true,
-  last_updated: "2026-10-29T00:00:00Z",
-  replacement_start_time: null,
-  service_note: null,
-  mq6: {
-    voltage: 0.42,
-    baseline_voltage: 0.40,
-    ppm_estimate: 180,
-    status: "NORMAL",
-    is_leak_detected: false,
+  label: "Primary Weighing Station",
+  capacity_kg: 14.0,
+  observation: {
+    record_id: "99999999-9999-9999-9999-999999999999",
+    source_id: "esp32-lpg-01",
+    sample_at: "2026-11-15T05:59:54Z",
+    received_at: "2026-11-15T05:59:55Z",
+    cloud_received_at: "2026-11-15T05:59:56Z",
+    source_time_quality: "device_reported",
+    freshness: "fresh",
+    source_kind: "physical",
+    sync_state: "synced",
+    quality: {
+      source_time_quality: "device_reported",
+      weight_valid: true,
+      temperature_valid: true,
+      humidity_valid: true,
+    },
+    values: {
+      lpg_weight_kg: 11.55,
+      gross_weight_kg: 25.55,
+      lpg_percent: 82.5,
+      mq6_raw_adc: 412,
+      voltage: 0.41,
+      temperature: 29.4,
+      humidity: 61.2,
+    },
   },
 };
 
-const mockCylinderSwapMode: LpgCylinderItem = {
-  id: "cyl-3",
-  label: "Cylinder #03 (Station C)",
-  position: 3,
+const staleDevice: SafetyNodeDevice = {
+  ...freshDevice,
+  id: "77777777-7777-7777-7777-777777777777",
+  source_id: "esp32-lpg-02",
   source_kind: "simulated",
-  gross_mass_kg: 16.5,
-  cylinder_tare_kg: 15.0,
-  rated_fuel_capacity_kg: 14.0,
-  remaining_fuel_kg: 1.5,
-  fill_percent: 10.7,
-  status: "WARNING",
-  quality: "valid",
-  maintenance_mode: true,
-  is_connected: true,
-  last_updated: "2026-10-29T00:00:00Z",
-  replacement_start_time: "2026-10-29T00:05:00Z",
-  service_note: "Replacing depleted vessel",
+  label: "Reserve Tank Node",
+  observation: {
+    ...freshDevice.observation!,
+    source_id: "esp32-lpg-02",
+    freshness: "stale",
+    source_kind: "simulated",
+  },
 };
 
-const mockLpgData: LpgBranchData = {
-  cylinders: [
-    mockCylinderPhysical,
-    {
-      id: "cyl-2",
-      label: "Cylinder #02 (Station B)",
-      position: 2,
-      source_kind: "simulated",
-      gross_mass_kg: 28.5,
-      cylinder_tare_kg: 15.0,
-      rated_fuel_capacity_kg: 14.0,
-      remaining_fuel_kg: 13.5,
-      fill_percent: 96.4,
-      status: "NORMAL",
-      quality: "valid",
-      maintenance_mode: false,
-      is_connected: true,
-      last_updated: "2026-10-29T00:00:00Z",
-      replacement_start_time: null,
-      service_note: null,
-    },
-    mockCylinderSwapMode,
-    {
-      id: "cyl-4",
-      label: "Cylinder #04 (Station D)",
-      position: 4,
-      source_kind: "simulated",
-      gross_mass_kg: 15.4,
-      cylinder_tare_kg: 15.0,
-      rated_fuel_capacity_kg: 14.0,
-      remaining_fuel_kg: 0.4,
-      fill_percent: 2.9,
-      status: "CRITICAL",
-      quality: "valid",
-      maintenance_mode: false,
-      is_connected: true,
-      last_updated: "2026-10-29T00:00:00Z",
-      replacement_start_time: null,
-      service_note: null,
-    },
-  ],
-  environment: {
-    mq6: {
-      sensor_id: "mq6-main",
-      voltage: 0.85,
-      baseline_voltage: 0.80,
-      ppm_estimate: 245,
-      status: "NORMAL",
-      warmup_complete: true,
-      is_leak_detected: false,
-      source_kind: "physical",
-      quality: "valid",
-      last_updated: "2026-10-29T00:00:00Z",
-    },
-    dht22: {
-      sensor_id: "dht22-main",
-      temperature_celsius: 28.5,
-      humidity_percent: 62.0,
-      status: "NORMAL",
-      is_high_heat: false,
-      source_kind: "physical",
-      quality: "valid",
-      last_updated: "2026-10-29T00:00:00Z",
-    },
-    safety_valve: {
-      state: "OPEN",
-      emergency_shutoff: false,
-      last_actuated: "2026-10-29T00:00:00Z",
-    },
-  },
+const uninitializedDevice: SafetyNodeDevice = {
+  id: "66666666-6666-6666-6666-666666666666",
+  source_id: "esp32-lpg-03",
+  type: "lpg_edge_node",
+  source_kind: "physical",
+  label: "Unreported Station",
+  capacity_kg: null,
+  observation: null,
+};
+
+const snapshotFixture: LpgSafetySnapshot = {
+  branch_id: "44444444-4444-4444-4444-444444444444",
+  checked_at: "2026-11-15T06:00:00Z",
+  devices: [freshDevice, staleDevice, uninitializedDevice],
   summary: {
-    total_cylinders: 4,
-    active_cylinders: 3,
-    total_remaining_fuel_kg: 27.2,
-    total_rated_capacity_kg: 56.0,
-    weighted_fuel_percent: 48.6,
-    measurement_coverage: "4/4 (100%)",
-    status: "Healthy",
+    total_nodes: 3,
+    fresh_nodes: 1,
+    stale_nodes: 1,
+    offline_nodes: 0,
+    uninitialized_nodes: 1,
   },
-  incidents: [],
 };
 
 describe("LpgCylinderCard component", () => {
-  it("renders cylinder information, mass readouts, and enlarged PPM gas reading", () => {
+  it("renders fresh Pi 5 safetyCard telemetry, uncalibrated gas status, and Tier 1 cloud delivery", () => {
     const raw = ReactDOMServer.renderToString(
-      React.createElement(LpgCylinderCard, {
-        cylinder: mockCylinderPhysical,
-        branchId: "b-01",
-        userRole: "lpg_maintenance",
-      })
-    );
-    const text = raw.replace(/<!--.*?-->/g, "");
-
-    expect(text).toContain("Cylinder #01 (Station A)");
-    expect(text).toContain("11.8 kg / 14.0 kg");
-    expect(text).toContain("84.3%");
-    expect(text).toContain("Gas Reading");
-    expect(text).toContain("PPM Level");
-    expect(text).toContain("180");
-    expect(text).toContain("PPM");
-    expect(text).not.toContain("0.42 V");
-    expect(text).toContain("Start Tank Replacement");
-    // Strictly verify no font-mono
-    expect(raw).not.toContain("font-mono");
-  });
-
-  it("renders Swap Mode controls and silenced notification badge when in maintenance", () => {
-    const raw = ReactDOMServer.renderToString(
-      React.createElement(LpgCylinderCard, {
-        cylinder: mockCylinderSwapMode,
-        branchId: "b-01",
-        userRole: "owner",
-      })
-    );
-    const text = raw.replace(/<!--.*?-->/g, "");
-
-    expect(text).toContain("Swap Mode");
-    expect(text).toContain("Swap Mode · Alarms Silenced");
-    expect(text).toContain("Complete Replacement");
-    expect(text).toContain("Cancel Swap Mode");
-    expect(raw).not.toContain("font-mono");
-  });
-});
-
-describe("LpgSafetyPanel component", () => {
-  it("renders high ambient temperature banner when temperature exceeds 45°C limit", () => {
-    const highHeatEnv = {
-      ...mockLpgData.environment,
-      dht22: {
-        ...mockLpgData.environment.dht22,
-        temperature_celsius: 48.2,
-        is_high_heat: true,
-        status: "CRITICAL" as const,
-      },
-    };
-
-    const raw = ReactDOMServer.renderToString(
-      React.createElement(LpgSafetyPanel, {
-        environment: highHeatEnv,
-        incidents: [],
-        branchId: "b-01",
-        userRole: "owner",
-      })
+      React.createElement(LpgCylinderCard, { device: freshDevice }),
     );
     const text = raw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
 
-    expect(text).toContain("High Ambient Facility Temperature");
-    expect(text).toContain("48.2°C");
+    expect(text).toContain("Primary Weighing Station");
+    expect(text).toContain("Device ID");
+    expect(text).toContain("esp32-lpg-01");
+    expect(text).toContain("Fresh");
+    expect(text).toContain("Cloud delivery synced");
+    expect(text).toContain("Reported level");
+    expect(text).toContain("82.5%");
+    expect(text).toContain("Gross mass");
+    expect(text).toContain("25.55 kg");
+    expect(text).toContain("Reported fuel");
+    expect(text).toContain("11.55 kg");
+    expect(text).toContain("Gas status");
+    expect(text).toContain("Uncalibrated");
+    expect(text).toContain("Est. LPG");
+    expect(text).toContain("Baseline needed");
+    expect(text).toContain("Temperature");
+    expect(text).toContain("29.4 °C");
+    expect(text).toContain("Humidity");
+    expect(text).toContain("61.2%");
+    expect(text).toContain("Last sample");
+    expect(text).not.toContain("MQ-6 raw ADC");
+    expect(text).not.toContain("MQ-6 voltage");
     expect(raw).not.toContain("font-mono");
+    expect(raw).not.toContain("<text");
+    expect(raw).toContain('role="progressbar"');
   });
 
-  it("renders leak hazard warning and trip emergency valve button during active leak", () => {
-    const leakEnv = {
-      ...mockLpgData.environment,
-      mq6: {
-        ...mockLpgData.environment.mq6,
-        is_leak_detected: true,
-        voltage: 1.85,
-        status: "CRITICAL" as const,
+  it("renders calibrated PPM and tank-swap maintenance state matching Pi 5 safetyCard", () => {
+    const maintCalibratedDevice: SafetyNodeDevice = {
+      ...freshDevice,
+      maintenance_mode: true,
+      maintenance_session: { started_by: "Aliff" },
+      gas_interpretation: {
+        ppm_calibrated: true,
+        gas_condition: "warning",
+        estimated_ppm: 540,
       },
     };
-
     const raw = ReactDOMServer.renderToString(
-      React.createElement(LpgSafetyPanel, {
-        environment: leakEnv,
-        incidents: [],
-        branchId: "b-01",
-        userRole: "lpg_maintenance",
-      })
+      React.createElement(LpgCylinderCard, { device: maintCalibratedDevice }),
     );
     const text = raw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
 
-    expect(text).toContain("LPG Combustible Gas Leak Detected");
-    expect(text).toContain("Trip Emergency Valve");
-    expect(raw).not.toContain("font-mono");
+    expect(text).toContain("Maintenance");
+    expect(text).toContain("Fuel level");
+    expect(text).toContain("Paused (Tank swap)");
+    expect(text).toContain("Live scale");
+    expect(text).toContain("25.55 kg");
+    expect(text).toContain("Started by");
+    expect(text).toContain("Aliff");
+    expect(text).toContain("Elevated");
+    expect(text).toContain("540 ppm");
+    expect(raw).not.toContain('role="progressbar"');
+  });
+
+  it("masks stale readings to em-dash and omits live progress bar", () => {
+    const raw = ReactDOMServer.renderToString(
+      React.createElement(LpgCylinderCard, { device: staleDevice }),
+    );
+    const text = raw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
+
+    expect(text).toContain("Reserve Tank Node");
+    expect(text).toContain("esp32-lpg-02");
+    expect(text).toContain("Stale");
+    expect(text).not.toContain("25.55 kg");
+    expect(text).not.toContain("29.4 °C");
+    expect(raw).not.toContain('role="progressbar"');
+  });
+
+  it("handles missing observation cleanly", () => {
+    const raw = ReactDOMServer.renderToString(
+      React.createElement(LpgCylinderCard, { device: uninitializedDevice }),
+    );
+    const text = raw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
+
+    expect(text).toContain("No approved observation");
+    expect(text).toContain("Cloud delivery unknown");
   });
 });
 
-describe("LpgWorkspaceView orchestrator component", () => {
-  it("renders Manifold KPI banner and 4-column responsive grid container", () => {
+describe("LpgSafetyPanel & LpgWorkspaceView", () => {
+  it("renders empty message when branch has no approved safety nodes", () => {
+    const raw = ReactDOMServer.renderToString(
+      React.createElement(LpgSafetyPanel, { devices: [] }),
+    );
+    const text = raw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
+
+    expect(text).toContain("No approved LPG or safety nodes on this branch.");
+  });
+
+  it("renders feed of approved safety nodes and polling view container", () => {
     const raw = ReactDOMServer.renderToString(
       React.createElement(LpgWorkspaceView, {
-        initialData: mockLpgData,
-        branchId: "b-01",
-        userRole: "owner",
-      })
+        initialSnapshot: snapshotFixture,
+        branchId: snapshotFixture.branch_id,
+      }),
     );
     const text = raw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
 
-    // Shared Climate Atmosphere Header
-    expect(text).toContain("Environmental Atmosphere");
-    expect(text).toContain("28.5");
-    expect(text).toContain("62.0");
+    expect(text).toContain("LPG & Safety");
+    expect(text).toContain("LPG & Safety nodes");
+    expect(raw).toContain('role="feed"');
+    expect(text).toContain("Primary Weighing Station");
+    expect(text).toContain("Reserve Tank Node");
+    expect(text).toContain("Unreported Station");
+    expect(text).toContain("Calibrate clean air");
+    expect(text).toContain("Start tank swap");
+    expect(raw).toContain("min-h-11");
+    expect(raw).toContain("bg-navy");
+    expect(raw).toContain("bg-ink");
+    expect(raw).toContain("text-surface");
+    expect(raw).not.toContain("size-2 rounded-full");
+    expect(raw).not.toContain("bg-control");
+    expect(raw).not.toContain("font-mono");
+  });
 
-    // KPI Metrics
-    expect(text).toContain("Manifold Fuel Mass");
-    expect(text).toContain("27.2");
-    expect(text).toContain("Weighted Fuel Level");
-    expect(text).toContain("48.6%");
-    expect(text).toContain("Active Cylinders");
-    expect(text).toContain("System Status");
+  it("switches footer labels to Recalibrate gas and Complete tank swap when calibrated & in maintenance", () => {
+    const calibratedMaintDevice: SafetyNodeDevice = {
+      ...freshDevice,
+      maintenance_mode: true,
+      maintenance_session: {
+        started_by: "Aliff",
+        service_note: "Morning cylinder swap",
+      },
+      gas_interpretation: {
+        ppm_calibrated: true,
+        gas_condition: "normal",
+        estimated_ppm: 12.4,
+      },
+      lpg_config: {
+        mq6_vcc_v: 5.0,
+        mq6_rl_kohm: 20.0,
+        mq6_divider_ratio: 1.0,
+        mq6_ro_kohm: 9.8,
+        mq6_baseline_v: 0.92,
+        gas_warn_ppm: 20,
+        gas_crit_ppm: 80,
+        cylinder_tare_kg: 15.2,
+        rated_capacity_kg: 14.0,
+        stability_tolerance_kg: 0.25,
+      },
+    };
 
-    // 4-column grid container for cylinders
-    expect(raw).toContain("grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4");
+    const raw = ReactDOMServer.renderToString(
+      React.createElement(LpgCylinderCard, {
+        device: calibratedMaintDevice,
+        branchId: snapshotFixture.branch_id,
+      }),
+    );
+    const text = raw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
 
-    // All 4 cylinders present
-    expect(text).toContain("Cylinder #01 (Station A)");
-    expect(text).toContain("Cylinder #02 (Station B)");
-    expect(text).toContain("Cylinder #03 (Station C)");
-    expect(text).toContain("Cylinder #04 (Station D)");
+    expect(text).toContain("Recalibrate gas");
+    expect(text).toContain("Complete tank swap");
+    expect(text).toContain("Morning cylinder swap");
+  });
+});
 
-    // Strictly verify no font-mono
+describe("LpgTankSwapModal & LpgGasBaselineModal", () => {
+  it("renders Start & Complete tank swap dialogs with pre-filled staff attribution and scale verification", () => {
+    const startRaw = ReactDOMServer.renderToString(
+      React.createElement(LpgTankSwapModal, {
+        open: true,
+        mode: "start",
+        branchId: snapshotFixture.branch_id,
+        device: freshDevice,
+        defaultActorName: "Farah",
+        onClose: vi.fn(),
+        onConfirmed: vi.fn(),
+      }),
+    );
+    expect(startRaw).toContain('role="dialog"');
+    expect(startRaw).toContain("Start tank swap");
+    expect(startRaw).toContain("Farah");
+    expect(startRaw).toContain("Service note (optional)");
+    expect(startRaw).not.toContain("bg-control");
+    expect(startRaw).not.toContain(" ? ");
+    expect(startRaw).not.toContain("font-mono");
+
+    const completeRaw = ReactDOMServer.renderToString(
+      React.createElement(LpgTankSwapModal, {
+        open: true,
+        mode: "complete",
+        branchId: snapshotFixture.branch_id,
+        device: freshDevice,
+        defaultActorName: "Farah",
+        onClose: vi.fn(),
+        onConfirmed: vi.fn(),
+      }),
+    );
+    expect(completeRaw).toContain("Complete tank swap");
+    expect(completeRaw).toContain("Waiting for stable scale reading");
+    expect(completeRaw).toContain("Empty cylinder tare (kg)");
+    expect(completeRaw).toContain("Rated LPG capacity (kg)");
+    expect(completeRaw).toContain("Confirm tank swap");
+  });
+
+  it("renders Gas Baseline calibration modal with alert limits and advanced circuit controls", () => {
+    const raw = ReactDOMServer.renderToString(
+      React.createElement(LpgGasBaselineModal, {
+        open: true,
+        branchId: snapshotFixture.branch_id,
+        device: freshDevice,
+        defaultActorName: "Farah",
+        onClose: vi.fn(),
+        onConfirmed: vi.fn(),
+      }),
+    );
+    expect(raw).toContain('role="dialog"');
+    expect(raw).toContain("Calibrate gas baseline");
+    expect(raw).toContain("Warning alert (ppm)");
+    expect(raw).toContain("Critical alert (ppm)");
+    expect(raw).toContain("Advanced circuit settings");
+    expect(raw).toContain("Clear calibration");
+    expect(raw).toContain("Save alert limits");
+    expect(raw).toContain("Calibrate clean air");
+    expect(raw).toContain("bg-negative");
+    expect(raw).not.toContain("bg-control");
+    expect(raw).not.toContain(" ? ");
     expect(raw).not.toContain("font-mono");
   });
 });

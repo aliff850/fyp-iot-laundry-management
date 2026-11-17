@@ -209,6 +209,17 @@ def upload_machine_state(body: EdgeMachineState, gateway=Depends(_gateway)):
                or (machine_latest.boot_id<>excluded.boot_id and machine_latest.gateway_seen_at<excluded.gateway_seen_at)""",
             (device["id"], device["gateway_id"], device["branch_id"], device["organization_id"],
              body.boot_id, body.sequence, Jsonb(body.state), seen))
+        try:
+            from push_notifications import evaluate_and_dispatch_machine_state
+
+            evaluate_and_dispatch_machine_state(
+                conn,
+                device=device,
+                state_payload=body.state,
+                sample_at=seen,
+            )
+        except Exception:
+            pass
     return {"accepted": True}
 
 

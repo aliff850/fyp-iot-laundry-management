@@ -532,7 +532,7 @@ def test_get_branch_overview_owner_success(monkeypatch):
             "state": "active",
             "is_primary_manager": True,
         }
-    ], []]
+    ], [], []]
     @contextmanager
     def db(**_kwargs):
         yield conn
@@ -575,123 +575,21 @@ def test_legacy_fixture_machine_routes_are_retired(legacy_call):
         legacy_call(UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
     assert error.value.status_code == 410
 
-def test_get_branch_lpg_owner_success(monkeypatch):
-    branch_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.side_effect = [
-        member("owner", "active"),  # _membership
-        {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},  # branch lookup
-    ]
-    @contextmanager
-    def db(**_kwargs):
-        yield conn
-    monkeypatch.setattr(branches, "_database", db)
-
-    res = branches.get_branch_lpg(branch_id, {"id": USER})
-    assert "cylinders" in res
-    assert len(res["cylinders"]) == 4
-    assert "environment" in res
-    assert "mq6" in res["environment"]
-    assert "dht22" in res["environment"]
-    assert "safety_valve" in res["environment"]
-    assert "summary" in res
-    assert res["summary"]["total_cylinders"] == 4
-    assert res["summary"]["measurement_coverage"] == "4/4 (100%)"
-
-
-def test_get_branch_lpg_machine_specialist_forbidden(monkeypatch):
-    branch_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.return_value = member("machine_maintenance", "active")
-    @contextmanager
-    def db(**_kwargs):
-        yield conn
-    monkeypatch.setattr(branches, "_database", db)
-
-    with pytest.raises(HTTPException) as exc:
-        branches.get_branch_lpg(branch_id, {"id": USER})
-    assert exc.value.status_code == 403
-    assert "Machine maintenance specialists cannot access LPG fuel and safety" in exc.value.detail
-
-
-def test_get_branch_lpg_tech_assigned_success(monkeypatch):
-    branch_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.side_effect = [
-        member("lpg_maintenance", "active"),  # _membership
-        {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},  # branch lookup
-        {"exists": 1},  # assignment check
-    ]
-    @contextmanager
-    def db(**_kwargs):
-        yield conn
-    monkeypatch.setattr(branches, "_database", db)
-
-    res = branches.get_branch_lpg(branch_id, {"id": USER})
-    assert "cylinders" in res
-    assert res["cylinders"][0]["source_kind"] == "physical"
-
-
-def test_lpg_cylinder_replacement_lifecycle(monkeypatch):
-    branch_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.side_effect = [
-        member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
-        member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
-    ]
-    @contextmanager
-    def db(**_kwargs):
-        yield conn
-    monkeypatch.setattr(branches, "_database", db)
-
-    # 1. Start swap mode on cyl-3
-    res_start = branches.start_cylinder_replacement(
-        branch_id, "cyl-3", branches.CylinderReplacementStartRequest(notes="Replacing depleted tank"), {"id": USER}
-    )
-    assert res_start["success"] is True
-    assert res_start["cylinder"]["maintenance_mode"] is True
-
-    # 2. Complete swap mode with 15.0kg tare and 14.0kg capacity
-    res_complete = branches.complete_cylinder_replacement(
-        branch_id,
-        "cyl-3",
-        branches.CylinderReplacementCompleteRequest(new_tare_kg=15.0, rated_capacity_kg=14.0, notes="Installed fresh cylinder"),
-        {"id": USER},
-    )
-    assert res_complete["success"] is True
-    assert res_complete["cylinder"]["maintenance_mode"] is False
-    assert res_complete["cylinder"]["remaining_fuel_kg"] == 14.0
-    assert res_complete["cylinder"]["fill_percent"] == 100.0
-    assert res_complete["cylinder"]["status"] == "NORMAL"
-
-
-def test_lpg_emergency_shutoff(monkeypatch):
-    branch_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.side_effect = [
-        member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
-        member("owner", "active"), {"id": branch_id, "name": "MSU", "organization_id": ORG},
-    ]
-    @contextmanager
-    def db(**_kwargs):
-        yield conn
-    monkeypatch.setattr(branches, "_database", db)
-
-    # Close valve
-    res_close = branches.emergency_shutoff(
-        branch_id, branches.EmergencyShutoffRequest(action="close"), {"id": USER}
-    )
-    assert res_close["success"] is True
-    assert res_close["safety_valve"]["state"] == "CLOSED"
-    assert res_close["safety_valve"]["emergency_shutoff"] is True
-
-    # Open valve
-    res_open = branches.emergency_shutoff(
-        branch_id, branches.EmergencyShutoffRequest(action="open"), {"id": USER}
-    )
-    assert res_open["success"] is True
-    assert res_open["safety_valve"]["state"] == "OPEN"
-    assert res_open["safety_valve"]["emergency_shutoff"] is False
+@pytest.mark.parametrize("legacy_lpg_call", [
+    lambda branch_id: branches.start_cylinder_replacement(
+        branch_id, "cyl-3", branches.CylinderReplacementStartRequest(notes="swap"), {"id": USER}),
+    lambda branch_id: branches.complete_cylinder_replacement(
+        branch_id, "cyl-3", branches.CylinderReplacementCompleteRequest(
+            new_tare_kg=15.0, rated_capacity_kg=14.0, notes="done"), {"id": USER}),
+    lambda branch_id: branches.cancel_cylinder_replacement(branch_id, "cyl-3", {"id": USER}),
+    lambda branch_id: branches.emergency_shutoff(
+        branch_id, branches.EmergencyShutoffRequest(action="close"), {"id": USER}),
+])
+def test_legacy_fixture_lpg_mutations_are_retired(legacy_lpg_call):
+    """Unbacked in-memory LPG mutation stubs must return 410 Gone."""
+    with pytest.raises(HTTPException) as error:
+        legacy_lpg_call(UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+    assert error.value.status_code == 410
 
 
 def test_get_branch_customer_reports_owner_manager_and_maintenance_access(monkeypatch):

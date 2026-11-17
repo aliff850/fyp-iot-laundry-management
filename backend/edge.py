@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -14,6 +15,7 @@ from psycopg.types.json import Jsonb
 from onboarding import _database
 
 router = APIRouter(prefix="/edge", tags=["edge"])
+logger = logging.getLogger(__name__)
 
 
 def _hash_token(raw: str) -> str:
@@ -359,10 +361,11 @@ def sync_telemetry_batch(batch: EdgeSyncBatch, gw=Depends(_gateway)):
 
         # Get active devices for this branch
         devices = conn.execute(
-            "select id, source_id, source_kind from public.devices where gateway_id=%s and status='active'",
+            "select id, source_id, source_kind, device_type, label, status from public.devices where gateway_id=%s and status='active'",
             (gw["id"],),
         ).fetchall()
         device_map = {d["source_id"]: d for d in devices}
+        latest_lpg_by_device: Dict[Any, tuple[datetime, Dict[str, Any], EdgeTelemetryRecord]] = {}
 
         for record in batch.records:
             src_id = record.source_id or record.device_id
@@ -411,6 +414,48 @@ def sync_telemetry_batch(batch: EdgeSyncBatch, gw=Depends(_gateway)):
                                      "reason": "Conflicting record identity", "retryable": False})
                     continue
             accepted_ids.append(record.edge_id)
+            if dev.get("device_type") == "lpg_edge_node":
+                rec_ts = record.source_recorded_at or record.gateway_receipt_at
+                if rec_ts.tzinfo is None:
+                    rec_ts = rec_ts.replace(tzinfo=timezone.utc)
+                prev_best = latest_lpg_by_device.get(dev["id"])
+                if prev_best is None or rec_ts >= prev_best[0]:
+                    latest_lpg_by_device[dev["id"]] = (rec_ts, dev, record)
+
+        if latest_lpg_by_device:
+            try:
+                from lpg_operations import _gas_interpretation_from_observation, _project_safety_observation
+                from push_notifications import evaluate_and_dispatch_lpg_observation
+
+                eval_now = datetime.now(timezone.utc)
+                for _ts, dev, rec in latest_lpg_by_device.values():
+                    obs_row = {
+                        "record_id": rec.record_id,
+                        "source_id": dev["source_id"],
+                        "source_kind": dev["source_kind"],
+                        "gateway_receipt_at": rec.gateway_receipt_at,
+                        "source_recorded_at": rec.source_recorded_at,
+                        "cloud_received_at": eval_now,
+                        "payload": rec.payload,
+                        "quality": rec.quality,
+                    }
+                    obs = _project_safety_observation(obs_row, eval_now)
+                    gas_info = _gas_interpretation_from_observation(obs)
+                    evaluate_and_dispatch_lpg_observation(
+                        conn,
+                        device={
+                            "id": dev["id"],
+                            "organization_id": gw["organization_id"],
+                            "branch_id": gw["branch_id"],
+                            "source_id": dev["source_id"],
+                            "label": dev.get("label") or dev["source_id"],
+                            "status": dev.get("status") or "active",
+                        },
+                        observation=obs,
+                        gas_info=gas_info,
+                    )
+            except Exception as exc:
+                logger.warning("LPG Web Push evaluation skipped (%s)", type(exc).__name__)
 
     return {
         "accepted_ids": accepted_ids,

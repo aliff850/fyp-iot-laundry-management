@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import {
   getRemoteMachines,
+  getRemoteMachineStatistics,
   getRemoteMachineCommands,
   issueRemoteMachineCommand,
   type RemoteMachine,
@@ -12,9 +13,15 @@ import {
   type MachineItem,
   type MachineParameters,
 } from "@/lib/auth/business";
+import type { MachineStatisticsPayload } from "@/components/workspace/machines/MachineDetailModal";
 
 export async function refreshRemoteMachines(branchId: string) {
   return getRemoteMachines(branchId);
+}
+
+export async function refreshRemoteMachineStatistics(branchId: string, sourceId: string,
+  period: "day" | "week" | "month") {
+  return getRemoteMachineStatistics<MachineStatisticsPayload>(branchId, sourceId, period);
 }
 
 export async function refreshRemoteMachineCommands(branchId: string, sourceId: string) {

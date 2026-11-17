@@ -201,6 +201,20 @@ class Machine:
                     self.state["settings"] = settings
                 except ValueError as exc:
                     reason = str(exc)
+            elif action == "delete_program" and state == "IDLE":
+                import re
+                incoming = command.get("arguments") or {}
+                pid = incoming.get("program_id") if isinstance(incoming, dict) else None
+                if not isinstance(pid, str) or not re.fullmatch(r"p_[a-f0-9]{12}", pid):
+                    reason = "Invalid or protected program"
+                elif pid not in self.state["programs"]:
+                    reason = "Program not found"
+                else:
+                    del self.state["programs"][pid]
+                    if self.state.get("settings", {}).get("program_id") == pid:
+                        fallback_id = "standard" if "standard" in self.state["programs"] else next(iter(self.state["programs"]), None)
+                        if fallback_id:
+                            self.state["settings"] = self.state["programs"][fallback_id]
             elif action == "inject_fault" and state in ("IDLE", "RUNNING", "PAUSED"):
                 args = command.get("arguments")
                 fault = args.get("fault_code") if isinstance(args, dict) else None

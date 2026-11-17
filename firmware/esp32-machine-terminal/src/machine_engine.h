@@ -345,6 +345,23 @@ class MachineEngine {
           saved["spin_rpm"] = spin;
           saved["water_level"] = water;
         }
+      } else if (action == "delete_program" && state == "idle") {
+        String id = args["program_id"] | "";
+        bool validCustomId = id.length() == 14 && id.startsWith("p_");
+        for (int i = 2; validCustomId && i < 14; ++i) {
+          if (!isxdigit(id[i]) || isupper(id[i])) validCustomId = false;
+        }
+        JsonObject programs = data["programs"].as<JsonObject>();
+        if (!validCustomId) reason = "invalid_program";
+        else if (!programs.containsKey(id)) reason = "program_not_found";
+        else {
+          programs.remove(id);
+          if (String(data["settings"]["program_id"] | "") == id) {
+            data["settings"] = programs["standard"].is<JsonObject>()
+              ? programs["standard"]
+              : programs["quick"];
+          }
+        }
       } else if (action == "inject_fault" && (state == "idle" || state == "running" || state == "paused")) {
         String fault = args["fault_code"] | "";
         if (fault != "SIM_DOOR" && fault != "SIM_WATER" && fault != "SIM_HEAT") reason = "unsupported_fault";

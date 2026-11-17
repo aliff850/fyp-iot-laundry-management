@@ -36,6 +36,10 @@ try:
     import gateway_config
 except ImportError:
     from pi5 import gateway_config
+try:
+    import lpg_interpreter
+except ImportError:
+    from pi5 import lpg_interpreter
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -215,7 +219,7 @@ class EdgeIngestionWorker:
         """Checks if device is approved; if unknown, inserts candidate into device_discoveries."""
         with conn.cursor() as cursor:
             # Check approved registry
-            cursor.execute("SELECT source_id FROM device_registry WHERE gateway_id=%s AND source_id=%s AND status='active'", (self.gateway_id, source_id))
+            cursor.execute("SELECT source_id FROM device_registry WHERE gateway_id=%s AND source_id=%s AND status IN ('active', 'maintenance')", (self.gateway_id, source_id))
             if cursor.fetchone():
                 return True
 
@@ -237,6 +241,60 @@ class EdgeIngestionWorker:
                 (cand_id, self.gateway_id, source_id, proposed_type, quality_info),
             )
             return False
+
+    def apply_lpg_edge_state(self, conn, source_id: str, sensor_data: Dict[str, Any], quality: Dict[str, Any]) -> None:
+        """Apply edge-owned MQ-6 gas estimation and per-node maintenance/tare metadata."""
+        if not self.gateway_id:
+            return
+        if not any(k in sensor_data for k in ("voltage", "mq6_raw_adc", "lpg_weight_kg", "gross_weight_kg")):
+            return
+        cfg_row: Optional[Dict[str, Any]] = None
+        maint_row: Optional[Dict[str, Any]] = None
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """SELECT mq6_vcc_v, mq6_rl_kohm, mq6_divider_ratio, mq6_ro_kohm, mq6_baseline_v,
+                              gas_warn_ppm, gas_crit_ppm, cylinder_tare_kg, rated_capacity_kg
+                       FROM lpg_node_config WHERE gateway_id=%s AND source_id=%s""",
+                    (self.gateway_id, source_id),
+                )
+                row = cursor.fetchone()
+                if isinstance(row, dict):
+                    cfg_row = row
+                cursor.execute(
+                    """SELECT session_id FROM lpg_maintenance_sessions
+                       WHERE gateway_id=%s AND source_id=%s AND status='active'
+                       ORDER BY started_at DESC LIMIT 1""",
+                    (self.gateway_id, source_id),
+                )
+                mrow = cursor.fetchone()
+                if isinstance(mrow, dict):
+                    maint_row = mrow
+        except Exception as err:
+            # Table may not exist yet before migration 009; fail safe on read without dropping telemetry
+            logger.debug("Optional LPG config/maintenance lookup skipped for %s: %s", source_id, type(err).__name__)
+
+        if maint_row and maint_row.get("session_id"):
+            quality["maintenance_mode"] = True
+            quality["maintenance_session_id"] = maint_row["session_id"]
+
+        norm_cfg = lpg_interpreter.normalize_node_config(cfg_row)
+        if quality.get("weight_valid") is not False:
+            recomputed = lpg_interpreter.recompute_fuel_metrics(
+                sensor_data.get("gross_weight_kg"),
+                norm_cfg.get("cylinder_tare_kg"),
+                norm_cfg.get("rated_capacity_kg"),
+            )
+            if recomputed is not None:
+                sensor_data["lpg_weight_kg"], sensor_data["lpg_percent"] = recomputed
+
+        gas_info = lpg_interpreter.estimate_mq6_telemetry(sensor_data.get("voltage"), norm_cfg)
+        quality["gas_condition"] = gas_info["gas_condition"]
+        quality["ppm_calibrated"] = gas_info["ppm_calibrated"]
+        if gas_info["mq6_baseline_v"] is not None:
+            quality["mq6_baseline_v"] = gas_info["mq6_baseline_v"]
+        if gas_info["estimated_ppm"] is not None:
+            sensor_data["estimated_ppm"] = gas_info["estimated_ppm"]
 
     def normalize_payload(self, raw_payload: str, topic_device: Optional[str]) -> Tuple[str, str, Dict[str, Any]]:
         """Parses and normalizes telemetry payload for local MariaDB persistence."""
@@ -296,6 +354,8 @@ class EdgeIngestionWorker:
                 else:
                     quarantine = None
             quality = parsed.get("quality") if isinstance(parsed.get("quality"), dict) else {}
+            if msg.topic != TOPIC_LEGACY and approved:
+                self.apply_lpg_edge_state(conn, source_id, sensor_data, quality)
             source_time_quality = self.source_time_quality(parsed.get("recorded_at") or parsed.get("timestamp"))
 
             # Insert observation

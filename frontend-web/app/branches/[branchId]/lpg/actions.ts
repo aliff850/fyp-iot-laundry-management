@@ -2,110 +2,97 @@
 
 import { revalidatePath } from "next/cache";
 import {
-  startCylinderReplacement,
-  completeCylinderReplacement,
-  cancelCylinderReplacement,
-  toggleEmergencyValve,
-  type LpgCylinderItem,
+  calibrateLpgGasBaseline,
+  completeLpgTankSwap,
+  getBranchLpgSafety,
+  getLpgCommandStatus,
+  getLpgMaintenanceStatus,
+  startLpgTankSwap,
+  type LpgCompleteTankSwapPayload,
+  type LpgGasBaselinePayload,
+  type LpgStartTankSwapPayload,
 } from "@/lib/auth/business";
 
-export type LpgActionResponse = {
-  success: boolean;
-  message?: string;
-  cylinder?: LpgCylinderItem;
-  safety_valve?: {
-    state: "OPEN" | "CLOSED";
-    emergency_shutoff: boolean;
-    last_actuated: string;
-  };
-};
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SOURCE_ID_RE = /^[A-Za-z0-9_-]{1,100}$/;
 
-export async function executeStartReplacement(
-  branchId: string,
-  cylinderId: string,
-  notes?: string
-): Promise<LpgActionResponse> {
-  const result = await startCylinderReplacement(branchId, cylinderId, notes);
-  if (!result.ok) {
-    return {
-      success: false,
-      message: result.message || "Failed to start tank replacement mode.",
-    };
-  }
-
-  revalidatePath(`/branches/${branchId}/lpg`);
-  revalidatePath(`/branches/${branchId}/overview`);
-  return {
-    success: true,
-    cylinder: result.value,
-  };
+function validBranch(branchId: string): boolean {
+  return UUID_RE.test(branchId);
 }
 
-export async function executeCompleteReplacement(
-  branchId: string,
-  cylinderId: string,
-  newTareKg: number,
-  ratedCapacityKg: number,
-  notes?: string
-): Promise<LpgActionResponse> {
-  const result = await completeCylinderReplacement(
-    branchId,
-    cylinderId,
-    newTareKg,
-    ratedCapacityKg,
-    notes
-  );
-  if (!result.ok) {
-    return {
-      success: false,
-      message: result.message || "Failed to complete tank replacement.",
-    };
-  }
-
-  revalidatePath(`/branches/${branchId}/lpg`);
-  revalidatePath(`/branches/${branchId}/overview`);
-  return {
-    success: true,
-    cylinder: result.value,
-  };
+function validSource(sourceId: string): boolean {
+  return SOURCE_ID_RE.test(sourceId);
 }
 
-export async function executeCancelReplacement(
-  branchId: string,
-  cylinderId: string
-): Promise<LpgActionResponse> {
-  const result = await cancelCylinderReplacement(branchId, cylinderId);
-  if (!result.ok) {
-    return {
-      success: false,
-      message: result.message || "Failed to cancel tank replacement.",
-    };
+export async function refreshBranchLpgSafety(branchId: string) {
+  if (!validBranch(branchId)) {
+    return { ok: false as const, status: 400, message: "Invalid branch identity." };
   }
-
-  revalidatePath(`/branches/${branchId}/lpg`);
-  revalidatePath(`/branches/${branchId}/overview`);
-  return {
-    success: true,
-    cylinder: result.value,
-  };
+  return getBranchLpgSafety(branchId);
 }
 
-export async function executeEmergencyShutoff(
-  branchId: string,
-  action: "open" | "close"
-): Promise<LpgActionResponse> {
-  const result = await toggleEmergencyValve(branchId, action);
-  if (!result.ok) {
-    return {
-      success: false,
-      message: result.message || "Failed to actuate emergency safety valve.",
-    };
+export async function fetchLpgMaintenanceStatus(branchId: string, sourceId: string) {
+  if (!validBranch(branchId) || !validSource(sourceId)) {
+    return { ok: false as const, status: 400, message: "Invalid branch or LPG node identity." };
   }
+  return getLpgMaintenanceStatus(branchId, sourceId);
+}
 
-  revalidatePath(`/branches/${branchId}/lpg`);
-  revalidatePath(`/branches/${branchId}/overview`);
-  return {
-    success: true,
-    safety_valve: result.value,
-  };
+export async function startBranchLpgTankSwap(
+  branchId: string,
+  sourceId: string,
+  payload: LpgStartTankSwapPayload,
+) {
+  if (!validBranch(branchId) || !validSource(sourceId) || !UUID_RE.test(payload.request_id)) {
+    return { ok: false as const, status: 400, message: "Invalid tank swap request identity." };
+  }
+  const result = await startLpgTankSwap(branchId, sourceId, payload);
+  if (result.ok) {
+    revalidatePath(`/branches/${branchId}/lpg`);
+    revalidatePath(`/branches/${branchId}/overview`);
+  }
+  return result;
+}
+
+export async function completeBranchLpgTankSwap(
+  branchId: string,
+  sourceId: string,
+  payload: LpgCompleteTankSwapPayload,
+) {
+  if (!validBranch(branchId) || !validSource(sourceId) || !UUID_RE.test(payload.request_id)) {
+    return { ok: false as const, status: 400, message: "Invalid tank swap completion request identity." };
+  }
+  const result = await completeLpgTankSwap(branchId, sourceId, payload);
+  if (result.ok) {
+    revalidatePath(`/branches/${branchId}/lpg`);
+    revalidatePath(`/branches/${branchId}/overview`);
+  }
+  return result;
+}
+
+export async function calibrateBranchLpgGasBaseline(
+  branchId: string,
+  sourceId: string,
+  payload: LpgGasBaselinePayload,
+) {
+  if (!validBranch(branchId) || !validSource(sourceId) || !UUID_RE.test(payload.request_id)) {
+    return { ok: false as const, status: 400, message: "Invalid gas baseline request identity." };
+  }
+  const result = await calibrateLpgGasBaseline(branchId, sourceId, payload);
+  if (result.ok) {
+    revalidatePath(`/branches/${branchId}/lpg`);
+    revalidatePath(`/branches/${branchId}/overview`);
+  }
+  return result;
+}
+
+export async function fetchLpgCommandStatus(
+  branchId: string,
+  sourceId: string,
+  commandId: string,
+) {
+  if (!validBranch(branchId) || !validSource(sourceId) || !UUID_RE.test(commandId)) {
+    return { ok: false as const, status: 400, message: "Invalid command lookup identity." };
+  }
+  return getLpgCommandStatus(branchId, sourceId, commandId);
 }

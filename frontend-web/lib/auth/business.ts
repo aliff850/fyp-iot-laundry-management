@@ -375,6 +375,11 @@ export async function getRemoteMachines(branchId: string): Promise<Result<Remote
   return { ok: true, value: result.value.machines };
 }
 
+export async function getRemoteMachineStatistics<T>(branchId: string, sourceId: string,
+  period: "day" | "week" | "month"): Promise<Result<T>> {
+  return businessRequest<T>(`/branches/${branchId}/machines/${encodeURIComponent(sourceId)}/statistics?period=${period}`);
+}
+
 export async function getRemoteMachineCommands(branchId: string, sourceId: string): Promise<Result<RemoteMachineCommand[]>> {
   const result = await businessRequest<{ commands: RemoteMachineCommand[] }>(
     `/branches/${branchId}/machine-commands/${encodeURIComponent(sourceId)}`);
@@ -507,6 +512,241 @@ export interface LpgIncidentItem {
   title: string;
   description: string;
   created_at: string;
+}
+
+export interface SafetyNodeValues {
+  lpg_weight_kg: number | null;
+  gross_weight_kg: number | null;
+  lpg_percent: number | null;
+  mq6_raw_adc: number | null;
+  voltage: number | null;
+  estimated_ppm?: number | null;
+  temperature: number | null;
+  humidity: number | null;
+}
+
+export interface SafetyNodeObservation {
+  record_id: string;
+  source_id: string;
+  sample_at: string | null;
+  received_at: string | null;
+  cloud_received_at: string | null;
+  source_time_quality: string;
+  freshness: "fresh" | "stale" | "offline" | "unknown";
+  source_kind: string;
+  sync_state: "synced" | "pending" | "quarantined" | string;
+  quality: Record<string, unknown>;
+  values: SafetyNodeValues;
+}
+
+export interface SafetyNodeGasInterpretation {
+  ppm_calibrated: boolean;
+  gas_condition: "normal" | "warning" | "critical" | "out_of_range" | "uncalibrated" | "unavailable" | string;
+  estimated_ppm: number | null;
+}
+
+export interface SafetyNodeMaintenanceSession {
+  session_id?: string | null;
+  started_by?: string | null;
+  service_note?: string | null;
+  started_at?: string | null;
+}
+
+export interface SafetyNodeLpgConfig {
+  mq6_vcc_v: number;
+  mq6_rl_kohm: number;
+  mq6_divider_ratio: number;
+  mq6_ro_kohm: number | null;
+  mq6_baseline_v: number | null;
+  gas_warn_ppm: number;
+  gas_crit_ppm: number;
+  cylinder_tare_kg: number | null;
+  rated_capacity_kg: number | null;
+  stability_tolerance_kg: number;
+}
+
+export interface SafetyNodePendingCommand {
+  command_id: string;
+  action: "start_tank_swap" | "complete_tank_swap" | "calibrate_gas_baseline" | string;
+  status: string;
+  issued_at: string | null;
+}
+
+export interface SafetyNodeDevice {
+  id: string;
+  source_id: string;
+  type: "lpg_edge_node";
+  source_kind: "physical" | "simulated" | "vendor" | string;
+  label: string;
+  capacity_kg: number | null;
+  status?: "active" | "maintenance" | string;
+  maintenance_mode?: boolean;
+  maintenance_session?: SafetyNodeMaintenanceSession | null;
+  gas_interpretation?: SafetyNodeGasInterpretation | null;
+  lpg_config?: SafetyNodeLpgConfig | null;
+  pending_command?: SafetyNodePendingCommand | null;
+  observation: SafetyNodeObservation | null;
+}
+
+export interface LpgSafetySummary {
+  total_nodes: number;
+  fresh_nodes: number;
+  stale_nodes: number;
+  offline_nodes: number;
+  uninitialized_nodes: number;
+}
+
+export interface LpgSafetySnapshot {
+  branch_id: string;
+  checked_at: string;
+  devices: SafetyNodeDevice[];
+  summary: LpgSafetySummary;
+}
+
+export async function getBranchLpgSafety(branchId: string): Promise<Result<LpgSafetySnapshot>> {
+  const result = await businessRequest<LpgSafetySnapshot>(`/branches/${branchId}/lpg-safety`);
+  if (!result.ok) return result;
+  if (!result.value || !Array.isArray(result.value.devices)) return invalid();
+  return { ok: true, value: result.value };
+}
+
+export interface LpgSwapStabilitySample {
+  gross_weight_kg: number;
+  sample_at: string;
+}
+
+export interface LpgSwapStability {
+  stable: boolean;
+  reason: string;
+  sample_count: number;
+  spread_kg: number | null;
+  mean_gross_kg: number | null;
+  samples: LpgSwapStabilitySample[];
+}
+
+export interface LpgMaintenanceStatusResponse {
+  source_id: string;
+  maintenance_mode: boolean;
+  session: SafetyNodeMaintenanceSession | null;
+  stability: LpgSwapStability;
+  lpg_config: SafetyNodeLpgConfig;
+}
+
+export interface LpgCommandDispatchResponse {
+  command_id: string;
+  status: string;
+  expires_at?: string | null;
+  reason?: string | null;
+  result_payload?: Record<string, unknown>;
+}
+
+export interface LpgCommandStatusResponse {
+  command_id: string;
+  action: "start_tank_swap" | "complete_tank_swap" | "calibrate_gas_baseline" | string;
+  status: "queued" | "dispatched" | "succeeded" | "failed" | "expired" | "unknown" | string;
+  reason: string | null;
+  result_payload: Record<string, unknown>;
+  issued_at: string | null;
+  result_at: string | null;
+}
+
+export interface LpgStartTankSwapPayload {
+  request_id: string;
+  started_by?: string;
+  service_note?: string;
+}
+
+export interface LpgCompleteTankSwapPayload {
+  request_id: string;
+  completed_by?: string;
+  tare_kg?: number | null;
+  rated_capacity_kg?: number | null;
+}
+
+export interface LpgGasBaselinePayload {
+  request_id: string;
+  reset: boolean;
+  save_settings_only: boolean;
+  updated_by?: string;
+  rl_kohm?: number | null;
+  divider_ratio?: number | null;
+  vcc_v?: number | null;
+  gas_warn_ppm?: number | null;
+  gas_crit_ppm?: number | null;
+}
+
+export async function getLpgMaintenanceStatus(
+  branchId: string,
+  sourceId: string,
+): Promise<Result<LpgMaintenanceStatusResponse>> {
+  const result = await businessRequest<LpgMaintenanceStatusResponse>(
+    `/branches/${encodeURIComponent(branchId)}/lpg/${encodeURIComponent(sourceId)}/maintenance-status`,
+  );
+  if (!result.ok) return result;
+  if (!result.value || typeof result.value.source_id !== "string" || !result.value.stability || !result.value.lpg_config) {
+    return invalid();
+  }
+  return { ok: true, value: result.value };
+}
+
+export async function startLpgTankSwap(
+  branchId: string,
+  sourceId: string,
+  payload: LpgStartTankSwapPayload,
+): Promise<Result<LpgCommandDispatchResponse>> {
+  const result = await businessRequest<LpgCommandDispatchResponse>(
+    `/branches/${encodeURIComponent(branchId)}/lpg/${encodeURIComponent(sourceId)}/maintenance/start`,
+    "POST",
+    payload,
+  );
+  if (!result.ok) return result;
+  if (!result.value || typeof result.value.command_id !== "string") return invalid();
+  return { ok: true, value: result.value };
+}
+
+export async function completeLpgTankSwap(
+  branchId: string,
+  sourceId: string,
+  payload: LpgCompleteTankSwapPayload,
+): Promise<Result<LpgCommandDispatchResponse>> {
+  const result = await businessRequest<LpgCommandDispatchResponse>(
+    `/branches/${encodeURIComponent(branchId)}/lpg/${encodeURIComponent(sourceId)}/maintenance/complete`,
+    "POST",
+    payload,
+  );
+  if (!result.ok) return result;
+  if (!result.value || typeof result.value.command_id !== "string") return invalid();
+  return { ok: true, value: result.value };
+}
+
+export async function calibrateLpgGasBaseline(
+  branchId: string,
+  sourceId: string,
+  payload: LpgGasBaselinePayload,
+): Promise<Result<LpgCommandDispatchResponse>> {
+  const result = await businessRequest<LpgCommandDispatchResponse>(
+    `/branches/${encodeURIComponent(branchId)}/lpg/${encodeURIComponent(sourceId)}/gas-baseline`,
+    "POST",
+    payload,
+  );
+  if (!result.ok) return result;
+  if (!result.value || typeof result.value.command_id !== "string") return invalid();
+  return { ok: true, value: result.value };
+}
+
+export async function getLpgCommandStatus(
+  branchId: string,
+  sourceId: string,
+  commandId: string,
+): Promise<Result<LpgCommandStatusResponse>> {
+  const result = await businessRequest<LpgCommandStatusResponse>(
+    `/branches/${encodeURIComponent(branchId)}/lpg/${encodeURIComponent(sourceId)}/commands/${encodeURIComponent(commandId)}`,
+  );
+  if (!result.ok) return result;
+  if (!result.value || typeof result.value.command_id !== "string" || typeof result.value.status !== "string") {
+    return invalid();
+  }
+  return { ok: true, value: result.value };
 }
 
 export interface LpgBranchData {
@@ -731,3 +971,380 @@ export async function getBranchDeviceDiscoveries(branchId: string): Promise<Resu
   return { ok: true, value: result.value?.discoveries ?? [] };
 }
 
+
+export type OverviewAnalyticsPeriod = "day" | "week" | "month";
+
+export interface OverviewAnalyticsSummary {
+  completed_cycles: number;
+  running_seconds: number;
+  running_minutes: number;
+  estimated_revenue_myr: string;
+  avg_gas_ppm: number | null;
+  gas_node_count: number;
+  total_lpg_nodes: number;
+  gas_aggregation_mode: "uncalibrated" | "single_node" | "multi_node_average";
+  complaints_total: number | null;
+}
+
+export interface OverviewProgramSpec {
+  program_id: string;
+  label: string;
+}
+
+export interface OverviewMachineMetric {
+  branch_id?: string;
+  branch_name?: string;
+  source_id: string;
+  label: string;
+  device_type: string;
+  completed_cycles: number;
+  running_seconds: number;
+  running_minutes: number;
+  estimated_revenue_myr: string;
+  cycles_by_program: Record<string, number>;
+}
+
+export interface OverviewRevenuePoint {
+  bucket: string;
+  label: string;
+  period_revenue_myr: string;
+  cumulative_revenue_myr: string;
+}
+
+export interface OverviewGasNodeSummary {
+  branch_id?: string;
+  branch_name?: string;
+  source_id: string;
+  label: string;
+  calibrated: boolean;
+  period_avg_ppm: number | null;
+  sample_count: number;
+}
+
+export interface OverviewGasPoint {
+  bucket: string;
+  label: string;
+  avg_ppm: number | null;
+  contributing_nodes: number;
+}
+
+export interface OverviewComplaintsPoint {
+  bucket: string;
+  label: string;
+  count: number | null;
+}
+
+export interface OverviewBranchBreakdown {
+  branch_id: string;
+  branch_name: string;
+  completed_cycles: number;
+  running_seconds: number;
+  running_minutes: number;
+  estimated_revenue_myr: string;
+  revenue_share_pct: number | null;
+}
+
+export interface OverviewProgramBreakdown {
+  program_id: string;
+  label: string;
+  completed_cycles: number;
+  estimated_revenue_myr: string;
+  avg_revenue_myr: string | null;
+  share_pct: number | null;
+}
+
+export interface OverviewCycleOutcomes {
+  completed: number;
+  stopped: number;
+  faulted: number;
+  interrupted: number;
+  total: number;
+  completion_rate_pct: number | null;
+}
+
+export interface OverviewHourlyDemandPoint {
+  hour: number;
+  hour_label: string;
+  completed_cycles: number;
+  estimated_revenue_myr: string;
+}
+
+export interface BranchOverviewAnalytics {
+  branch_count?: number;
+  branch_breakdown?: OverviewBranchBreakdown[];
+  program_breakdown?: OverviewProgramBreakdown[];
+  cycle_outcomes?: OverviewCycleOutcomes;
+  hourly_demand?: OverviewHourlyDemandPoint[];
+  branch_id: string;
+  period: OverviewAnalyticsPeriod;
+  granularity: "hour" | "day";
+  timezone: string;
+  coverage: string;
+  summary: OverviewAnalyticsSummary;
+  programs: OverviewProgramSpec[];
+  machines: OverviewMachineMetric[];
+  revenue_series: OverviewRevenuePoint[];
+  gas_series: {
+    aggregation_mode: "uncalibrated" | "single_node" | "multi_node_average";
+    node_count: number;
+    nodes: OverviewGasNodeSummary[];
+    series: OverviewGasPoint[];
+  };
+  complaints: {
+    implemented: boolean;
+    source: string;
+    total: number | null;
+    series: OverviewComplaintsPoint[];
+  };
+}
+
+export async function getOrganizationAnalytics(
+  period: OverviewAnalyticsPeriod = "day"
+): Promise<Result<BranchOverviewAnalytics>> {
+  const safePeriod: OverviewAnalyticsPeriod =
+    period === "day" || period === "week" || period === "month" ? period : "day";
+  const result = await businessRequest<BranchOverviewAnalytics>(
+    `/organization/analytics?period=${encodeURIComponent(safePeriod)}`
+  );
+  if (!result.ok) return result;
+  if (!result.value || !result.value.summary || !Array.isArray(result.value.machines)) {
+    return invalid();
+  }
+  return { ok: true, value: result.value };
+}
+
+export async function getBranchOverviewAnalytics(
+  branchId: string,
+  period: OverviewAnalyticsPeriod = "day"
+): Promise<Result<BranchOverviewAnalytics>> {
+  const safePeriod: OverviewAnalyticsPeriod =
+    period === "day" || period === "week" || period === "month" ? period : "day";
+  const result = await businessRequest<BranchOverviewAnalytics>(
+    `/branches/${branchId}/overview/analytics?period=${encodeURIComponent(safePeriod)}`
+  );
+  if (!result.ok) return result;
+  if (!result.value || !result.value.summary || !Array.isArray(result.value.machines)) {
+    return invalid();
+  }
+  return { ok: true, value: result.value };
+}
+
+export type BranchRecordsScope = "lpg" | "env" | "machines";
+export type BranchRecordsPeriod = "all" | "today" | "week" | "month";
+
+export interface LpgTelemetryRecordItem {
+  record_id: string;
+  source_id: string;
+  device_label: string;
+  sample_at: string | null;
+  received_at: string | null;
+  source_time_quality: string;
+  source_kind: string;
+  lpg_percent: number | null;
+  lpg_weight_kg: number | null;
+  gross_weight_kg: number | null;
+  estimated_ppm: number | null;
+  gas_condition: string | null;
+  weight_valid: boolean | null;
+  maintenance_mode: boolean;
+}
+
+export interface EnvTelemetryRecordItem {
+  record_id: string;
+  source_id: string;
+  device_label: string;
+  sample_at: string | null;
+  received_at: string | null;
+  source_time_quality: string;
+  source_kind: string;
+  temperature: number | null;
+  humidity: number | null;
+  temperature_valid: boolean | null;
+  humidity_valid: boolean | null;
+}
+
+export interface MachineCycleRecordItem {
+  cycle_id: string;
+  source_id: string;
+  device_label: string;
+  device_type: string;
+  program_id: string;
+  program_label: string;
+  running_seconds: number;
+  running_minutes: number;
+  outcome: string;
+  started_at: string | null;
+  finished_at: string | null;
+  price_myr?: string | null;
+}
+
+export type BranchRecordItem =
+  | LpgTelemetryRecordItem
+  | EnvTelemetryRecordItem
+  | MachineCycleRecordItem;
+
+export interface BranchRecordsResponse {
+  branch_id: string;
+  scope: BranchRecordsScope;
+  period: BranchRecordsPeriod;
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+  items: BranchRecordItem[];
+}
+
+export async function getBranchRecords(
+  branchId: string,
+  scope: BranchRecordsScope = "lpg",
+  period: BranchRecordsPeriod = "all",
+  page = 1,
+  pageSize = 10
+): Promise<Result<BranchRecordsResponse>> {
+  const safeScope: BranchRecordsScope =
+    scope === "lpg" || scope === "env" || scope === "machines" ? scope : "lpg";
+  const safePeriod: BranchRecordsPeriod =
+    period === "all" || period === "today" || period === "week" || period === "month"
+      ? period
+      : "all";
+  const safePage = Number.isInteger(page) && page >= 1 ? page : 1;
+  const safeSize = Number.isInteger(pageSize) && pageSize >= 1 && pageSize <= 50 ? pageSize : 10;
+
+  const query = new URLSearchParams({
+    scope: safeScope,
+    period: safePeriod,
+    page: String(safePage),
+    page_size: String(safeSize),
+  });
+  const result = await businessRequest<BranchRecordsResponse>(
+    `/branches/${branchId}/records?${query.toString()}`
+  );
+  if (!result.ok) return result;
+  if (!result.value || !Array.isArray(result.value.items)) {
+    return invalid();
+  }
+  return { ok: true, value: result.value };
+}
+
+export interface NotificationBranchOption {
+  id: string;
+  name: string;
+}
+
+export interface NotificationDeviceSummary {
+  branch_id: string;
+  branch_name: string;
+  source_id: string;
+  label: string;
+  type: string;
+  status: string;
+  maintenance_mode: boolean;
+  freshness: string;
+  state: string;
+  fault_code: string | null;
+  program_id: string | null;
+  lpg_percent: number | null;
+  ppm_calibrated: boolean;
+  gas_condition: string | null;
+  estimated_ppm: number | null;
+  sample_at: string | null;
+}
+
+export interface WorkspaceNotificationEvent {
+  id: string;
+  branch_id: string;
+  branch_name: string;
+  category: "machine" | "lpg";
+  kind: string;
+  severity: "negative" | "warning" | "positive" | "info" | "neutral";
+  title: string;
+  detail: string;
+  source_id: string;
+  device_label: string;
+  occurred_at: string;
+  active: boolean;
+}
+
+export interface WorkspaceNotificationsPayload {
+  checked_at: string;
+  organization_id: string;
+  role: string;
+  branches: NotificationBranchOption[];
+  devices: NotificationDeviceSummary[];
+  events: WorkspaceNotificationEvent[];
+}
+
+export async function getNotifications(params?: {
+  category?: "all" | "machine" | "lpg";
+  branchId?: string;
+  limit?: number;
+}): Promise<Result<WorkspaceNotificationsPayload>> {
+  const category =
+    params?.category === "machine" || params?.category === "lpg" ? params.category : "all";
+  const limit =
+    typeof params?.limit === "number" && Number.isInteger(params.limit) && params.limit >= 1 && params.limit <= 200
+      ? params.limit
+      : 100;
+  const query = new URLSearchParams({ category, limit: String(limit) });
+  if (params?.branchId) {
+    query.set("branch_id", params.branchId);
+  }
+  const result = await businessRequest<WorkspaceNotificationsPayload>(`/notifications?${query.toString()}`);
+  if (!result.ok) return result;
+  if (!result.value || !Array.isArray(result.value.events) || !Array.isArray(result.value.devices)) {
+    return invalid();
+  }
+  return { ok: true, value: result.value };
+}
+export interface PushPublicKeyResponse {
+  configured: boolean;
+  public_key: string | null;
+}
+
+export interface PushSubscriptionKeysPayload {
+  p256dh: string;
+  auth: string;
+}
+
+export interface PushSubscriptionSavePayload {
+  endpoint: string;
+  keys: PushSubscriptionKeysPayload;
+  user_agent?: string;
+}
+
+export async function getPushPublicKey(): Promise<Result<PushPublicKeyResponse>> {
+  const result = await businessRequest<PushPublicKeyResponse>("/push/public-key");
+  if (!result.ok) return result;
+  if (
+    !result.value ||
+    typeof result.value.configured !== "boolean" ||
+    (result.value.public_key !== null && typeof result.value.public_key !== "string")
+  ) {
+    return invalid();
+  }
+  return { ok: true, value: result.value };
+}
+
+export async function savePushSubscription(
+  payload: PushSubscriptionSavePayload,
+): Promise<Result<{ saved: boolean; subscription_id: string }>> {
+  const result = await businessRequest<{ saved: boolean; subscription_id: string }>(
+    "/push/subscriptions",
+    "POST",
+    payload,
+  );
+  if (!result.ok) return result;
+  if (!result.value || typeof result.value.saved !== "boolean") return invalid();
+  return { ok: true, value: result.value };
+}
+
+export async function deletePushSubscription(endpoint: string): Promise<Result<{ revoked: boolean }>> {
+  const result = await businessRequest<{ revoked: boolean }>(
+    "/push/subscriptions",
+    "DELETE",
+    { endpoint },
+  );
+  if (!result.ok) return result;
+  if (!result.value || typeof result.value.revoked !== "boolean") return invalid();
+  return { ok: true, value: result.value };
+}

@@ -5,6 +5,7 @@ import { ArrowLeft, Building2, Calendar, Mail, Phone, ShieldCheck, User } from "
 import { Notice } from "@/components/auth/AuthForm";
 import { SignOutButton } from "@/components/auth/SignOutButton";
 import { WorkspaceShell } from "@/components/workspace/layout/WorkspaceShell";
+import { PushNotificationToggle } from "@/components/workspace/notifications/PushNotificationToggle";
 import { getMembership } from "@/lib/auth/business";
 import { createClient } from "@/lib/supabase/server";
 
@@ -56,7 +57,13 @@ export default async function AccountPage() {
     : "—";
 
   return (
-    <WorkspaceShell title="Account" organization={orgName} owner={isOwner}>
+    <WorkspaceShell
+      title="Account"
+      organization={orgName}
+      owner={isOwner}
+      notificationsEnabled
+      userRole={membership.role}
+    >
       <div className="space-y-8">
         {/* Heading & Subpage Action Row */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -168,6 +175,10 @@ export default async function AccountPage() {
             </div>
           </div>
         </section>
+
+        {["owner", "branch_manager", "machine_maintenance", "lpg_maintenance"].includes(
+          membership.role ?? "",
+        ) && <PushNotificationToggle variant="card" />}
       </div>
     </WorkspaceShell>
   );

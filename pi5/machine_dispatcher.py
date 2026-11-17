@@ -85,7 +85,7 @@ def dispatch(client):
                 ORDER BY c.issued_at LIMIT 10""", (binding["gateway_id"],))
             rows = cur.fetchall()
             for row in rows:
-                if row["action"] == "set_settings":
+                if row["action"] in ("set_settings", "delete_program"):
                     cur.execute("""SELECT checkout_id FROM demo_checkouts WHERE gateway_id=%s
                         AND source_id=%s AND confirmed_at IS NULL AND expires_at>UTC_TIMESTAMP(6)
                         LIMIT 1""", (binding["gateway_id"], row["source_id"]))

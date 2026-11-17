@@ -4,6 +4,7 @@ Adheres to PRD §5.3 Durable Synchronization, TI-03 Acknowledged Protocol,
 and Branch Gateway and Device Onboarding Plan (docs/GATEWAY_DEVICE_ONBOARDING_PLAN.md).
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ import signal
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -35,6 +36,10 @@ try:
     import gateway_config
 except ImportError:
     from pi5 import gateway_config
+try:
+    import lpg_interpreter
+except ImportError:
+    from pi5 import lpg_interpreter
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -84,6 +89,7 @@ class EdgeSyncWorker:
         self.config_revision = 1
         self.last_machine_state: Dict[str, Tuple[str, int]] = {}
         self.reported_machine_results: Dict[str, str] = {}
+        self.last_lpg_state_digest: Optional[str] = None
 
     def sync_machine_operations(self):
         """Exchange current state and durable commands through the gateway identity."""
@@ -182,6 +188,552 @@ class EdgeSyncWorker:
                     self.reported_machine_results[result["command_id"]] = result["status"]
             except requests.exceptions.RequestException:
                 logger.warning("Cloud machine-command result delivery failed")
+
+    @staticmethod
+    def _utc_dt(value: Any) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+        if isinstance(value, str) and value.strip():
+            try:
+                parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+                return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+            except ValueError:
+                return None
+        return None
+
+    @classmethod
+    def _utc_iso(cls, value: Any) -> Optional[str]:
+        dt = cls._utc_dt(value)
+        return dt.isoformat() if dt else None
+
+    @staticmethod
+    def _parse_json_obj(raw: Any) -> Dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="ignore")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    @staticmethod
+    def _parse_json_list(raw: Any) -> Optional[List[Dict[str, Any]]]:
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                return parsed if isinstance(parsed, list) else None
+            except Exception:
+                return None
+        return None
+
+    def _load_recent_lpg_samples(self, cursor: Any, source_id: str, limit: int = 12) -> List[Dict[str, Any]]:
+        cursor.execute(
+            """SELECT record_id, recorded_at, gateway_receipt_at, source_time_quality,
+                      quality_metadata, data_payload
+               FROM sensor_telemetry
+               WHERE gateway_id=%s AND source_id=%s AND quarantine_reason IS NULL AND is_synced >= 0
+               ORDER BY gateway_receipt_at DESC, record_id DESC
+               LIMIT %s""",
+            (self.gateway_id, source_id, limit),
+        )
+        rows = cursor.fetchall()
+        samples: List[Dict[str, Any]] = []
+        for row in rows:
+            payload = self._parse_json_obj(row.get("data_payload"))
+            quality = self._parse_json_obj(row.get("quality_metadata"))
+            receipt = self._utc_dt(row.get("gateway_receipt_at"))
+            source = self._utc_dt(row.get("recorded_at"))
+            trusted_source = row.get("source_time_quality") in ("device_reported", "assumed_utc")
+            sample_at = (
+                min(source, receipt)
+                if trusted_source and source and receipt and source <= receipt + timedelta(seconds=60)
+                else receipt or source
+            )
+            voltage = lpg_interpreter.finite_float(payload.get("voltage"))
+            if voltage is None:
+                voltage = lpg_interpreter.finite_float(payload.get("gas_voltage_v"))
+            samples.append({
+                "record_id": row.get("record_id"),
+                "sample_at": sample_at,
+                "gross_weight_kg": lpg_interpreter.finite_float(payload.get("gross_weight_kg")),
+                "weight_valid": quality.get("weight_valid") is not False and payload.get("weight_valid") is not False,
+                "voltage": voltage,
+            })
+        return samples
+
+    def _upload_lpg_state(self, headers: Dict[str, str]) -> None:
+        if not self.gateway_id:
+            return
+        read_conn = self.get_state_db_connection()
+        with read_conn.cursor() as cursor:
+            cursor.execute(
+                """SELECT source_id, mq6_vcc_v, mq6_rl_kohm, mq6_divider_ratio,
+                          mq6_ro_kohm, mq6_baseline_v, gas_warn_ppm, gas_crit_ppm,
+                          cylinder_tare_kg, rated_capacity_kg, stability_tolerance_kg, updated_by
+                   FROM lpg_node_config
+                   WHERE gateway_id=%s
+                   ORDER BY source_id ASC""",
+                (self.gateway_id,),
+            )
+            cfg_rows = cursor.fetchall()
+            cursor.execute(
+                """SELECT session_id, source_id, status, started_by, service_note,
+                          started_at, completed_at, completed_by, new_tare_kg,
+                          new_capacity_kg, verified_samples_json
+                   FROM lpg_maintenance_sessions
+                   WHERE gateway_id=%s AND status='active'
+                   ORDER BY started_at DESC""",
+                (self.gateway_id,),
+            )
+            active_rows = cursor.fetchall()
+            cursor.execute(
+                """SELECT session_id, source_id, status, started_by, service_note,
+                          started_at, completed_at, completed_by, new_tare_kg,
+                          new_capacity_kg, verified_samples_json
+                   FROM lpg_maintenance_sessions
+                   WHERE gateway_id=%s AND status != 'active'
+                   ORDER BY started_at DESC
+                   LIMIT 20""",
+                (self.gateway_id,),
+            )
+            recent_rows = cursor.fetchall()
+
+        configs: List[Dict[str, Any]] = []
+        for row in cfg_rows:
+            norm = lpg_interpreter.normalize_node_config(row)
+            norm["source_id"] = row["source_id"]
+            if row.get("updated_by") is not None:
+                norm["updated_by"] = str(row["updated_by"])[:80]
+            configs.append(norm)
+
+        sessions_by_id: Dict[str, Dict[str, Any]] = {}
+        active_source_ids: List[str] = []
+        for row in [*active_rows, *recent_rows]:
+            sid = str(row["session_id"])
+            if row.get("status") == "active" and row["source_id"] not in active_source_ids:
+                active_source_ids.append(row["source_id"])
+            if sid in sessions_by_id:
+                continue
+            started_iso = self._utc_iso(row.get("started_at"))
+            if not started_iso:
+                continue
+            sessions_by_id[sid] = {
+                "session_id": sid,
+                "source_id": row["source_id"],
+                "status": row["status"],
+                "started_by": str(row.get("started_by") or "Local staff")[:80],
+                "service_note": str(row["service_note"])[:240] if row.get("service_note") else None,
+                "started_at": started_iso,
+                "completed_at": self._utc_iso(row.get("completed_at")),
+                "completed_by": str(row["completed_by"])[:80] if row.get("completed_by") else None,
+                "new_tare_kg": lpg_interpreter.finite_float(row.get("new_tare_kg")),
+                "new_capacity_kg": lpg_interpreter.finite_float(row.get("new_capacity_kg")),
+                "verified_samples": self._parse_json_list(row.get("verified_samples_json")),
+            }
+
+        payload = {
+            "configs": configs,
+            "sessions": list(sessions_by_id.values()),
+            "active_source_ids": sorted(active_source_ids),
+        }
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if digest == self.last_lpg_state_digest:
+            return
+        try:
+            response = self.session.post(
+                f"{CLOUD_BASE_URL}/edge/lpg-state",
+                headers=headers,
+                json=payload,
+                timeout=API_TIMEOUT_SECONDS,
+            )
+            if response.status_code == 200:
+                self.last_lpg_state_digest = digest
+            else:
+                logger.warning("LPG state sync returned HTTP %s", response.status_code)
+        except (requests.exceptions.RequestException, ValueError) as error:
+            logger.warning("LPG state sync failed: %s", type(error).__name__)
+
+    def _execute_lpg_command(
+        self, command: Dict[str, Any]
+    ) -> Tuple[str, Optional[str], Dict[str, Any]]:
+        source_id = str(command["source_id"])
+        action = str(command["action"])
+        args = command.get("arguments") or {}
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """SELECT source_id, capacity_kg
+                       FROM device_registry
+                       WHERE gateway_id=%s AND source_id=%s
+                         AND device_type='lpg_edge_node'
+                         AND status IN ('active', 'maintenance')""",
+                    (self.gateway_id, source_id),
+                )
+                device = cursor.fetchone()
+                if not device:
+                    conn.rollback()
+                    return "failed", "Approved LPG node not found on gateway", {}
+
+                cursor.execute(
+                    """SELECT mq6_vcc_v, mq6_rl_kohm, mq6_divider_ratio, mq6_ro_kohm,
+                              mq6_baseline_v, gas_warn_ppm, gas_crit_ppm,
+                              cylinder_tare_kg, rated_capacity_kg, stability_tolerance_kg
+                       FROM lpg_node_config
+                       WHERE gateway_id=%s AND source_id=%s""",
+                    (self.gateway_id, source_id),
+                )
+                cfg_row = cursor.fetchone()
+                cfg = lpg_interpreter.normalize_node_config(cfg_row)
+
+                cursor.execute(
+                    """SELECT session_id, started_by, service_note, started_at
+                       FROM lpg_maintenance_sessions
+                       WHERE gateway_id=%s AND source_id=%s AND status='active'
+                       ORDER BY started_at DESC
+                       LIMIT 1""",
+                    (self.gateway_id, source_id),
+                )
+                active = cursor.fetchone()
+
+                if action == "start_tank_swap":
+                    if active:
+                        conn.rollback()
+                        return (
+                            "succeeded",
+                            "Maintenance mode already active",
+                            {
+                                "session_id": active["session_id"],
+                                "started_by": active.get("started_by"),
+                                "service_note": active.get("service_note"),
+                                "started_at": self._utc_iso(active.get("started_at")),
+                            },
+                        )
+                    session_id = str(uuid.uuid4())
+                    started_by = str(args.get("started_by") or "Operator").strip()[:80] or "Operator"
+                    note_raw = args.get("service_note")
+                    service_note = str(note_raw).strip()[:240] if isinstance(note_raw, str) and note_raw.strip() else None
+                    started_at = datetime.now(timezone.utc)
+                    cursor.execute(
+                        """INSERT INTO lpg_maintenance_sessions
+                           (session_id, gateway_id, source_id, status, started_by, service_note, started_at)
+                           VALUES (%s, %s, %s, 'active', %s, %s, %s)""",
+                        (
+                            session_id,
+                            self.gateway_id,
+                            source_id,
+                            started_by,
+                            service_note,
+                            started_at.replace(tzinfo=None),
+                        ),
+                    )
+                    conn.commit()
+                    self.last_lpg_state_digest = None
+                    return (
+                        "succeeded",
+                        None,
+                        {
+                            "session_id": session_id,
+                            "started_by": started_by,
+                            "service_note": service_note,
+                            "started_at": started_at.isoformat(),
+                        },
+                    )
+
+                if action == "complete_tank_swap":
+                    if not active:
+                        conn.rollback()
+                        return "failed", "Tank swap session is not active on gateway", {}
+                    samples = self._load_recent_lpg_samples(cursor, source_id, limit=12)
+                    stability = lpg_interpreter.evaluate_swap_stability(
+                        samples, tolerance_kg=cfg["stability_tolerance_kg"]
+                    )
+                    if not stability.get("stable"):
+                        conn.rollback()
+                        return (
+                            "failed",
+                            str(stability.get("reason") or "Scale reading is not stable yet")[:240],
+                            {"stability": stability},
+                        )
+                    arg_tare = lpg_interpreter.finite_float(args.get("tare_kg")) if args.get("tare_kg") is not None else None
+                    arg_cap = (
+                        lpg_interpreter.finite_float(args.get("rated_capacity_kg"))
+                        if args.get("rated_capacity_kg") is not None
+                        else None
+                    )
+                    tare_kg = arg_tare if arg_tare is not None else cfg["cylinder_tare_kg"]
+                    rated_capacity_kg = (
+                        arg_cap
+                        if arg_cap is not None
+                        else (
+                            cfg["rated_capacity_kg"]
+                            or lpg_interpreter.finite_float(device.get("capacity_kg"))
+                            or 14.0
+                        )
+                    )
+                    if tare_kg is not None and tare_kg < 0:
+                        conn.rollback()
+                        return "failed", "Cylinder tare weight cannot be negative", {}
+                    if rated_capacity_kg is None or rated_capacity_kg <= 0:
+                        conn.rollback()
+                        return "failed", "Rated capacity must be positive", {}
+
+                    completed_by = str(args.get("completed_by") or "Operator").strip()[:80] or "Operator"
+                    completed_at = datetime.now(timezone.utc)
+                    verified_samples = stability.get("samples", [])
+                    cursor.execute(
+                        """UPDATE lpg_maintenance_sessions
+                           SET status='completed',
+                               completed_at=%s,
+                               completed_by=%s,
+                               new_tare_kg=%s,
+                               new_capacity_kg=%s,
+                               verified_samples_json=%s
+                           WHERE session_id=%s AND status='active'""",
+                        (
+                            completed_at.replace(tzinfo=None),
+                            completed_by,
+                            tare_kg,
+                            rated_capacity_kg,
+                            json.dumps(verified_samples),
+                            active["session_id"],
+                        ),
+                    )
+                    cursor.execute(
+                        """INSERT INTO lpg_node_config
+                           (gateway_id, source_id, mq6_vcc_v, mq6_rl_kohm, mq6_divider_ratio,
+                            mq6_ro_kohm, mq6_baseline_v, gas_warn_ppm, gas_crit_ppm,
+                            cylinder_tare_kg, rated_capacity_kg, stability_tolerance_kg, updated_by)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           ON DUPLICATE KEY UPDATE
+                             cylinder_tare_kg=VALUES(cylinder_tare_kg),
+                             rated_capacity_kg=VALUES(rated_capacity_kg),
+                             updated_by=VALUES(updated_by)""",
+                        (
+                            self.gateway_id,
+                            source_id,
+                            cfg["mq6_vcc_v"],
+                            cfg["mq6_rl_kohm"],
+                            cfg["mq6_divider_ratio"],
+                            cfg["mq6_ro_kohm"],
+                            cfg["mq6_baseline_v"],
+                            cfg["gas_warn_ppm"],
+                            cfg["gas_crit_ppm"],
+                            tare_kg,
+                            rated_capacity_kg,
+                            cfg["stability_tolerance_kg"],
+                            completed_by,
+                        ),
+                    )
+                    cursor.execute(
+                        "UPDATE device_registry SET capacity_kg=%s WHERE gateway_id=%s AND source_id=%s",
+                        (rated_capacity_kg, self.gateway_id, source_id),
+                    )
+                    conn.commit()
+                    self.last_lpg_state_digest = None
+                    return (
+                        "succeeded",
+                        None,
+                        {
+                            "session_id": active["session_id"],
+                            "completed_at": completed_at.isoformat(),
+                            "completed_by": completed_by,
+                            "tare_kg": tare_kg,
+                            "rated_capacity_kg": rated_capacity_kg,
+                            "verified_samples": verified_samples,
+                            "stability": stability,
+                        },
+                    )
+
+                if action == "calibrate_gas_baseline":
+                    reset = args.get("reset") is True
+                    save_only = args.get("save_settings_only") is True and not reset
+                    updated_by = str(args.get("updated_by") or "Operator").strip()[:80] or "Operator"
+
+                    rl_kohm = lpg_interpreter.finite_float(args.get("rl_kohm")) or cfg["mq6_rl_kohm"]
+                    divider_ratio = lpg_interpreter.finite_float(args.get("divider_ratio")) or cfg["mq6_divider_ratio"]
+                    vcc_v = lpg_interpreter.finite_float(args.get("vcc_v")) or cfg["mq6_vcc_v"]
+                    warn_ppm = lpg_interpreter.finite_float(args.get("gas_warn_ppm")) or cfg["gas_warn_ppm"]
+                    crit_ppm = lpg_interpreter.finite_float(args.get("gas_crit_ppm")) or cfg["gas_crit_ppm"]
+                    if crit_ppm <= warn_ppm:
+                        conn.rollback()
+                        return "failed", "Critical ppm threshold must exceed warning threshold", {}
+
+                    if reset:
+                        ro_kohm = None
+                        baseline_v = None
+                    elif save_only:
+                        baseline_v = cfg.get("mq6_baseline_v")
+                        if baseline_v is not None:
+                            ro_kohm = lpg_interpreter.derive_ro_from_clean_air(
+                                baseline_v,
+                                vcc_v=vcc_v,
+                                rl_kohm=rl_kohm,
+                                divider_ratio=divider_ratio,
+                            )
+                            if ro_kohm is None:
+                                conn.rollback()
+                                return "failed", "Saved baseline voltage is out of range for updated circuit settings", {}
+                        else:
+                            ro_kohm = cfg.get("mq6_ro_kohm")
+                        if ro_kohm is None:
+                            conn.rollback()
+                            return "failed", "Capture a clean-air baseline before saving alert limits", {}
+                    else:
+                        samples = self._load_recent_lpg_samples(cursor, source_id, limit=5)
+                        now_utc = datetime.now(timezone.utc)
+                        latest_fresh = None
+                        for sample in samples:
+                            sample_at = sample.get("sample_at")
+                            if (
+                                isinstance(sample_at, datetime)
+                                and (now_utc - sample_at).total_seconds() <= 60
+                                and sample.get("voltage") is not None
+                            ):
+                                latest_fresh = sample
+                                break
+                        if latest_fresh is None:
+                            conn.rollback()
+                            return "failed", "Fresh valid MQ-6 voltage reading is required to capture clean-air baseline", {}
+                        ro_kohm = lpg_interpreter.derive_ro_from_clean_air(
+                            latest_fresh["voltage"],
+                            vcc_v=vcc_v,
+                            rl_kohm=rl_kohm,
+                            divider_ratio=divider_ratio,
+                        )
+                        if ro_kohm is None:
+                            conn.rollback()
+                            return "failed", "MQ-6 voltage reading is out of valid sensor range", {}
+                        baseline_v = round(float(latest_fresh["voltage"]), 4)
+
+                    cursor.execute(
+                        """INSERT INTO lpg_node_config
+                           (gateway_id, source_id, mq6_vcc_v, mq6_rl_kohm, mq6_divider_ratio,
+                            mq6_ro_kohm, mq6_baseline_v, gas_warn_ppm, gas_crit_ppm,
+                            cylinder_tare_kg, rated_capacity_kg, stability_tolerance_kg, updated_by)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           ON DUPLICATE KEY UPDATE
+                             mq6_vcc_v=VALUES(mq6_vcc_v),
+                             mq6_rl_kohm=VALUES(mq6_rl_kohm),
+                             mq6_divider_ratio=VALUES(mq6_divider_ratio),
+                             mq6_ro_kohm=VALUES(mq6_ro_kohm),
+                             mq6_baseline_v=VALUES(mq6_baseline_v),
+                             gas_warn_ppm=VALUES(gas_warn_ppm),
+                             gas_crit_ppm=VALUES(gas_crit_ppm),
+                             updated_by=VALUES(updated_by)""",
+                        (
+                            self.gateway_id,
+                            source_id,
+                            vcc_v,
+                            rl_kohm,
+                            divider_ratio,
+                            ro_kohm,
+                            baseline_v,
+                            warn_ppm,
+                            crit_ppm,
+                            cfg["cylinder_tare_kg"],
+                            cfg["rated_capacity_kg"],
+                            cfg["stability_tolerance_kg"],
+                            updated_by,
+                        ),
+                    )
+                    conn.commit()
+                    self.last_lpg_state_digest = None
+                    return (
+                        "succeeded",
+                        None,
+                        {
+                            "mq6_vcc_v": vcc_v,
+                            "mq6_rl_kohm": rl_kohm,
+                            "mq6_divider_ratio": divider_ratio,
+                            "mq6_ro_kohm": ro_kohm,
+                            "mq6_baseline_v": baseline_v,
+                            "gas_warn_ppm": warn_ppm,
+                            "gas_crit_ppm": crit_ppm,
+                        },
+                    )
+
+                conn.rollback()
+                return "failed", f"Unsupported LPG action: {action}", {}
+        except Exception as err:
+            if conn and conn.open:
+                conn.rollback()
+            logger.warning("LPG command execution error (%s): %s", action, type(err).__name__)
+            return "failed", f"Gateway execution error ({type(err).__name__})", {}
+
+    def sync_lpg_operations(self):
+        """Upload Pi LPG maintenance/config state and execute cloud tank-swap / calibration commands."""
+        if self.status != "active" or not self.credential:
+            return
+        headers = {"Authorization": f"Bearer {self.credential}"}
+        self._upload_lpg_state(headers)
+
+        try:
+            response = self.session.get(
+                f"{CLOUD_BASE_URL}/edge/lpg-commands",
+                headers=headers,
+                timeout=API_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            commands = response.json().get("commands", [])
+            if not isinstance(commands, list) or len(commands) > 20:
+                raise ValueError("Invalid cloud LPG command batch")
+        except (requests.exceptions.RequestException, ValueError) as error:
+            logger.warning("Cloud LPG command polling failed: %s", type(error).__name__)
+            return
+
+        any_executed = False
+        for command in commands:
+            try:
+                command_id = str(uuid.UUID(command["command_id"]))
+                source_id = str(command["source_id"])
+                action = str(command["action"])
+                arguments = command["arguments"]
+                expires_at = datetime.fromisoformat(str(command["expires_at"]).replace("Z", "+00:00"))
+                if (
+                    expires_at.tzinfo is None
+                    or expires_at <= datetime.now(timezone.utc)
+                    or action not in {"start_tank_swap", "complete_tank_swap", "calibrate_gas_baseline"}
+                    or not isinstance(arguments, dict)
+                ):
+                    continue
+            except (KeyError, TypeError, ValueError):
+                logger.warning("Rejected invalid cloud LPG command envelope")
+                continue
+
+            status, reason, result_payload = self._execute_lpg_command(
+                {
+                    "command_id": command_id,
+                    "source_id": source_id,
+                    "action": action,
+                    "arguments": arguments,
+                }
+            )
+            any_executed = True
+            try:
+                self.session.post(
+                    f"{CLOUD_BASE_URL}/edge/lpg-command-results",
+                    headers=headers,
+                    timeout=API_TIMEOUT_SECONDS,
+                    json={
+                        "command_id": command_id,
+                        "status": status,
+                        "reason": reason,
+                        "result_payload": result_payload,
+                    },
+                )
+            except requests.exceptions.RequestException:
+                logger.warning("Cloud LPG command result delivery failed")
+
+        if any_executed:
+            self._upload_lpg_state(headers)
 
     def _init_http_session(self) -> Any:
         if requests is None:
@@ -690,6 +1242,7 @@ class EdgeSyncWorker:
 def run_worker_iteration(worker: EdgeSyncWorker) -> None:
     worker.refresh_gateway_state()
     worker.sync_machine_operations()
+    worker.sync_lpg_operations()
     worker.run_sync_cycle()
     if worker.status == "active":
         worker.sync_machine_cycles()

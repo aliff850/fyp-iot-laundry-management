@@ -6,8 +6,9 @@ import { Notice } from "@/components/auth/AuthForm";
 import { WorkspaceShell } from "@/components/workspace/layout/WorkspaceShell";
 import { MetricCard, MetricGrid } from "@/components/workspace/common/MetricCard";
 import { BranchDirectoryView } from "@/components/workspace/branches/BranchDirectoryView";
-import { BranchPerformanceChart } from "@/components/workspace/overview/BranchPerformanceChart";
-import { getBranchDirectory, getMembership } from "@/lib/auth/business";
+import { PerformanceChart } from "@/components/workspace/branches/PerformanceChart";
+import { fetchBranchesAnalytics } from "@/app/branches/actions";
+import { getBranchDirectory, getMembership, getOrganizationAnalytics } from "@/lib/auth/business";
 import { primaryButton, secondaryButton } from "@/lib/auth/styles";
 
 export const metadata: Metadata = { title: "Branches" };
@@ -22,7 +23,15 @@ export default async function BranchesPage() {
   if (!member.ok) return <WorkspaceShell title="Branches"><Notice>{member.message}</Notice></WorkspaceShell>;
   if (member.value.state !== "active" && member.value.state !== "approved_unassigned") redirect("/membership-status");
   const owner = member.value.state === "active" && member.value.role === "owner";
-  return <WorkspaceShell title="Branches" organization={member.value.organization?.name} owner={owner}>
+  const analyticsRes = owner && directory.ok ? await getOrganizationAnalytics("day") : null;
+  return (
+    <WorkspaceShell
+      title="Branches"
+      organization={member.value.organization?.name}
+      owner={owner}
+      notificationsEnabled={member.value.state === "active"}
+      userRole={member.value.role}
+    >
     <div className="space-y-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
@@ -65,8 +74,19 @@ export default async function BranchesPage() {
           </section>
         )}
         <BranchDirectoryView branches={directory.value.branches} owner={owner} />
-        {owner && <BranchPerformanceChart branches={directory.value.branches} />}
+        {owner && (
+          <PerformanceChart
+            branchId="all"
+            branches={directory.value.branches}
+            showMachineMetrics={false}
+            showBusinessInsights={true}
+            initialAnalytics={analyticsRes?.ok ? analyticsRes.value : null}
+            initialError={analyticsRes && !analyticsRes.ok ? analyticsRes.message : null}
+            onFetchPeriod={fetchBranchesAnalytics}
+          />
+        )}
       </>}
     </div>
-  </WorkspaceShell>;
+  </WorkspaceShell>
+  );
 }

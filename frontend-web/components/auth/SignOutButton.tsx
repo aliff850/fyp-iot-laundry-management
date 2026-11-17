@@ -1,10 +1,13 @@
 "use client";
 
-import { useActionState, useEffect, useRef, useState } from "react";
+import { useActionState, useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { LogOut, User } from "lucide-react";
 import { signOut } from "@/app/auth/actions";
+import { unregisterPushSubscription } from "@/app/notifications/actions";
 import { Notice } from "@/components/auth/AuthForm";
+import { clearWorkspaceNotificationsStorage } from "@/components/workspace/notifications/notificationLogic";
+import { cleanupPushOnSignOut } from "@/components/workspace/notifications/pushClient";
 import { secondaryButton } from "@/lib/auth/styles";
 import type { AuthFormState } from "@/lib/auth/validation";
 
@@ -14,7 +17,17 @@ interface SignOutButtonProps {
 
 export function SignOutButton({ variant = "dropdown" }: SignOutButtonProps) {
   const [state, action, pending] = useActionState<AuthFormState>(signOut, {});
+  const [cleaning, startTransition] = useTransition();
+  const isPending = pending || cleaning;
   const [isOpen, setIsOpen] = useState(false);
+
+  function handleSignOutAction() {
+    clearWorkspaceNotificationsStorage();
+    startTransition(async () => {
+      await cleanupPushOnSignOut(unregisterPushSubscription);
+      action();
+    });
+  }
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
@@ -47,14 +60,18 @@ export function SignOutButton({ variant = "dropdown" }: SignOutButtonProps) {
 
   if (variant === "button") {
     return (
-      <form action={action} aria-busy={pending} className="space-y-4">
+      <form
+        action={handleSignOutAction}
+        aria-busy={isPending}
+        className="space-y-4"
+      >
         {state.message && <Notice>{state.message}</Notice>}
         <button
           type="submit"
-          disabled={pending}
+          disabled={isPending}
           className={`${secondaryButton} w-full`}
         >
-          {pending ? "Signing out…" : "Sign out"}
+          {isPending ? "Signing out…" : "Sign out"}
         </button>
       </form>
     );
@@ -97,15 +114,19 @@ export function SignOutButton({ variant = "dropdown" }: SignOutButtonProps) {
           <div className="my-1 border-t border-rule" role="separator" />
 
           <div className="py-1" role="none">
-            <form action={action} aria-busy={pending} role="none">
+            <form
+              action={handleSignOutAction}
+              aria-busy={isPending}
+              role="none"
+            >
               <button
                 type="submit"
                 role="menuitem"
-                disabled={pending}
+                disabled={isPending}
                 className="flex w-full items-center gap-2.5 rounded px-3 py-2 text-xs font-medium text-negative transition-colors duration-150 hover:bg-negative/15 focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <LogOut className="size-4 shrink-0" aria-hidden="true" />
-                <span>{pending ? "Signing out…" : "Sign Out"}</span>
+                <span>{isPending ? "Signing out…" : "Sign Out"}</span>
               </button>
             </form>
           </div>

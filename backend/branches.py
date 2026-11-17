@@ -431,6 +431,7 @@ def get_branch_overview(branch_id: UUID, user=Depends(_user)):
             and d.device_type in ('washer','dryer','washer_dryer')""",
             (branch_id, organization)).fetchall()
         from datetime import datetime, timedelta, timezone
+        from lpg_operations import load_branch_safety_nodes, summarize_branch_lpg_overview
         now = datetime.now(timezone.utc)
         states = [m["state_payload"].get("state", "unknown") if m["state_payload"]
                   and m["cloud_seen_at"] and now - m["cloud_seen_at"] <= timedelta(seconds=45)
@@ -462,13 +463,9 @@ def get_branch_overview(branch_id: UUID, user=Depends(_user)):
                 "offline": offline_cnt,
                 "status": "error" if error_cnt else "unknown" if offline_cnt or not fleet_machines else "nominal",
             },
-            "lpg": {
-                "total_cylinders": 4,
-                "active_cylinders": 4,
-                "manifold_status": "HEALTHY",
-                "fuel_level_percent": None,
-                "status": "Awaiting gateway telemetry sync",
-            },
+            "lpg": summarize_branch_lpg_overview(
+                load_branch_safety_nodes(conn, organization, branch_id, now=now)
+            ),
             "customer_reports": {
                 "pending_count": sum(1 for r in _get_branch_reports(branch_id) if r["status"] == "received"),
                 "investigating_count": sum(1 for r in _get_branch_reports(branch_id) if r["status"] == "investigating"),
@@ -590,6 +587,10 @@ def update_personnel_role(user_id: UUID, payload: PersonnelRoleUpdate, user=Depe
                where user_id=%s and organization_id=%s and active""",
             (payload.role, new_state, user_id, organization),
         )
+        if new_state != "active" or payload.role is None:
+            from push_notifications import revoke_user_push_subscriptions
+
+            revoke_user_push_subscriptions(conn, user_id, organization)
 
     admin_target = _admin_user(str(user_id))
     _assert_confirmed_active(admin_target)
@@ -671,6 +672,10 @@ def update_personnel_branches(user_id: UUID, payload: PersonnelBranchesUpdate, u
                    where user_id=%s and organization_id=%s and active""",
                 (new_state, user_id, organization),
             )
+        if not target_branch_ids or new_state != "active":
+            from push_notifications import revoke_user_push_subscriptions
+
+            revoke_user_push_subscriptions(conn, user_id, organization)
 
     return {
         "success": True,
@@ -789,6 +794,9 @@ def remove_personnel_from_branch(branch_id: UUID, user_id: UUID, user=Depends(_u
                where user_id=%s and organization_id=%s and active""",
             (user_id, organization),
         )
+        from push_notifications import revoke_user_push_subscriptions
+
+        revoke_user_push_subscriptions(conn, user_id, organization)
 
     admin_target = _admin_user(str(user_id))
     _assert_confirmed_active(admin_target)
@@ -868,6 +876,8 @@ def update_machine_parameters(branch_id: UUID, machine_id: str, body: MachinePar
 
 # ==========================================
 # LPG FUEL & ENVIRONMENTAL SAFETY API (PRD 4.3, 4.4, 6.4)
+# Read projection served by lpg_operations.py (/branches/{branch_id}/lpg-safety & /lpg).
+# Unbacked in-memory mutation stubs are retired pending real gateway workflows.
 # ==========================================
 
 class CylinderReplacementStartRequest(BaseModel):
@@ -884,337 +894,28 @@ class EmergencyShutoffRequest(BaseModel):
     action: Literal["open", "close"]
 
 
-_branch_lpg_db: dict[UUID, dict] = {}
-
-
-def _init_default_lpg(branch_id: UUID) -> dict:
-    from datetime import datetime, timezone
-    now = datetime.now(timezone.utc).isoformat()
-    return {
-        "cylinders": [
-            {
-                "id": "cyl-1",
-                "label": "Cylinder #01 (Station A)",
-                "position": 1,
-                "source_kind": "physical",
-                "gross_mass_kg": 26.8,
-                "cylinder_tare_kg": 15.0,
-                "rated_fuel_capacity_kg": 14.0,
-                "remaining_fuel_kg": 11.8,
-                "fill_percent": 84.3,
-                "status": "NORMAL",
-                "quality": "valid",
-                "maintenance_mode": False,
-                "is_connected": True,
-                "last_updated": now,
-                "replacement_start_time": None,
-                "service_note": None,
-                "mq6": {
-                    "voltage": 0.42,
-                    "baseline_voltage": 0.40,
-                    "ppm_estimate": 180,
-                    "status": "NORMAL",
-                    "is_leak_detected": False,
-                },
-            },
-            {
-                "id": "cyl-2",
-                "label": "Cylinder #02 (Station B)",
-                "position": 2,
-                "source_kind": "simulated",
-                "gross_mass_kg": 28.5,
-                "cylinder_tare_kg": 15.0,
-                "rated_fuel_capacity_kg": 14.0,
-                "remaining_fuel_kg": 13.5,
-                "fill_percent": 96.4,
-                "status": "NORMAL",
-                "quality": "valid",
-                "maintenance_mode": False,
-                "is_connected": True,
-                "last_updated": now,
-                "replacement_start_time": None,
-                "service_note": None,
-                "mq6": {
-                    "voltage": 0.38,
-                    "baseline_voltage": 0.40,
-                    "ppm_estimate": 150,
-                    "status": "NORMAL",
-                    "is_leak_detected": False,
-                },
-            },
-            {
-                "id": "cyl-3",
-                "label": "Cylinder #03 (Station C)",
-                "position": 3,
-                "source_kind": "simulated",
-                "gross_mass_kg": 16.5,
-                "cylinder_tare_kg": 15.0,
-                "rated_fuel_capacity_kg": 14.0,
-                "remaining_fuel_kg": 1.5,
-                "fill_percent": 10.7,
-                "status": "WARNING",
-                "quality": "valid",
-                "maintenance_mode": False,
-                "is_connected": True,
-                "last_updated": now,
-                "replacement_start_time": None,
-                "service_note": None,
-                "mq6": {
-                    "voltage": 0.52,
-                    "baseline_voltage": 0.40,
-                    "ppm_estimate": 240,
-                    "status": "NORMAL",
-                    "is_leak_detected": False,
-                },
-            },
-            {
-                "id": "cyl-4",
-                "label": "Cylinder #04 (Station D)",
-                "position": 4,
-                "source_kind": "simulated",
-                "gross_mass_kg": 15.4,
-                "cylinder_tare_kg": 15.0,
-                "rated_fuel_capacity_kg": 14.0,
-                "remaining_fuel_kg": 0.4,
-                "fill_percent": 2.9,
-                "status": "CRITICAL",
-                "quality": "valid",
-                "maintenance_mode": False,
-                "is_connected": True,
-                "last_updated": now,
-                "replacement_start_time": None,
-                "service_note": None,
-                "mq6": {
-                    "voltage": 0.44,
-                    "baseline_voltage": 0.40,
-                    "ppm_estimate": 195,
-                    "status": "NORMAL",
-                    "is_leak_detected": False,
-                },
-            },
-        ],
-        "environment": {
-            "mq6": {
-                "sensor_id": "mq6-main",
-                "voltage": 0.85,
-                "baseline_voltage": 0.80,
-                "ppm_estimate": 245,
-                "status": "NORMAL",
-                "warmup_complete": True,
-                "is_leak_detected": False,
-                "source_kind": "physical",
-                "quality": "valid",
-                "last_updated": now,
-            },
-            "dht22": {
-                "sensor_id": "dht22-main",
-                "temperature_celsius": 28.5,
-                "humidity_percent": 62.0,
-                "status": "NORMAL",
-                "is_high_heat": False,
-                "source_kind": "physical",
-                "quality": "valid",
-                "last_updated": now,
-            },
-            "safety_valve": {
-                "state": "OPEN",
-                "emergency_shutoff": False,
-                "last_actuated": now,
-            },
-        },
-        "incidents": [
-            {
-                "id": "inc-fuel-cyl-4",
-                "severity": "critical",
-                "title": "Critical LPG Depletion (Station D)",
-                "description": "Cylinder #04 fuel level at 2.9% (< 5.0% critical threshold). Replacement required.",
-                "created_at": now,
-            },
-            {
-                "id": "inc-fuel-cyl-3",
-                "severity": "warning",
-                "title": "Low LPG Warning (Station C)",
-                "description": "Cylinder #03 fuel level at 10.7% (< 15.0% warning threshold). Prepare replacement vessel.",
-                "created_at": now,
-            },
-        ],
-    }
-
-
-def _get_branch_lpg(branch_id: UUID) -> dict:
-    if branch_id not in _branch_lpg_db:
-        _branch_lpg_db[branch_id] = _init_default_lpg(branch_id)
-    return _branch_lpg_db[branch_id]
-
-
-def _compute_lpg_summary(data: dict) -> dict:
-    cylinders = data["cylinders"]
-    total = len(cylinders)
-    valid_cyls = [c for c in cylinders if c.get("quality") == "valid" and not c.get("maintenance_mode")]
-    total_remaining = sum(c["remaining_fuel_kg"] for c in cylinders if c.get("quality") == "valid")
-    total_capacity = sum(c["rated_fuel_capacity_kg"] for c in cylinders if c.get("quality") == "valid")
-    weighted_pct = round(100.0 * total_remaining / total_capacity, 1) if total_capacity > 0 else 0.0
-    active_count = len(valid_cyls)
-
-    critical_count = sum(1 for c in cylinders if c["status"] == "CRITICAL" and not c.get("maintenance_mode"))
-    warning_count = sum(1 for c in cylinders if c["status"] == "WARNING" and not c.get("maintenance_mode"))
-    leak = data["environment"]["mq6"]["is_leak_detected"]
-
-    if leak:
-        status = "Leak Hazard"
-    elif critical_count > 0:
-        status = "Critical Depletion"
-    elif warning_count > 0:
-        status = "Low Gas Warning"
-    else:
-        status = "Healthy"
-
-    valid_count = len([c for c in cylinders if c.get("quality") == "valid"])
-    cov_pct = round(100.0 * valid_count / total) if total > 0 else 0
-
-    return {
-        "total_cylinders": total,
-        "active_cylinders": active_count,
-        "total_remaining_fuel_kg": round(total_remaining, 2),
-        "total_rated_capacity_kg": round(total_capacity, 2),
-        "weighted_fuel_percent": weighted_pct,
-        "measurement_coverage": f"{valid_count}/{total} ({cov_pct}%)",
-        "status": status,
-    }
-
-
-def _authorize_lpg_access(conn, user_id: UUID, branch_id: UUID, allowed_roles: tuple[str, ...]):
-    member = _membership(conn, user_id)
-    if member["state"] != "active":
-        raise HTTPException(403, "An active membership is required")
-    role = member["role"]
-    if role == "machine_maintenance":
-        raise HTTPException(403, "Machine maintenance specialists cannot access LPG fuel and safety")
-    if role not in allowed_roles:
-        raise HTTPException(403, f"Action not permitted for role {role}")
-    organization = member["organization_id"]
-    branch = conn.execute(
-        "select id, name, organization_id from public.branches where id=%s and organization_id=%s",
-        (branch_id, organization),
-    ).fetchone()
-    if not branch:
-        raise HTTPException(404, "Branch not found")
-    if role != "owner":
-        assignment = conn.execute(
-            "select 1 from public.branch_assignments where branch_id=%s and user_id=%s and organization_id=%s",
-            (branch_id, user_id, organization),
-        ).fetchone()
-        if not assignment:
-            raise HTTPException(403, "You are not assigned to this branch")
-    return member, branch
-
-
-@router.get("/branches/{branch_id}/lpg")
-def get_branch_lpg(branch_id: UUID, user=Depends(_user)):
-    with _database(read_only=True) as conn:
-        _authorize_lpg_access(
-            conn, user["id"], branch_id, ("owner", "branch_manager", "lpg_maintenance")
-        )
-        data = _get_branch_lpg(branch_id)
-        summary = _compute_lpg_summary(data)
-        return {
-            "cylinders": data["cylinders"],
-            "environment": data["environment"],
-            "summary": summary,
-            "incidents": data["incidents"],
-        }
-
-
 @router.post("/branches/{branch_id}/lpg/cylinders/{cylinder_id}/replacement/start")
 def start_cylinder_replacement(
     branch_id: UUID, cylinder_id: str, body: CylinderReplacementStartRequest, user=Depends(_user)
 ):
-    with _database() as conn:
-        _authorize_lpg_access(
-            conn, user["id"], branch_id, ("owner", "branch_manager", "lpg_maintenance")
-        )
-        data = _get_branch_lpg(branch_id)
-        cyl = next((c for c in data["cylinders"] if c["id"] == cylinder_id), None)
-        if not cyl:
-            raise HTTPException(404, f"Cylinder '{cylinder_id}' not found")
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
-        cyl["maintenance_mode"] = True
-        cyl["replacement_start_time"] = now
-        cyl["service_note"] = body.notes
-        return {"success": True, "cylinder": cyl}
+    raise HTTPException(410, "Legacy in-memory LPG workflow retired pending gateway support")
 
 
 @router.post("/branches/{branch_id}/lpg/cylinders/{cylinder_id}/replacement/complete")
 def complete_cylinder_replacement(
     branch_id: UUID, cylinder_id: str, body: CylinderReplacementCompleteRequest, user=Depends(_user)
 ):
-    with _database() as conn:
-        _authorize_lpg_access(
-            conn, user["id"], branch_id, ("owner", "branch_manager", "lpg_maintenance")
-        )
-        data = _get_branch_lpg(branch_id)
-        cyl = next((c for c in data["cylinders"] if c["id"] == cylinder_id), None)
-        if not cyl:
-            raise HTTPException(404, f"Cylinder '{cylinder_id}' not found")
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
-        cyl["cylinder_tare_kg"] = body.new_tare_kg
-        cyl["rated_fuel_capacity_kg"] = body.rated_capacity_kg
-        cyl["gross_mass_kg"] = round(body.new_tare_kg + body.rated_capacity_kg, 2)
-        cyl["remaining_fuel_kg"] = round(cyl["gross_mass_kg"] - cyl["cylinder_tare_kg"], 2)
-        cyl["fill_percent"] = round(100.0 * cyl["remaining_fuel_kg"] / cyl["rated_fuel_capacity_kg"], 1)
-
-        if cyl["fill_percent"] < 5.0:
-            cyl["status"] = "CRITICAL"
-        elif cyl["fill_percent"] < 15.0:
-            cyl["status"] = "WARNING"
-        else:
-            cyl["status"] = "NORMAL"
-
-        cyl["maintenance_mode"] = False
-        cyl["replacement_start_time"] = None
-        cyl["service_note"] = body.notes
-        cyl["last_updated"] = now
-
-        # Clear any active depletion incidents for this cylinder
-        data["incidents"] = [i for i in data["incidents"] if not i["id"].endswith(cylinder_id)]
-
-        return {"success": True, "cylinder": cyl}
+    raise HTTPException(410, "Legacy in-memory LPG workflow retired pending gateway support")
 
 
 @router.post("/branches/{branch_id}/lpg/cylinders/{cylinder_id}/replacement/cancel")
 def cancel_cylinder_replacement(branch_id: UUID, cylinder_id: str, user=Depends(_user)):
-    with _database() as conn:
-        _authorize_lpg_access(
-            conn, user["id"], branch_id, ("owner", "branch_manager", "lpg_maintenance")
-        )
-        data = _get_branch_lpg(branch_id)
-        cyl = next((c for c in data["cylinders"] if c["id"] == cylinder_id), None)
-        if not cyl:
-            raise HTTPException(404, f"Cylinder '{cylinder_id}' not found")
-        cyl["maintenance_mode"] = False
-        cyl["replacement_start_time"] = None
-        return {"success": True, "cylinder": cyl}
+    raise HTTPException(410, "Legacy in-memory LPG workflow retired pending gateway support")
 
 
 @router.post("/branches/{branch_id}/lpg/emergency-shutoff")
 def emergency_shutoff(branch_id: UUID, body: EmergencyShutoffRequest, user=Depends(_user)):
-    with _database() as conn:
-        _authorize_lpg_access(
-            conn, user["id"], branch_id, ("owner", "branch_manager", "lpg_maintenance")
-        )
-        data = _get_branch_lpg(branch_id)
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
-        if body.action == "close":
-            data["environment"]["safety_valve"]["state"] = "CLOSED"
-            data["environment"]["safety_valve"]["emergency_shutoff"] = True
-        else:
-            data["environment"]["safety_valve"]["state"] = "OPEN"
-            data["environment"]["safety_valve"]["emergency_shutoff"] = False
-        data["environment"]["safety_valve"]["last_actuated"] = now
-        return {"success": True, "safety_valve": data["environment"]["safety_valve"]}
+    raise HTTPException(410, "Legacy in-memory LPG workflow retired pending gateway support")
 
 
 # ==========================================

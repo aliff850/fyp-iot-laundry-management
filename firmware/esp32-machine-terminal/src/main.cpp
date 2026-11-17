@@ -281,6 +281,9 @@ void onMessage(char *topic, byte *payload, unsigned int length) {
       mqtt.publish(topicResults.c_str(), result.c_str(), false);
       machinePresenceDirty = true;
       if (String(machine.data["state"] | "unknown") == "running") remoteFinishedAt = 0;
+      int progCount = machine.data["programs"].as<JsonObjectConst>().size();
+      if (progCount > 0 && selectedProgramIndex >= progCount) selectedProgramIndex = progCount - 1;
+      else if (progCount == 0) selectedProgramIndex = 0;
     }
     render();
     return;

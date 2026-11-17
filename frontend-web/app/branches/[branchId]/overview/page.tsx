@@ -13,9 +13,17 @@ import {
 } from "lucide-react";
 import { Notice } from "@/components/auth/AuthForm";
 import { BranchWorkspaceShell } from "@/components/workspace/layout/BranchWorkspaceShell";
-import { BranchPerformanceChart } from "@/components/workspace/overview/BranchPerformanceChart";
+import { PerformanceChart } from "@/components/workspace/branches/PerformanceChart";
+import { LpgTankLevelsChart } from "@/components/workspace/branches/LpgTankLevelsChart";
+import { BranchRecordsTable } from "@/components/workspace/records/BranchRecordsTable";
 import { MetricCard, MetricGrid } from "@/components/workspace/common/MetricCard";
-import { getBranchOverview, getMembership } from "@/lib/auth/business";
+import {
+  getBranchLpgSafety,
+  getBranchOverview,
+  getBranchOverviewAnalytics,
+  getBranchRecords,
+  getMembership,
+} from "@/lib/auth/business";
 
 export const metadata: Metadata = { title: "Branch Overview" };
 export const dynamic = "force-dynamic";
@@ -26,9 +34,12 @@ interface BranchOverviewPageProps {
 
 export default async function BranchOverviewPage({ params }: BranchOverviewPageProps) {
   const { branchId } = await params;
-  const [membershipRes, overviewRes] = await Promise.all([
+  const [membershipRes, overviewRes, analyticsRes, lpgRes, recordsRes] = await Promise.all([
     getMembership(),
     getBranchOverview(branchId),
+    getBranchOverviewAnalytics(branchId, "day"),
+    getBranchLpgSafety(branchId),
+    getBranchRecords(branchId, "lpg", "all", 1, 10),
   ]);
 
   if (!membershipRes.ok && membershipRes.status === 401) {
@@ -196,10 +207,29 @@ export default async function BranchOverviewPage({ params }: BranchOverviewPageP
           </div>
         </section>
 
-        {/* Visuals & Charts (Chart.js Powered Branch Analytics) */}
-        <BranchPerformanceChart
-          branch={branch}
-          performance={overview.performance}
+        <PerformanceChart
+          key={branch.id}
+          branchId={branch.id}
+          initialAnalytics={analyticsRes.ok ? analyticsRes.value : null}
+          initialError={analyticsRes.ok ? null : analyticsRes.message}
+        />
+
+        <LpgTankLevelsChart
+          key={`lpg-tanks-${branch.id}`}
+          branchId={branch.id}
+          initialSnapshot={lpgRes.ok ? lpgRes.value : null}
+          initialError={lpgRes.ok ? null : lpgRes.message}
+        />
+
+        <BranchRecordsTable
+          key={`records-${branch.id}`}
+          branchId={branch.id}
+          allowedScopes={["lpg", "machines"]}
+          defaultScope="lpg"
+          title="Recent records"
+          showPrice={true}
+          initialData={recordsRes.ok ? recordsRes.value : null}
+          initialError={recordsRes.ok ? null : recordsRes.message}
         />
       </div>
     </BranchWorkspaceShell>

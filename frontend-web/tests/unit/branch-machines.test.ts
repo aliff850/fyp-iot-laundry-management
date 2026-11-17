@@ -2,361 +2,99 @@ import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToString } from "react-dom/server";
 import { MachineCard } from "@/components/workspace/machines/MachineCard";
-import { MachineRowCard } from "@/components/workspace/machines/MachineRowCard";
 import { MachineDetailModal } from "@/components/workspace/machines/MachineDetailModal";
-import { MachineFleetView } from "@/components/workspace/machines/MachineFleetView";
-import type { MachineItem } from "@/lib/auth/business";
+import { RemoteMachineFleet } from "@/components/workspace/machines/RemoteMachineFleet";
+import type { RemoteMachine } from "@/lib/auth/business";
 
-const mockWasherRunning: MachineItem = {
-  id: "W-01",
-  branch_id: "b1111111-1111-1111-1111-111111111111",
-  name: "Washer #01 (15kg)",
+const washer: RemoteMachine = {
+  source_id: "washer-sim-01",
   type: "washer",
-  status: "RUNNING",
-  remaining_time: 18,
-  current_cycle: "Standard Cotton 40°C",
-  phase: "Wash",
-  capacity_kg: 15,
-  power_w: 1850.0,
-  water_l: 48.0,
-  drum_rpm: 800,
-  fault_code: null,
-  fault_subsystem: null,
-  fault_remediation: null,
-  parameters: {
-    price: 6.0,
-    duration_mins: 35,
-    temp_celsius: 40,
-    water_level: "High",
-    spin_speed: 1200,
-    door_locked: true,
+  source: "simulated",
+  label: "Demo Washer 01",
+  capacity_kg: null,
+  state: "idle",
+  freshness: "fresh",
+  last_update: "2026-11-14T10:00:00Z",
+  data: {
+    remaining_seconds: 0,
+    programs: {
+      quick: { name: "Quick", duration_seconds: 30, price_myr: "4.00" },
+      p_fe20185dc7ed: { name: "ECODEMO", duration_seconds: 20, price_myr: "3.50" },
+    },
   },
 };
 
-const mockWasherIdle: MachineItem = {
-  id: "W-02",
-  branch_id: "b1111111-1111-1111-1111-111111111111",
-  name: "Washer #02 (15kg)",
-  type: "washer",
-  status: "IDLE",
-  remaining_time: 0,
-  current_cycle: null,
-  phase: "Idle",
-  capacity_kg: 15,
-  power_w: 35.0,
-  water_l: 0.0,
-  drum_rpm: 0,
-  fault_code: null,
-  fault_subsystem: null,
-  fault_remediation: null,
-  parameters: {
-    price: 6.0,
-    duration_mins: 30,
-    temp_celsius: 30,
-    water_level: "Medium",
-    spin_speed: 800,
-    door_locked: false,
-  },
+const cardProps = {
+  branchId: "branch-1",
+  branchOpen: true,
+  role: "owner" as const,
+  onOpenDetails: () => {},
 };
 
-const mockDryerFault: MachineItem = {
-  id: "D-01",
-  branch_id: "b1111111-1111-1111-1111-111111111111",
-  name: "Dryer #01 (Gas 16kg)",
-  type: "dryer",
-  status: "ERROR",
-  remaining_time: 0,
-  current_cycle: "High Heat Express",
-  phase: "Idle",
-  capacity_kg: 16,
-  power_w: 0.0,
-  water_l: 0.0,
-  drum_rpm: 0,
-  fault_code: "E-302",
-  fault_subsystem: "Ignition",
-  fault_remediation: "Verify LPG cylinder manifold pressure and inspect spark igniter.",
-  parameters: {
-    price: 5.5,
-    duration_mins: 30,
-    temp_celsius: 65,
-    water_level: "Low",
-    spin_speed: 400,
-    door_locked: false,
-  },
-};
+describe("live branch machine UI", () => {
+  it("matches Pi 5 machineRowCard layout with Device ID, 3-box grid, and no unsupported door action", () => {
+    const html = renderToString(React.createElement(MachineCard, {
+      ...cardProps,
+      machine: washer,
+    }));
+    const text = html.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
 
-const mockMaintenanceProjection: MachineItem = {
-  ...mockWasherRunning,
-  parameters: {
-    ...mockWasherRunning.parameters,
-    price: null, // PRD FM-06 & Section 4.4: financial pricing stripped for maintenance
-  },
-};
-
-describe("MachineCard component", () => {
-  it("renders running washer with full SVG, status, remaining time, and three buttons (Start, Pause, Stop)", () => {
-    const raw = renderToString(
-      React.createElement(MachineCard, {
-        machine: mockWasherRunning,
-        branchId: "b1111111-1111-1111-1111-111111111111",
-        userRole: "owner",
-        onOpenDetails: () => {},
-      })
-    );
-    const text = raw.replace(/<!--.*?-->/g, "");
-    // Title
-    expect(text).toContain("Washer #01 (15kg)");
-    // Full SVG representation
-    expect(text).toContain("Commercial Washer illustration (RUNNING)");
-    // Machine status section
-    expect(text).toContain("Running");
-    expect(text).toContain("Standard Cotton 40°C");
-    // Remaining time section
-    expect(text).toContain("18 min remaining");
-    // Three buttons section
-    expect(text).toContain("Start");
-    expect(text).toContain("Pause");
-    expect(text).toContain("Stop");
-    // In running state, pause button is enabled, start button is disabled
-    expect(raw).toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Start<\/span>/);
-    expect(raw).not.toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Pause<\/span>/);
-    // Modal trigger (hidden on mobile, visible on desktop / PC)
-    expect(text).toContain("Details &amp; Parameters");
-    expect(raw).toContain("hidden sm:flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-control bg-raised/50 px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent");
-    // No font-mono
-    expect(raw).not.toContain("font-mono");
+    expect(text).toContain("Demo Washer 01");
+    expect(text).toContain("Device ID");
+    expect(text).toContain("washer-sim-01");
+    expect(text).toContain("Machine state");
+    expect(text).toContain("Idle");
+    expect(text).toContain("Remaining estimate");
+    expect(text).toContain("Capacity");
+    expect(text).toContain("Category");
+    expect(text).toContain("Washer");
+    expect(text).toContain("Last sample");
+    expect(text).toContain("Freshness");
+    expect(text).toContain("Fresh");
+    expect(text).toContain("Details & parameters");
+    expect(html).not.toContain("Unlock door");
+    expect(html).not.toContain("RM 4.00");
   });
 
-  it("renders idle machine with enabled Start button and disabled Pause/Stop buttons", () => {
-    const raw = renderToString(
-      React.createElement(MachineCard, {
-        machine: mockWasherIdle,
-        branchId: "b1111111-1111-1111-1111-111111111111",
-        userRole: "branch_manager",
-        onOpenDetails: () => {},
-      })
-    );
-    const text = raw.replace(/<!--.*?-->/g, "");
-    expect(text).toContain("Washer #02 (15kg)");
-    expect(text).toContain("Idle / Available");
-    expect(text).toContain("Ready (30 min cycle)");
-    expect(text).toContain("Start");
-    expect(text).toContain("Pause");
-    expect(text).toContain("Stop");
-    // Start is enabled; Pause and Stop are disabled
-    expect(raw).not.toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Start<\/span>/);
-    expect(raw).toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Pause<\/span>/);
-    expect(raw).toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Stop<\/span>/);
+  it("keeps stale machines unknown and disables cycle controls", () => {
+    const html = renderToString(React.createElement(MachineCard, {
+      ...cardProps,
+      machine: { ...washer, freshness: "stale", state: "idle" },
+    }));
+    expect(html).toContain("Stale");
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*><svg[^>]*>[\s\S]*?<span>Start<\/span>/);
   });
 
-  it("restricts cycle controls and omits price for machine maintenance specialist", () => {
-    const raw = renderToString(
-      React.createElement(MachineCard, {
-        machine: mockMaintenanceProjection,
-        branchId: "b1111111-1111-1111-1111-111111111111",
-        userRole: "machine_maintenance",
-        onOpenDetails: () => {},
-      })
-    );
-    const text = raw.replace(/<!--.*?-->/g, "");
-    expect(text).toContain("Washer #01 (15kg)");
-    expect(text).toContain("Diagnostics only");
-    expect(text).toContain("Operator controls restricted");
-    // Cycle control buttons are NOT rendered or replaced by diagnostics text
-    expect(text).not.toContain("<span>Start</span>");
-    // Ensure financial pricing is NOT rendered
-    expect(text).not.toContain("RM 6.00");
+  it("does not expose cycle controls or prices to a machine specialist", () => {
+    const html = renderToString(React.createElement(MachineDetailModal, {
+      machine: washer,
+      branchId: "branch-1",
+      branchOpen: true,
+      role: "machine_maintenance",
+      onClose: () => {},
+    }));
+    expect(html).not.toContain("Program for START");
+    expect(html).not.toContain("RM 4.00");
+    expect(html).not.toContain("Statistics &amp; Revenue");
   });
 
-  it("renders fault warning banner with remediation instructions on ERROR status", () => {
-    const raw = renderToString(
-      React.createElement(MachineCard, {
-        machine: mockDryerFault,
-        branchId: "b1111111-1111-1111-1111-111111111111",
-        userRole: "owner",
-        onOpenDetails: () => {},
-      })
-    );
-    const text = raw.replace(/<!--.*?-->/g, "");
-    expect(text).toContain("Dryer #01 (Gas 16kg)");
-    expect(text).toContain("Commercial Dryer illustration (ERROR)");
-    expect(text).toContain("Fault: E-302");
-    expect(text).toContain("Cycle interrupted");
-  });
-});
-
-describe("MachineDetailModal component", () => {
-  it("renders modal structure with diagnostic tabs and fault details", () => {
-    const raw = renderToString(
-      React.createElement(MachineDetailModal, {
-        machine: mockDryerFault,
-        branchId: "b1111111-1111-1111-1111-111111111111",
-        userRole: "owner",
-        isOpen: true,
-        onClose: () => {},
-      })
-    );
-    const text = raw.replace(/<!--.*?-->/g, "");
-    expect(text).toContain("Dryer #01 (Gas 16kg)");
-    expect(text).toContain("State &amp; Diagnostics");
-    expect(text).toContain("Statistics &amp; Revenue");
-    expect(text).toContain("Programs Catalog");
-    expect(text).toContain("Parameters &amp; Pricing");
-    expect(text).toContain("Active Fault: E-302 (Ignition)");
-    expect(text).toContain("Verify LPG cylinder manifold pressure and inspect spark igniter.");
-    // Desktop-only modal gating and expanded sizing
-    expect(raw).toContain("hidden sm:flex");
-    expect(raw).toContain("max-w-6xl");
-    // No font-mono
-    expect(raw).not.toContain("font-mono");
+  it("uses recorded capacity and does not offer simulator commands to a physical source", () => {
+    const html = renderToString(React.createElement(MachineCard, {
+      ...cardProps,
+      machine: { ...washer, source: "physical", capacity_kg: 15 },
+    }));
+    expect(html).toContain("15.0 kg");
+    expect(html).not.toContain("<span>Start</span>");
   });
 
-  it("does not render when isOpen is false", () => {
-    const raw = renderToString(
-      React.createElement(MachineDetailModal, {
-        machine: mockWasherRunning,
-        branchId: "b1111111-1111-1111-1111-111111111111",
-        userRole: "owner",
-        isOpen: false,
-        onClose: () => {},
-      })
-    );
-    expect(raw).toBe("");
-  });
-});
-
-describe("MachineRowCard component", () => {
-  it("renders running washer with DESIGN.md Section 4.8 semantic article, dl reading grid, SVG progress bar, and min-h-11 controls", () => {
-    const raw = renderToString(
-      React.createElement(MachineRowCard, {
-        machine: mockWasherRunning,
-        branchId: "b1111111-1111-1111-1111-111111111111",
-        userRole: "owner",
-        onOpenDetails: () => {},
-      })
-    );
-    const text = raw.replace(/<!--.*?-->/g, "");
-    // Semantic article container (no nested role="button" wrapper around buttons)
-    expect(raw).toContain("<article");
-    expect(raw).not.toContain('role="button"');
-    // Identity & spec
-    expect(text).toContain("Washer #01 (15kg)");
-    expect(text).toContain("Running");
-    expect(text).toContain("Door locked");
-    // Semantic <dl>/<dt>/<dd> reading grid with sentence-case labels
-    expect(raw).toContain("<dl");
-    expect(text).toContain("Cycle program");
-    expect(text).toContain("Standard Cotton 40°C");
-    expect(text).toContain("Cycle time");
-    expect(text).toContain("18 min remaining");
-    expect(text).toContain("Cycle rate");
-    expect(text).toContain("RM 6.00");
-    // Native SVG progress bar with zero inline styles (DESIGN.md Section 2.3)
-    expect(raw).toContain('role="progressbar"');
-    expect(raw).not.toContain("style=");
-    // DESIGN.md Section 4.2 & 5.3: min-h-11 touch targets & full-contrast disabled text
-    expect(raw).toContain("min-h-11");
-    expect(raw).toContain("disabled:text-muted");
-    expect(raw).not.toContain("disabled:text-muted/60");
-    expect(text).toContain("Start");
-    expect(text).toContain("Pause");
-    expect(text).toContain("Stop");
-    expect(text).toContain("Details &amp; parameters");
-    expect(raw).toContain("hidden sm:inline-flex min-h-11");
-    expect(raw).not.toContain("font-mono");
-  });
-
-  it("renders idle machine in row card with enabled Start button and disabled Pause/Stop buttons", () => {
-    const raw = renderToString(
-      React.createElement(MachineRowCard, {
-        machine: mockWasherIdle,
-        branchId: "b1111111-1111-1111-1111-111111111111",
-        userRole: "branch_manager",
-        onOpenDetails: () => {},
-      })
-    );
-    const text = raw.replace(/<!--.*?-->/g, "");
-    expect(text).toContain("Washer #02 (15kg)");
-    expect(text).toContain("Idle / Available");
-    expect(text).toContain("Ready (30 min cycle)");
-    expect(text).toContain("Start");
-    expect(text).toContain("Pause");
-    expect(text).toContain("Stop");
-    expect(raw).not.toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Start<\/span>/);
-    expect(raw).toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Pause<\/span>/);
-    expect(raw).toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Stop<\/span>/);
-  });
-
-  it("restricts cycle controls and omits financial price for maintenance specialist in row card", () => {
-    const raw = renderToString(
-      React.createElement(MachineRowCard, {
-        machine: mockMaintenanceProjection,
-        branchId: "b1111111-1111-1111-1111-111111111111",
-        userRole: "machine_maintenance",
-        onOpenDetails: () => {},
-      })
-    );
-    const text = raw.replace(/<!--.*?-->/g, "");
-    expect(text).toContain("Washer #01 (15kg)");
-    expect(text).toContain("Diagnostics only");
-    expect(text).toContain("Operator controls restricted");
-    expect(text).not.toContain("<span>Start</span>");
-    expect(text).not.toContain("RM 6.00");
-  });
-});
-
-describe("MachineFleetView component", () => {
-  it("renders fleet category buttons, status filters, view mode toggle, and stacked row cards by default", () => {
-    const raw = renderToString(
-      React.createElement(MachineFleetView, {
-        initialMachines: [mockWasherRunning, mockWasherIdle, mockDryerFault],
-        branchId: "b1111111-1111-1111-1111-111111111111",
-        userRole: "owner",
-      })
-    );
-    const text = raw.replace(/<!--.*?-->/g, "");
-    expect(text).toContain("All Equipment");
-    expect(text).toContain("Washers");
-    expect(text).toContain("Dryers");
-    expect(text).toContain("Running (1)");
-    expect(text).toContain("Idle (1)");
-    expect(text).toContain("Error (1)");
-    expect(text).toContain("Washer #01 (15kg)");
-    expect(text).toContain("Washer #02 (15kg)");
-    expect(text).toContain("Dryer #01 (Gas 16kg)");
-    // Verifies View Mode Toggle exists (Rows and Grid)
-    expect(text).toContain("Rows");
-    expect(text).toContain("Grid");
-    expect(text).toContain("View");
-    // Verifies dedicated view mode header container exists
-    expect(raw).toMatch(/View[\s\S]*?aria-label="View mode"/);
-    // Verifies default view renders stacked rows
-    expect(raw).toContain("space-y-3");
-    // Verifies no font-mono in MachineFleetView
-    expect(raw).not.toContain("font-mono");
-  });
-
-  it("enforces mobile-responsive layout and 44px touch targets on the quick filters bar", () => {
-    const raw = renderToString(
-      React.createElement(MachineFleetView, {
-        initialMachines: [mockWasherRunning, mockWasherIdle, mockDryerFault],
-        branchId: "b1111111-1111-1111-1111-111111111111",
-        userRole: "owner",
-      })
-    );
-    // Equipment Category tabs use responsive 2-col mobile grid with All full-width, collapsing to flex on sm+
-    expect(raw).toContain("grid-cols-2 gap-2 sm:flex");
-    expect(raw).toContain("col-span-2 sm:col-auto");
-    // View mode toggle uses mobile full-width 2-column segmented control, collapsing to flex on sm+
-    expect(raw).toContain("grid grid-cols-2 w-full sm:w-auto sm:flex");
-    // Status filter section uses flex-wrap with integrated Status label
-    expect(raw).toContain("flex flex-wrap items-center gap-1.5 sm:gap-2");
-    // All interactive buttons in quick filters enforce >=44px touch targets (min-h-11)
-    expect(raw).toMatch(/<button[^>]*min-h-11[^>]*>(?:(?!<\/button>)[\s\S])*?<span>All Equipment<\/span>/);
-    expect(raw).toMatch(/<button[^>]*min-h-11[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Rows<\/span>/);
-    expect(raw).toMatch(/<button[^>]*min-h-11[^>]*>(?:(?!<\/button>)[\s\S])*?<span>Grid<\/span>/);
-    // Accessibility: aria-pressed applied to active category, status, and view mode
-    expect(raw).toContain('aria-pressed="true"');
-    expect(raw).toContain('aria-pressed="false"');
+  it("renders the live fleet empty state without sample machines", () => {
+    const html = renderToString(React.createElement(RemoteMachineFleet, {
+      branchId: "branch-1",
+      branchOpen: true,
+      role: "owner",
+      initialMachines: [],
+    }));
+    expect(html).toContain("No approved machines are registered for this branch.");
+    expect(html).not.toContain("Demo Washer 01");
   });
 });

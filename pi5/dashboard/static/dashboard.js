@@ -114,6 +114,7 @@ const iconGauge = (cls = "size-3.5 shrink-0 text-faint") => createIconSvg([["pat
 const iconLayers = (cls = "size-3.5 shrink-0 text-faint") => createIconSvg([["path", { d: "m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" }], ["path", { d: "m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65" }], ["path", { d: "m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65" }]], cls);
 const iconThermometer = (cls = "size-4 shrink-0 text-faint") => createIconSvg([["path", { d: "M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z" }]], cls);
 const iconDroplets = (cls = "size-4 shrink-0 text-faint") => createIconSvg([["path", { d: "M7 16.3c2.2 0 4-1.83 4-4.05 0-1.16-.57-2.26-1.71-3.19S7.29 6.75 7 5.3c-.29 1.45-1.14 2.84-2.29 3.76S3 11.1 3 12.25c0 2.22 1.8 4.05 4 4.05z" }], ["path", { d: "M12.56 6.6A10.97 10.97 0 0 0 14 3.02c.5 2.5 2 4.9 4 6.5s3 3.5 3 5.5a6.98 6.98 0 0 1-11.91 4.97" }]], cls);
+const iconBell = (cls = "size-4 shrink-0") => createIconSvg([["path", { d: "M10.268 21a2 2 0 0 0 3.464 0" }], ["path", { d: "M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" }]], cls);
 
 // --- Equipment & Cylinder Vector SVG Illustrations (1:1 Match with Web App) ---
 function createWasherSvg(status, sizeClass = "size-28") {
@@ -169,7 +170,6 @@ function createDryerSvg(status, sizeClass = "size-28") {
 function createCylinderSvg(fillPercent, status, isMaintenance, sizeClass = "size-14") {
   const validPct = typeof fillPercent === "number" && Number.isFinite(fillPercent);
   const clamped = validPct ? Math.max(0, Math.min(100, fillPercent)) : 0;
-  const fillTextColor = validPct ? "fill-ink tabular-nums select-none" : "fill-muted tabular-nums select-none";
 
   const svg = svgEl("svg", {
     viewBox: "0 0 100 110",
@@ -182,24 +182,12 @@ function createCylinderSvg(fillPercent, status, isMaintenance, sizeClass = "size
     "aria-label": validPct ? `LPG Cylinder level: ${clamped.toFixed(1)}%` : "LPG Cylinder level unavailable",
   }, `${sizeClass} text-muted transition-colors group-hover:text-ink select-none`);
 
-  const labelText = svgEl("text", {
-    x: "50",
-    y: "58",
-    "text-anchor": "middle",
-    "dominant-baseline": "middle",
-    "font-size": "13",
-    "font-weight": "600",
-    stroke: "none",
-  }, fillTextColor);
-  labelText.textContent = validPct ? `${clamped.toFixed(1)}%` : "—";
-
   svg.append(
     svgEl("rect", { x: "44", y: "6", width: "12", height: "6", rx: "1.5", "stroke-width": "2" }),
     svgEl("line", { x1: "50", y1: "12", x2: "50", y2: "18", "stroke-width": "2" }),
     svgEl("path", { d: "M 32 24 L 32 15 C 32 13 36 12 50 12 C 64 12 68 13 68 15 L 68 24", "stroke-width": "2" }),
     svgEl("line", { x1: "38", y1: "18", x2: "62", y2: "18", "stroke-width": "1.5" }),
     svgEl("rect", { x: "20", y: "24", width: "60", height: "68", rx: "8", "stroke-width": "2.5" }),
-    labelText,
     svgEl("path", { d: "M 28 92 L 28 99 C 28 101 34 102 50 102 C 66 102 72 101 72 99 L 72 92", "stroke-width": "2" }),
   );
   return svg;
@@ -287,6 +275,680 @@ function renderGateway(snapshot) {
     ? `Bound branch: ${gateway.branch_id}`
     : "No active branch binding";
   byId("checkedAt").textContent = `Local data checked ${dateLabel(snapshot.checked_at)}`;
+  const checkedAtDot = byId("checkedAtDot");
+  if (checkedAtDot) checkedAtDot.className = "size-2 shrink-0 rounded-full bg-positive";
+}
+
+const ANALYTICS_REFRESH_INTERVAL_MS = 30000;
+let overviewAnalyticsPeriod = "day";
+let overviewMachineMetric = "cycles";
+let latestOverviewAnalytics = null;
+let lastAnalyticsRefreshAt = 0;
+let analyticsRequestToken = 0;
+const overviewCharts = { machine: null, revenue: null, gas: null, complaints: null, lpgTank: null };
+
+function readThemePalette() {
+  const css = typeof getComputedStyle === "function"
+    ? getComputedStyle(document.documentElement)
+    : { getPropertyValue: () => "" };
+  const token = (name, fallback) => css.getPropertyValue(`--color-${name}`).trim() || fallback;
+  return {
+    accent: token("accent", "#2f6fed"),
+    positive: token("positive", "#2ea043"),
+    warning: token("warning", "#d29922"),
+    negative: token("negative", "#f85149"),
+    navySelected: token("navy-selected", "#1d4ed8"),
+    control: token("control", "#30363d"),
+    ink: token("ink", "#e6edf3"),
+    muted: token("muted", "#8b949e"),
+    rule: token("rule", "#21262d"),
+    surface: token("surface", "#121923"),
+  };
+}
+
+function chartAnimationDuration() {
+  const reduce = typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  return reduce ? 0 : 220;
+}
+
+function destroyOverviewCharts() {
+  for (const key of Object.keys(overviewCharts)) {
+    if (overviewCharts[key] && typeof overviewCharts[key].destroy === "function") {
+      overviewCharts[key].destroy();
+    }
+    overviewCharts[key] = null;
+  }
+}
+
+function mountChart(key, canvasId, config) {
+  if (overviewCharts[key] && typeof overviewCharts[key].destroy === "function") {
+    overviewCharts[key].destroy();
+    overviewCharts[key] = null;
+  }
+  const canvas = byId(canvasId);
+  const ChartCtor = typeof Chart === "function" ? Chart : (typeof window !== "undefined" ? window.Chart : null);
+  if (!canvas || typeof ChartCtor !== "function") return null;
+  overviewCharts[key] = new ChartCtor(canvas, config);
+  return overviewCharts[key];
+}
+
+function togglePanelState(wrapId, emptyId, emptyMessage) {
+  const wrap = byId(wrapId);
+  const emptyEl = byId(emptyId);
+  if (emptyMessage) {
+    if (emptyEl) {
+      emptyEl.textContent = emptyMessage;
+      emptyEl.classList.remove("hidden");
+    }
+    if (wrap) wrap.classList.add("hidden");
+    return false;
+  }
+  if (emptyEl) {
+    emptyEl.textContent = "";
+    emptyEl.classList.add("hidden");
+  }
+  if (wrap) wrap.classList.remove("hidden");
+  return true;
+}
+
+function renderMachineBreakdownTable(machines) {
+  const tbody = byId("overviewMachineTableBody");
+  if (!tbody) return;
+  tbody.replaceChildren();
+  if (!machines.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 4;
+    cell.className = "px-3 py-3 text-center text-muted";
+    cell.textContent = "No approved machines recorded";
+    row.append(cell);
+    tbody.append(row);
+    return;
+  }
+  for (const machine of machines) {
+    const row = document.createElement("tr");
+    const nameCell = document.createElement("td");
+    nameCell.className = "px-3 py-2 font-medium text-ink";
+    nameCell.textContent = machine.label || machine.source_id || "—";
+
+    const cyclesCell = document.createElement("td");
+    cyclesCell.className = "px-3 py-2 text-right tabular-nums text-ink";
+    cyclesCell.textContent = String(machine.completed_cycles ?? 0);
+
+    const minsCell = document.createElement("td");
+    minsCell.className = "px-3 py-2 text-right tabular-nums text-ink";
+    minsCell.textContent = Number(machine.running_minutes ?? 0).toFixed(1);
+
+    const revCell = document.createElement("td");
+    revCell.className = "px-3 py-2 text-right tabular-nums text-ink";
+    revCell.textContent = Number(machine.estimated_revenue_myr ?? 0).toFixed(2);
+
+    row.append(nameCell, cyclesCell, minsCell, revCell);
+    tbody.append(row);
+  }
+}
+
+function resolveMachinePrograms(data, machines) {
+  if (Array.isArray(data?.programs) && data.programs.length) {
+    return data.programs;
+  }
+  const seen = new Map();
+  for (const machine of machines) {
+    const byProg = machine?.cycles_by_program;
+    if (!byProg || typeof byProg !== "object") continue;
+    for (const pid of Object.keys(byProg)) {
+      if (!seen.has(pid)) {
+        const label = pid === "quick" ? "Quick" : pid === "standard" ? "Standard" : pid.replaceAll("_", " ");
+        seen.set(pid, { program_id: pid, label });
+      }
+    }
+  }
+  return [...seen.values()];
+}
+
+function renderMachineMetricsChart(data) {
+  if (!byId("overviewAnalyticsSection")) return;
+  const palette = readThemePalette();
+  const animDuration = chartAnimationDuration();
+  const machines = Array.isArray(data?.machines) ? data.machines : [];
+  const labelMap = {
+    cycles: "Completed cycles by program",
+    running: "Total running minutes by machine",
+    revenue: "Estimated revenue by machine",
+  };
+  if (byId("overviewMachineChartLabel")) {
+    byId("overviewMachineChartLabel").textContent = labelMap[overviewMachineMetric] || labelMap.cycles;
+  }
+
+  const showMachineChart = togglePanelState(
+    "overviewMachineChartWrap",
+    "overviewMachineEmpty",
+    machines.length ? "" : "No approved machines for this gateway.",
+  );
+  if (!showMachineChart) {
+    mountChart("machine", "overviewMachineChart", null);
+    return;
+  }
+
+  const machineLabels = machines.map(m => m.label || m.source_id);
+  const seriesColors = [palette.accent, palette.positive, palette.warning, palette.navySelected, palette.muted, palette.control];
+  let datasets = [];
+  let yTitle = "Cycles";
+  let precision;
+  let stacked = false;
+  let showLegend = false;
+  let suggestedMax;
+
+  if (overviewMachineMetric === "cycles") {
+    stacked = true;
+    const programs = resolveMachinePrograms(data, machines);
+    if (programs.length) {
+      showLegend = true;
+      datasets = programs.map((prog, index) => ({
+        label: prog.label || prog.program_id,
+        data: machines.map(m => Number(m.cycles_by_program?.[prog.program_id] || 0)),
+        backgroundColor: seriesColors[index % seriesColors.length],
+        borderRadius: 3,
+        maxBarThickness: 48,
+      }));
+    } else {
+      suggestedMax = 3;
+      datasets = [{
+        label: "Completed cycles",
+        data: machines.map(() => 0),
+        backgroundColor: palette.accent,
+        borderRadius: 4,
+        maxBarThickness: 48,
+      }];
+    }
+    precision = 0;
+  } else if (overviewMachineMetric === "running") {
+    yTitle = "Minutes";
+    datasets = [{
+      label: "Running minutes",
+      data: machines.map(m => Number(m.running_minutes || 0)),
+      backgroundColor: palette.warning,
+      borderRadius: 4,
+      maxBarThickness: 48,
+    }];
+  } else {
+    yTitle = "RM";
+    datasets = [{
+      label: "Estimated revenue (RM)",
+      data: machines.map(m => Number(m.estimated_revenue_myr || 0)),
+      backgroundColor: palette.positive,
+      borderRadius: 4,
+      maxBarThickness: 48,
+    }];
+  }
+
+  const yTicks = { color: palette.muted, font: { size: 11 } };
+  if (precision !== undefined) yTicks.precision = precision;
+
+  mountChart("machine", "overviewMachineChart", {
+    type: "bar",
+    data: {
+      labels: machineLabels,
+      datasets,
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: animDuration },
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: showLegend, labels: { color: palette.ink, boxWidth: 12, font: { size: 11 } } },
+      },
+      scales: {
+        x: {
+          stacked,
+          ticks: { color: palette.muted, font: { size: 11 } },
+          grid: { display: false },
+        },
+        y: {
+          stacked,
+          beginAtZero: true,
+          ...(suggestedMax !== undefined ? { suggestedMax } : {}),
+          title: { display: true, text: yTitle, color: palette.muted, font: { size: 11 } },
+          ticks: yTicks,
+          grid: { color: palette.rule },
+        },
+      },
+    },
+  });
+}
+
+function updateMachineMetricButtons(activeMetric) {
+  if (typeof document.querySelectorAll !== "function") return;
+  document.querySelectorAll("[data-machine-metric]").forEach(button => {
+    const selected = button.dataset.machineMetric === activeMetric;
+    button.setAttribute("aria-pressed", String(selected));
+    button.className = selected
+      ? "min-h-11 rounded px-3 text-xs font-medium bg-accent text-white focus-visible:outline-2 focus-visible:outline-accent"
+      : "min-h-11 rounded px-3 text-xs font-medium text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent";
+  });
+}
+
+function renderOverviewAnalytics(data) {
+  if (!byId("overviewAnalyticsSection")) return;
+  latestOverviewAnalytics = data;
+  const palette = readThemePalette();
+  const animDuration = chartAnimationDuration();
+  const summary = data?.summary || {};
+  const machines = Array.isArray(data?.machines) ? data.machines : [];
+  const revenueSeries = Array.isArray(data?.revenue_series) ? data.revenue_series : [];
+  const gasSeries = data?.gas_series || {};
+  const complaints = data?.complaints || {};
+
+  if (byId("analyticsTotalCycles")) {
+    byId("analyticsTotalCycles").textContent = summary.completed_cycles != null ? String(summary.completed_cycles) : "—";
+  }
+  if (byId("analyticsTotalMinutes")) {
+    byId("analyticsTotalMinutes").textContent = summary.running_minutes != null
+      ? `${Number(summary.running_minutes).toFixed(1)} min`
+      : "—";
+  }
+  if (byId("analyticsTotalRevenue")) {
+    byId("analyticsTotalRevenue").textContent = summary.estimated_revenue_myr != null
+      ? `RM ${Number(summary.estimated_revenue_myr).toFixed(2)}`
+      : "—";
+  }
+  if (byId("analyticsAvgGas")) {
+    byId("analyticsAvgGas").textContent = summary.avg_gas_ppm != null
+      ? `${Number(summary.avg_gas_ppm).toFixed(1)} ppm`
+      : "—";
+  }
+
+  // 1. Toggleable machine metrics bar chart (Cycles stacked by program | Running min | Revenue RM) + table
+  renderMachineBreakdownTable(machines);
+  renderMachineMetricsChart(data);
+
+  // 2. Cumulative estimated revenue line chart
+  if (byId("overviewRevenueWindow")) {
+    byId("overviewRevenueWindow").textContent = data?.granularity === "hour" ? "Hourly MYT" : "Daily MYT";
+  }
+  const showRevenueChart = togglePanelState(
+    "overviewRevenueChartWrap",
+    "overviewRevenueEmpty",
+    revenueSeries.length ? "" : "No revenue timeline data available.",
+  );
+  if (showRevenueChart) {
+    mountChart("revenue", "overviewRevenueChart", {
+      type: "line",
+      data: {
+        labels: revenueSeries.map(pt => pt.label),
+        datasets: [
+          {
+            label: "Cumulative revenue (RM)",
+            data: revenueSeries.map(pt => Number(pt.cumulative_revenue_myr || 0)),
+            borderColor: palette.positive,
+            backgroundColor: "rgba(46, 160, 67, 0.16)",
+            fill: true,
+            tension: 0.2,
+            pointRadius: revenueSeries.length > 15 ? 2 : 3,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: animDuration },
+        plugins: {
+          legend: { display: false },
+        },
+        scales: {
+          x: {
+            ticks: { color: palette.muted, maxRotation: 0, autoSkip: true, font: { size: 11 } },
+            grid: { display: false },
+          },
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: "RM", color: palette.muted, font: { size: 11 } },
+            ticks: { color: palette.muted, font: { size: 11 } },
+            grid: { color: palette.rule },
+          },
+        },
+      },
+    });
+  }
+
+  // 3. Average environmental gas PPM line chart (single-node passthrough or multi-node mean)
+  const gasPoints = Array.isArray(gasSeries.series) ? gasSeries.series : [];
+  const gasMode = gasSeries.aggregation_mode || "uncalibrated";
+  const gasNodes = Array.isArray(gasSeries.nodes) ? gasSeries.nodes : [];
+  const firstCalibrated = gasNodes.find(node => node.calibrated);
+  const gasModeEl = byId("overviewGasMode");
+  if (gasModeEl) {
+    if (gasMode === "multi_node_average") {
+      gasModeEl.textContent = `${gasSeries.node_count || 0} nodes averaged`;
+    } else if (gasMode === "single_node") {
+      gasModeEl.textContent = firstCalibrated ? (firstCalibrated.label || firstCalibrated.source_id) : "1 calibrated node";
+    } else {
+      gasModeEl.textContent = "Calibration required";
+    }
+  }
+  const hasGasSample = gasPoints.some(pt => pt.avg_ppm !== null && pt.avg_ppm !== undefined);
+  const gasEmptyMsg = gasMode === "uncalibrated"
+    ? "Calibrate an LPG safety node to record environmental PPM."
+    : (!hasGasSample ? "No valid gas samples recorded in this period." : "");
+  const showGasChart = togglePanelState("overviewGasChartWrap", "overviewGasEmpty", gasEmptyMsg);
+  if (showGasChart) {
+    mountChart("gas", "overviewGasChart", {
+      type: "line",
+      data: {
+        labels: gasPoints.map(pt => pt.label),
+        datasets: [
+          {
+            label: "Avg gas (PPM)",
+            data: gasPoints.map(pt => (pt.avg_ppm === null || pt.avg_ppm === undefined ? null : Number(pt.avg_ppm))),
+            spanGaps: false,
+            borderColor: palette.accent,
+            backgroundColor: "rgba(47, 111, 237, 0.14)",
+            fill: true,
+            tension: 0.25,
+            pointRadius: gasPoints.length > 15 ? 2 : 3,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: animDuration },
+        plugins: {
+          legend: { display: false },
+        },
+        scales: {
+          x: {
+            ticks: { color: palette.muted, maxRotation: 0, autoSkip: true, font: { size: 11 } },
+            grid: { display: false },
+          },
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: "PPM", color: palette.muted, font: { size: 11 } },
+            ticks: { color: palette.muted, font: { size: 11 } },
+            grid: { color: palette.rule },
+          },
+        },
+      },
+    });
+  }
+
+  // 4. Customer complaints received by period (deferred intake frame; never fabricated zeros)
+  const complaintsImplemented = Boolean(complaints.implemented);
+  const complaintLabels = complaintsImplemented && Array.isArray(complaints.series)
+    ? complaints.series.map(pt => pt.label)
+    : revenueSeries.map(pt => pt.label);
+  const complaintValues = complaintsImplemented && Array.isArray(complaints.series)
+    ? complaints.series.map(pt => Number(pt.count || 0))
+    : complaintLabels.map(() => null);
+  if (byId("overviewComplaintsMode")) {
+    byId("overviewComplaintsMode").textContent = complaintsImplemented ? "Recorded reports" : "Intake pending";
+  }
+  const complaintStatusEl = byId("overviewComplaintsStatus");
+  if (complaintStatusEl) {
+    if (complaintsImplemented) {
+      complaintStatusEl.textContent = "";
+      complaintStatusEl.classList.add("hidden");
+    } else {
+      complaintStatusEl.textContent = "Customer complaint intake is not implemented yet.";
+      complaintStatusEl.classList.remove("hidden");
+    }
+  }
+  mountChart("complaints", "overviewComplaintsChart", {
+    type: "bar",
+    data: {
+      labels: complaintLabels,
+      datasets: [
+        {
+          label: "Complaints",
+          data: complaintValues,
+          backgroundColor: palette.warning,
+          borderRadius: 4,
+          maxBarThickness: 24,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: animDuration },
+      plugins: {
+        legend: { display: false },
+      },
+      scales: {
+        x: {
+          ticks: { color: palette.muted, maxRotation: 0, autoSkip: true, font: { size: 11 } },
+          grid: { display: false },
+        },
+        y: {
+          beginAtZero: true,
+          suggestedMax: 5,
+          title: { display: true, text: "Count", color: palette.muted, font: { size: 11 } },
+          ticks: { precision: 0, color: palette.muted, font: { size: 11 } },
+          grid: { color: palette.rule },
+        },
+      },
+    },
+  });
+}
+
+async function refreshOverviewAnalytics(force = false) {
+  if (!byId("overviewAnalyticsSection")) return;
+  const nowMs = Date.now();
+  if (!force && nowMs - lastAnalyticsRefreshAt < ANALYTICS_REFRESH_INTERVAL_MS) return;
+  const requestId = ++analyticsRequestToken;
+  const notice = byId("analyticsNotice");
+  try {
+    const response = await fetch(`/api/dashboard/overview/analytics?period=${encodeURIComponent(overviewAnalyticsPeriod)}`);
+    if (!response.ok) throw new Error("Analytics unavailable");
+    const payload = await response.json();
+    if (requestId !== analyticsRequestToken) return;
+    lastAnalyticsRefreshAt = Date.now();
+    renderOverviewAnalytics(payload);
+    if (notice) {
+      notice.textContent = "";
+      notice.classList.add("hidden");
+    }
+  } catch {
+    if (requestId !== analyticsRequestToken) return;
+    if (notice) {
+      notice.textContent = "Operational analytics could not be refreshed. Any values shown are from the last successful check.";
+      notice.classList.remove("hidden");
+    }
+  }
+}
+
+function updateAnalyticsPeriodButtons(activePeriod) {
+  if (typeof document.querySelectorAll !== "function") return;
+  document.querySelectorAll("[data-analytics-period]").forEach(button => {
+    const selected = button.dataset.analyticsPeriod === activePeriod;
+    button.setAttribute("aria-pressed", String(selected));
+    button.className = selected
+      ? "min-h-11 rounded px-3 text-xs font-medium bg-accent text-white focus-visible:outline-2 focus-visible:outline-accent"
+      : "min-h-11 rounded px-3 text-xs font-medium text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent";
+  });
+}
+
+function buildOverviewLpgTankEntries(safetyNodes, palette) {
+  const nodes = Array.isArray(safetyNodes) ? safetyNodes : [];
+  return nodes.map(node => {
+    const label = node?.label || node?.source_id || "LPG node";
+    const maintenance = Boolean(
+      node?.maintenance_mode
+      || node?.weight_evaluation_paused
+      || String(node?.status || "").toLowerCase() === "maintenance"
+    );
+    const obs = node?.observation || null;
+    const freshness = obs ? String(obs.freshness || "unknown") : "unknown";
+    const quality = (obs && typeof obs.quality === "object" && obs.quality) || {};
+    const values = (obs && typeof obs.values === "object" && obs.values) || {};
+    const rawPercent = values.lpg_percent;
+    const validPercent = typeof rawPercent === "number" && Number.isFinite(rawPercent) && rawPercent >= 0 && rawPercent <= 100
+      ? rawPercent
+      : null;
+
+    let percent = null;
+    let stateLabel = "No reading";
+    let tone = "neutral";
+    let barColor = palette.muted;
+
+    if (maintenance) {
+      stateLabel = "Maintenance";
+      tone = "warning";
+    } else if (!obs || freshness === "unknown") {
+      stateLabel = "No reading";
+    } else if (freshness === "offline") {
+      stateLabel = "Offline";
+      tone = "negative";
+    } else if (freshness === "stale") {
+      stateLabel = "Stale";
+      tone = "warning";
+    } else if (quality.weight_valid === false) {
+      stateLabel = "Scale fault";
+      tone = "negative";
+    } else if (validPercent === null) {
+      stateLabel = "Calibrate tank";
+      tone = "warning";
+    } else {
+      percent = validPercent;
+      stateLabel = `${validPercent.toFixed(1)}%`;
+      if (validPercent < 5) {
+        tone = "negative";
+        barColor = palette.negative;
+      } else if (validPercent < 15) {
+        tone = "warning";
+        barColor = palette.warning;
+      } else {
+        tone = "positive";
+        barColor = palette.positive;
+      }
+    }
+
+    const rawWeightKg = values.lpg_weight_kg;
+    const weightLabel = percent !== null && typeof rawWeightKg === "number" && Number.isFinite(rawWeightKg)
+      ? `${rawWeightKg.toFixed(2)} kg`
+      : null;
+
+    return {
+      source_id: node?.source_id || label,
+      label,
+      percent,
+      stateLabel,
+      weightLabel,
+      tone,
+      barColor,
+    };
+  });
+}
+
+function renderOverviewLpgTankLevels(safetyNodes) {
+  if (!byId("overviewLpgTankSection")) return;
+  const palette = readThemePalette();
+  const entries = buildOverviewLpgTankEntries(safetyNodes, palette);
+  const liveCount = entries.filter(item => item.percent !== null).length;
+
+  const statusEl = byId("overviewLpgTankStatus");
+  if (statusEl) {
+    if (!entries.length) {
+      statusEl.textContent = "No LPG nodes";
+    } else if (liveCount === entries.length) {
+      statusEl.textContent = `${liveCount} live ${liveCount === 1 ? "node" : "nodes"}`;
+    } else {
+      statusEl.textContent = `${liveCount} of ${entries.length} live`;
+    }
+  }
+
+  const listEl = byId("overviewLpgTankDetails");
+  if (listEl) {
+    listEl.replaceChildren();
+    for (const item of entries) {
+      const li = document.createElement("li");
+      li.className = "flex min-w-0 items-center justify-between gap-2 rounded-md border border-rule bg-raised px-3 py-2";
+      const nameEl = text("span", "truncate font-medium text-ink", item.label);
+      const rightEl = document.createElement("span");
+      const toneClass = item.tone === "positive"
+        ? "text-positive"
+        : item.tone === "warning"
+          ? "text-warning"
+          : item.tone === "negative"
+            ? "text-negative"
+            : "text-muted";
+      rightEl.className = `shrink-0 font-semibold tabular-nums ${toneClass}`;
+      rightEl.textContent = item.weightLabel ? `${item.stateLabel} (${item.weightLabel})` : item.stateLabel;
+      li.append(nameEl, rightEl);
+      listEl.append(li);
+    }
+    listEl.classList.toggle("hidden", entries.length === 0);
+  }
+
+  const showChart = togglePanelState(
+    "overviewLpgTankChartWrap",
+    "overviewLpgTankEmpty",
+    entries.length ? "" : "No LPG edge nodes paired locally.",
+  );
+  if (!showChart) {
+    if (overviewCharts.lpgTank && typeof overviewCharts.lpgTank.destroy === "function") {
+      overviewCharts.lpgTank.destroy();
+      overviewCharts.lpgTank = null;
+    }
+    return;
+  }
+
+  const horizontal = entries.length > 4;
+  const categoryAxis = {
+    ticks: { color: palette.muted, font: { size: 11 } },
+    grid: { display: false },
+  };
+  const percentAxis = {
+    min: 0,
+    max: 100,
+    title: { display: true, text: "Tank level (%)", color: palette.muted, font: { size: 11 } },
+    ticks: {
+      color: palette.muted,
+      font: { size: 11 },
+      callback: value => `${value}%`,
+    },
+    grid: { color: palette.rule },
+  };
+
+  mountChart("lpgTank", "overviewLpgTankChart", {
+    type: "bar",
+    data: {
+      labels: entries.map(item => item.label),
+      datasets: [
+        {
+          label: "Gas tank level (%)",
+          data: entries.map(item => item.percent),
+          backgroundColor: entries.map(item => item.barColor),
+          borderRadius: 4,
+          maxBarThickness: 48,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      indexAxis: horizontal ? "y" : "x",
+      animation: { duration: chartAnimationDuration() },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const entry = entries[ctx.dataIndex];
+              if (!entry) return "";
+              return entry.weightLabel ? `${entry.stateLabel} (${entry.weightLabel})` : entry.stateLabel;
+            },
+          },
+        },
+      },
+      scales: horizontal
+        ? { x: percentAxis, y: categoryAxis }
+        : { x: categoryAxis, y: percentAxis },
+    },
+  });
 }
 
 function renderOverview(snapshot) {
@@ -298,12 +960,7 @@ function renderOverview(snapshot) {
   for (const [id, key] of [["pendingCount", "pending"], ["syncedCount", "synced"], ["quarantinedCount", "quarantined"]]) {
     byId(id).textContent = snapshot.sync ? String(snapshot.sync[key] ?? 0) : "—";
   }
-  const safety = snapshot.safety_nodes || [];
-  const safetyCounts = { fresh: 0, stale: 0, offline: 0, unknown: 0 };
-  for (const device of safety) safetyCounts[device.observation?.freshness in safetyCounts ? device.observation.freshness : "unknown"]++;
-  byId("safetySummary").textContent = safety.length
-    ? `${safetyCounts.fresh} fresh, ${safetyCounts.stale} stale, ${safetyCounts.offline} offline, ${safetyCounts.unknown} without readings`
-    : "No approved safety node";
+  renderOverviewLpgTankLevels(snapshot.safety_nodes || []);
   renderDiscoveries(snapshot.discoveries || []);
 }
 
@@ -327,24 +984,67 @@ function renderDiscoveries(discoveries) {
 }
 
 let historyRecords = null;
-let historyFilter = "all";
+let historyCategory = "lpg";
+const historyViewState = {
+  lpg: { page: 1, period: "all", delivery: "all" },
+  machine: { page: 1, period: "all", delivery: "all" },
+};
+let historyPageMeta = { page: 1, page_size: 10, total: 0, total_pages: 1 };
+let historyRequestSeq = 0;
 let paused = false;
+
+function syncHistoryControls() {
+  const viewState = historyViewState[historyCategory] || historyViewState.lpg;
+  if (typeof document.querySelectorAll === "function") {
+    document.querySelectorAll("[data-history-category]").forEach(item => {
+      const selected = item.dataset.historyCategory === historyCategory;
+      item.setAttribute("aria-pressed", String(selected));
+      item.classList.toggle("bg-navy-selected", selected);
+      item.classList.toggle("bg-navy", !selected);
+    });
+    document.querySelectorAll("[data-history-filter]").forEach(item => {
+      const selected = item.dataset.historyFilter === viewState.delivery;
+      item.setAttribute("aria-pressed", String(selected));
+      item.classList.toggle("bg-navy-selected", selected);
+      item.classList.toggle("bg-navy", !selected);
+    });
+  }
+  const periodSelect = byId("historyPeriod");
+  if (periodSelect && periodSelect.value !== viewState.period) {
+    periodSelect.value = viewState.period;
+  }
+}
+
 function renderHistory() {
   const rows = byId("historyRows");
+  const countEl = byId("historyCount");
+  const pageLabel = byId("historyPageLabel");
+  const prevBtn = byId("historyPrevPage");
+  const nextBtn = byId("historyNextPage");
   if (!rows) return;
   rows.replaceChildren();
+  const viewState = historyViewState[historyCategory] || historyViewState.lpg;
+  const catLabel = historyCategory === "lpg" ? "LPG records" : "machine records";
   if (historyRecords === null) {
     const row = document.createElement("tr");
     const cell = text("td", "px-3 py-4 text-muted", "Recent records unavailable");
     cell.colSpan = 4;
     row.append(cell);
     rows.append(row);
+    if (countEl) countEl.textContent = `0 ${catLabel}`;
+    if (pageLabel) pageLabel.textContent = "Page 1 of 1";
+    if (prevBtn) prevBtn.disabled = true;
+    if (nextBtn) nextBtn.disabled = true;
     return;
   }
-  const shown = historyRecords.filter(record => historyFilter === "all" || record.sync_state === historyFilter);
+  const shown = historyRecords;
   if (!shown.length) {
     const row = document.createElement("tr");
-    const cell = text("td", "px-3 py-4 text-muted", historyRecords.length ? "No records match this filter" : "No local records for this gateway");
+    const hasFilters = viewState.delivery !== "all" || viewState.period !== "all";
+    const emptyText = hasFilters
+      ? "No records match these filters"
+      : (historyCategory === "lpg" ? "No local LPG node records for this gateway" : "No local machine records for this gateway");
+    const cell = text("td", "px-3 py-4 text-muted", emptyText);
     cell.colSpan = 4;
     row.append(cell);
     rows.append(row);
@@ -357,20 +1057,62 @@ function renderHistory() {
     }
     rows.append(row);
   }
-  byId("historyCount").textContent = `${shown.length} of ${historyRecords.length} recent gateway records shown`;
-  byId("historyCount").classList.toggle("hidden", historyRecords.length === 0);
+  const metaPage = Math.max(1, Number(historyPageMeta.page) || 1);
+  const metaPages = Math.max(1, Number(historyPageMeta.total_pages) || 1);
+  const metaSize = Math.max(1, Number(historyPageMeta.page_size) || 10);
+  const metaTotal = Math.max(0, Number(historyPageMeta.total) || 0);
+  if (countEl) {
+    if (shown.length > 0 && metaTotal > 0) {
+      const startIdx = (metaPage - 1) * metaSize + 1;
+      const endIdx = Math.min(metaTotal, startIdx + shown.length - 1);
+      countEl.textContent = `Showing ${startIdx}–${endIdx} of ${metaTotal} ${catLabel}`;
+    } else {
+      countEl.textContent = `0 ${catLabel}`;
+    }
+    countEl.classList.remove("hidden");
+  }
+  if (pageLabel) pageLabel.textContent = `Page ${metaPage} of ${metaPages}`;
+  if (prevBtn) prevBtn.disabled = metaPage <= 1;
+  if (nextBtn) nextBtn.disabled = metaPage >= metaPages;
 }
 
 async function refreshHistory() {
+  const reqSeq = ++historyRequestSeq;
+  const reqCategory = historyCategory;
+  const viewState = historyViewState[reqCategory] || historyViewState.lpg;
+  const params = new URLSearchParams({
+    category: reqCategory,
+    period: viewState.period,
+    delivery: viewState.delivery,
+    page: String(viewState.page),
+  });
   try {
-    const response = await fetch("/api/dashboard/history", { cache: "no-store", signal: AbortSignal.timeout(8000) });
+    const response = await fetch(`/api/dashboard/history?${params.toString()}`, { cache: "no-store", signal: AbortSignal.timeout(8000) });
     if (!response.ok) throw new Error("History unavailable");
     const result = await response.json();
     if (!Array.isArray(result.records)) throw new Error("Malformed history");
-    historyRecords = result.records;
+    if (reqSeq !== historyRequestSeq || reqCategory !== historyCategory) return;
+    if (typeof result.total === "number" && typeof result.total_pages === "number") {
+      const serverPage = Math.max(1, Number(result.page) || 1);
+      viewState.page = serverPage;
+      historyPageMeta = {
+        page: serverPage,
+        page_size: Number(result.page_size) || 10,
+        total: result.total,
+        total_pages: Math.max(1, result.total_pages),
+      };
+      historyRecords = result.records;
+    } else {
+      // Legacy array-only mock compatibility fallback
+      const filtered = result.records.filter(rec => viewState.delivery === "all" || rec.sync_state === viewState.delivery);
+      historyPageMeta = { page: 1, page_size: 10, total: filtered.length, total_pages: 1 };
+      historyRecords = filtered;
+    }
     byId("historyNotice").classList.add("hidden");
+    syncHistoryControls();
     renderHistory();
   } catch {
+    if (reqSeq !== historyRequestSeq) return;
     byId("historyNotice").textContent = "Recent records could not be refreshed; retained rows may be old.";
     byId("historyNotice").classList.remove("hidden");
     renderHistory();
@@ -400,6 +1142,403 @@ async function submitMachine(source, action, args = {}) {
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || "Command request failed");
   return payload;
+}
+
+async function fetchLpgMaintenanceStatus(sourceId) {
+  const response = await fetch(`/api/dashboard/lpg/${encodeURIComponent(sourceId)}/maintenance-status`, {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "Unable to load tank swap status");
+  return payload;
+}
+
+async function postLpgAction(sourceId, actionPath, body = {}) {
+  const response = await fetch(`/api/dashboard/lpg/${encodeURIComponent(sourceId)}/${actionPath}`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Staff-CSRF": document.body.dataset.staffCsrf || "",
+    },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    const err = new Error(payload.error || "LPG request failed");
+    err.payload = payload;
+    throw err;
+  }
+  return payload;
+}
+
+function openLpgDialog(titleText, nodeLabel, buildBody) {
+  const dialog = text(
+    "dialog",
+    "fixed inset-0 z-50 m-auto hidden max-h-[90vh] w-[calc(100%-1.5rem)] max-w-lg flex-col overflow-hidden rounded-md border border-control bg-surface p-4 text-ink shadow-2xl backdrop:bg-canvas/80 open:flex sm:p-6",
+    "",
+  );
+  const titleId = `lpg-dialog-title-${Date.now()}`;
+  dialog.setAttribute("aria-labelledby", titleId);
+
+  const header = text("div", "flex items-start justify-between gap-3 border-b border-rule pb-3", "");
+  const headerText = text("div", "min-w-0 space-y-0.5", "");
+  const titleEl = text("h2", "min-w-0 truncate text-base font-semibold text-ink sm:text-lg", titleText);
+  titleEl.id = titleId;
+  headerText.append(titleEl);
+  if (nodeLabel) {
+    headerText.append(text("p", "min-w-0 truncate text-xs text-muted", nodeLabel));
+  }
+  const closeBtn = text(
+    "button",
+    "flex size-11 shrink-0 items-center justify-center rounded-md border border-control bg-raised/40 text-muted transition-colors hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-accent",
+    "",
+  );
+  closeBtn.type = "button";
+  closeBtn.setAttribute("aria-label", "Close dialog");
+  closeBtn.append(text("span", "text-lg leading-none", "×"));
+  header.append(headerText, closeBtn);
+
+  const errorBox = text("div", "hidden rounded-md border border-negative/40 bg-negative/10 p-3 text-xs text-negative", "");
+  errorBox.setAttribute("role", "alert");
+
+  const bodyWrap = text("div", "mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto", "");
+  const footerWrap = text("div", "mt-4 flex flex-col-reverse gap-2.5 border-t border-rule pt-4 sm:flex-row sm:flex-wrap sm:justify-end", "");
+
+  const closeDialog = () => {
+    if (dialog.open) dialog.close();
+    dialog.remove();
+  };
+  closeBtn.addEventListener("click", closeDialog);
+  dialog.addEventListener("close", () => dialog.remove());
+  dialog.addEventListener("click", event => {
+    if (event.target === dialog) closeDialog();
+  });
+
+  const setError = msg => {
+    if (!msg) {
+      errorBox.classList.add("hidden");
+      errorBox.textContent = "";
+    } else {
+      errorBox.textContent = msg;
+      errorBox.classList.remove("hidden");
+    }
+  };
+
+  buildBody({ bodyWrap, footerWrap, setError, closeDialog });
+  bodyWrap.prepend(errorBox);
+  dialog.append(header, bodyWrap);
+  if (footerWrap.childElementCount > 0) dialog.append(footerWrap);
+  document.body.append(dialog);
+  dialog.showModal();
+  return dialog;
+}
+
+function makeLpgField(labelText, inputType, defaultValue, opts = {}) {
+  const wrap = text("div", "space-y-1.5", "");
+  const inputId = `lpg-field-${Math.random().toString(36).slice(2, 9)}`;
+  const label = text("label", "block text-xs font-medium text-muted", labelText);
+  label.htmlFor = inputId;
+  const input = document.createElement("input");
+  input.id = inputId;
+  input.type = inputType;
+  if (defaultValue !== null && defaultValue !== undefined) input.value = String(defaultValue);
+  if (opts.placeholder) input.placeholder = opts.placeholder;
+  if (opts.step) input.step = opts.step;
+  if (opts.min !== undefined) input.min = String(opts.min);
+  if (opts.max !== undefined) input.max = String(opts.max);
+  if (opts.maxLength) input.maxLength = opts.maxLength;
+  input.className = "min-h-11 w-full rounded-md border border-control bg-raised/60 px-3 py-2 text-sm text-ink placeholder:text-faint focus-visible:outline-2 focus-visible:outline-accent";
+  wrap.append(label, input);
+  return { wrap, input };
+}
+
+function openStartMaintenanceModal(device) {
+  openLpgDialog("Start tank swap", device.label, ({ bodyWrap, footerWrap, setError, closeDialog }) => {
+    const infoBox = text(
+      "div",
+      "rounded-md border border-warning/30 bg-warning/10 p-3 text-xs leading-relaxed text-ink",
+      "Weight fuel alerts for this cylinder are paused during maintenance. MQ-6 gas leak and ambient temperature monitoring stay active.",
+    );
+    const staffField = makeLpgField("Staff name", "text", "Local staff", { maxLength: 80 });
+    const noteField = makeLpgField("Service note", "text", "", { placeholder: "Supplier cylinder exchange", maxLength: 240 });
+    bodyWrap.append(infoBox, staffField.wrap, noteField.wrap);
+
+    const cancelBtn = text(
+      "button",
+      "min-h-11 w-full rounded-md border border-control bg-raised/60 px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-accent sm:w-auto",
+      "Cancel",
+    );
+    cancelBtn.type = "button";
+    cancelBtn.addEventListener("click", closeDialog);
+
+    const submitBtn = text(
+      "button",
+      "min-h-11 w-full rounded-md border border-warning/40 bg-warning/15 px-4 py-2 text-sm font-semibold text-warning transition-colors hover:bg-warning/25 focus-visible:outline-2 focus-visible:outline-accent sm:w-auto",
+      "Confirm start swap",
+    );
+    submitBtn.type = "button";
+    submitBtn.addEventListener("click", async () => {
+      submitBtn.disabled = true;
+      setError("");
+      try {
+        await postLpgAction(device.source_id, "maintenance/start", {
+          started_by: staffField.input.value.trim() || "Local staff",
+          service_note: noteField.input.value.trim(),
+        });
+        closeDialog();
+        await refresh();
+      } catch (err) {
+        setError(err.message || "Could not start maintenance");
+        submitBtn.disabled = false;
+      }
+    });
+
+    footerWrap.append(cancelBtn, submitBtn);
+  });
+}
+
+function openCompleteMaintenanceModal(device) {
+  openLpgDialog("Complete tank swap", device.label, ({ bodyWrap, footerWrap, setError, closeDialog }) => {
+    const cfg = device.lpg_config || {};
+    const statusBox = text("div", "space-y-2.5 rounded-md border border-line bg-raised/40 p-3.5", "");
+    const statusTop = text("div", "flex flex-wrap items-center justify-between gap-2", "");
+    const statusHeading = text("span", "text-xs font-medium text-muted", "Scale stability verification");
+    const recheckBtn = text(
+      "button",
+      "min-h-11 rounded-md border border-control bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-accent",
+      "Re-check scale",
+    );
+    recheckBtn.type = "button";
+    statusTop.append(statusHeading, recheckBtn);
+
+    const statusGrid = text("dl", "grid grid-cols-1 gap-2.5 border-t border-rule/60 pt-2.5 sm:grid-cols-3", "");
+    const stateVal = text("dd", "mt-0.5 text-sm font-semibold text-muted", "Checking...");
+    const samplesVal = text("dd", "mt-0.5 text-sm font-semibold tabular-nums text-ink", "0 / 3");
+    const meanVal = text("dd", "mt-0.5 text-sm font-semibold tabular-nums text-ink", "—");
+    for (const [dtText, ddNode] of [
+      ["Scale state", stateVal],
+      ["Fresh valid samples", samplesVal],
+      ["Mean / spread", meanVal],
+    ]) {
+      const col = text("div", "min-w-0", "");
+      col.append(text("dt", "text-xs text-faint", dtText), ddNode);
+      statusGrid.append(col);
+    }
+    const reasonText = text("p", "text-xs text-muted", "Checking recent load-cell readings...");
+    statusBox.append(statusTop, statusGrid, reasonText);
+
+    const formGrid = text("div", "grid grid-cols-1 gap-3 sm:grid-cols-2", "");
+    const tareField = makeLpgField("New tare weight (kg, optional)", "number", cfg.cylinder_tare_kg ?? "", {
+      placeholder: "e.g. 16.5",
+      step: "0.01",
+      min: 0.5,
+      max: 200,
+    });
+    const capField = makeLpgField(
+      "Rated LPG capacity (kg, optional)",
+      "number",
+      cfg.rated_capacity_kg ?? device.capacity_kg ?? "",
+      { placeholder: "e.g. 14.0 or 50.0", step: "0.01", min: 1, max: 500 },
+    );
+    formGrid.append(tareField.wrap, capField.wrap);
+
+    const staffField = makeLpgField("Completed by", "text", "Local staff", { maxLength: 80 });
+    bodyWrap.append(statusBox, formGrid, staffField.wrap);
+
+    const renderStability = stability => {
+      const stable = Boolean(stability?.stable);
+      stateVal.textContent = stable ? "Stable" : "Waiting";
+      stateVal.className = `mt-0.5 text-sm font-semibold ${stable ? "text-positive" : "text-warning"}`;
+      samplesVal.textContent = `${stability?.sample_count ?? 0} / ${stability?.required_count ?? 3}`;
+      meanVal.textContent =
+        stability?.mean_gross_kg != null
+          ? `${number(stability.mean_gross_kg, 2)} kg (±${number(stability.spread_kg, 2)})`
+          : "—";
+      reasonText.textContent = stability?.reason || "";
+    };
+
+    const loadStatus = async () => {
+      recheckBtn.disabled = true;
+      try {
+        const data = await fetchLpgMaintenanceStatus(device.source_id);
+        renderStability(data.stability);
+      } catch (err) {
+        reasonText.textContent = err.message || "Unable to verify scale stability";
+      } finally {
+        recheckBtn.disabled = false;
+      }
+    };
+    recheckBtn.addEventListener("click", loadStatus);
+
+    const cancelBtn = text(
+      "button",
+      "min-h-11 w-full rounded-md border border-control bg-raised/60 px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-accent sm:w-auto",
+      "Cancel",
+    );
+    cancelBtn.type = "button";
+    cancelBtn.addEventListener("click", closeDialog);
+
+    const submitBtn = text(
+      "button",
+      "min-h-11 w-full rounded-md border border-positive/40 bg-positive/15 px-4 py-2 text-sm font-semibold text-positive transition-colors hover:bg-positive/25 focus-visible:outline-2 focus-visible:outline-accent sm:w-auto",
+      "Complete tank swap",
+    );
+    submitBtn.type = "button";
+    submitBtn.addEventListener("click", async () => {
+      submitBtn.disabled = true;
+      setError("");
+      try {
+        await postLpgAction(device.source_id, "maintenance/complete", {
+          completed_by: staffField.input.value.trim() || "Local staff",
+          tare_kg: tareField.input.value === "" ? null : Number(tareField.input.value),
+          rated_capacity_kg: capField.input.value === "" ? null : Number(capField.input.value),
+        });
+        closeDialog();
+        await refresh();
+      } catch (err) {
+        if (err.payload?.stability) renderStability(err.payload.stability);
+        setError(err.message || "Swap verification failed");
+        submitBtn.disabled = false;
+      }
+    });
+
+    footerWrap.append(cancelBtn, submitBtn);
+    loadStatus();
+  });
+}
+
+function openGasBaselineModal(device) {
+  openLpgDialog("Calibrate clean air", device.label, ({ bodyWrap, footerWrap, setError, closeDialog }) => {
+    const cfg = device.lpg_config || {};
+    const gasInfo = device.gas_interpretation || {};
+    const freshVoltage = device.observation?.freshness === "fresh" ? value(device.observation, "voltage") : null;
+    const estPpm = device.observation?.freshness === "fresh" ? value(device.observation, "estimated_ppm") : null;
+    const validEst = typeof estPpm === "number" && Number.isFinite(estPpm);
+
+    const currentBox = text("dl", "grid grid-cols-1 gap-2.5 rounded-md border border-line bg-raised/40 p-3.5 sm:grid-cols-2", "");
+    const readinessVal = freshVoltage === null ? "Sensor offline" : "Live signal ready";
+    const readinessClass = freshVoltage === null ? "mt-0.5 text-sm font-semibold text-warning" : "mt-0.5 text-sm font-semibold text-positive";
+    const calVal = gasInfo.ppm_calibrated
+      ? (validEst ? `Calibrated (${number(estPpm, estPpm < 100 ? 1 : 0)} ppm)` : "Calibrated")
+      : "Needs calibration";
+    const calClass = gasInfo.ppm_calibrated ? "mt-0.5 text-sm font-semibold text-ink tabular-nums" : "mt-0.5 text-sm font-semibold text-warning";
+
+    for (const [dtText, ddText, ddClass] of [
+      ["Sensor signal", readinessVal, readinessClass],
+      ["Gas sensor status", calVal, calClass],
+    ]) {
+      const col = text("div", "min-w-0", "");
+      col.append(
+        text("dt", "text-xs text-faint", dtText),
+        text("dd", ddClass, ddText),
+      );
+      currentBox.append(col);
+    }
+
+    const note = text(
+      "div",
+      "rounded-md border border-line bg-raised/20 p-3.5 text-xs leading-relaxed text-muted",
+      "One-time setup after installing or replacing the LPG gas sensor. Ensure the laundry room is ventilated with no gas smell present before calibrating.",
+    );
+
+    const thresholdsGrid = text("div", "grid grid-cols-1 gap-3 sm:grid-cols-2", "");
+    const warnField = makeLpgField("Warning alert (ppm)", "number", cfg.gas_warn_ppm ?? 20, { step: "1", min: 10, max: 10000 });
+    const critField = makeLpgField("Critical alert (ppm)", "number", cfg.gas_crit_ppm ?? 80, { step: "1", min: 20, max: 20000 });
+    thresholdsGrid.append(warnField.wrap, critField.wrap);
+
+    const advancedDetails = document.createElement("details");
+    advancedDetails.className = "rounded-md border border-rule bg-raised/20";
+    const advancedSummary = text(
+      "summary",
+      "flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 px-3.5 py-2.5 text-xs font-medium text-muted transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-accent",
+      "Advanced circuit settings (maintenance crew)",
+    );
+    const advancedBody = text("div", "space-y-3 border-t border-rule/60 p-3.5", "");
+    const circuitStats = text("dl", "grid grid-cols-2 gap-3", "");
+    for (const [label, val] of [
+      ["Voltage", freshVoltage === null ? "Unavailable" : `${number(freshVoltage, 2)} V`],
+      ["Saved baseline R0", cfg.mq6_ro_kohm != null ? `${number(cfg.mq6_ro_kohm, 2)} kΩ` : "None"],
+    ]) {
+      const col = text("div", "min-w-0", "");
+      col.append(
+        text("dt", "text-xs text-faint", label),
+        text("dd", "mt-0.5 text-xs font-medium tabular-nums text-muted", val),
+      );
+      circuitStats.append(col);
+    }
+    const formGrid = text("div", "grid grid-cols-1 gap-3 sm:grid-cols-3", "");
+    const rlField = makeLpgField("Load RL (kΩ)", "number", cfg.mq6_rl_kohm ?? 20, { step: "0.1", min: 0.1, max: 200 });
+    const divField = makeLpgField("Divider ratio", "number", cfg.mq6_divider_ratio ?? 1, { step: "0.01", min: 0.1, max: 10 });
+    const vccField = makeLpgField("Supply (V)", "number", cfg.mq6_vcc_v ?? 5, { step: "0.1", min: 2.5, max: 12 });
+    formGrid.append(rlField.wrap, divField.wrap, vccField.wrap);
+    advancedBody.append(circuitStats, formGrid);
+    advancedDetails.append(advancedSummary, advancedBody);
+
+    bodyWrap.append(currentBox, note, thresholdsGrid, advancedDetails);
+
+    const actionButtons = [];
+    const buildPayload = () => ({
+      rl_kohm: Number(rlField.input.value),
+      divider_ratio: Number(divField.input.value),
+      vcc_v: Number(vccField.input.value),
+      gas_warn_ppm: Number(warnField.input.value),
+      gas_crit_ppm: Number(critField.input.value),
+    });
+    const runCalibrationAction = async (payload, triggerBtn, fallbackError) => {
+      for (const b of actionButtons) b.disabled = true;
+      setError("");
+      try {
+        await postLpgAction(device.source_id, "gas-baseline", payload);
+        closeDialog();
+        await refresh();
+      } catch (err) {
+        setError(err.message || fallbackError);
+        for (const b of actionButtons) b.disabled = false;
+      }
+    };
+
+    const cancelBtn = text(
+      "button",
+      "min-h-11 w-full rounded-md border border-control bg-raised/60 px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-accent sm:w-auto",
+      "Cancel",
+    );
+    cancelBtn.type = "button";
+    cancelBtn.addEventListener("click", closeDialog);
+
+    if (cfg.mq6_ro_kohm != null) {
+      const resetBtn = text(
+        "button",
+        "min-h-11 w-full rounded-md border border-line bg-raised/40 px-4 py-2 text-sm font-medium text-muted transition-colors hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-accent sm:w-auto",
+        "Clear calibration",
+      );
+      resetBtn.type = "button";
+      resetBtn.addEventListener("click", () => runCalibrationAction({ reset: true }, resetBtn, "Could not clear calibration"));
+      actionButtons.push(resetBtn);
+
+      const saveLimitsBtn = text(
+        "button",
+        "min-h-11 w-full rounded-md border border-control bg-raised/60 px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-accent sm:w-auto",
+        "Save alert limits",
+      );
+      saveLimitsBtn.type = "button";
+      saveLimitsBtn.addEventListener("click", () => runCalibrationAction({ ...buildPayload(), save_settings_only: true }, saveLimitsBtn, "Could not save alert limits"));
+      actionButtons.push(saveLimitsBtn);
+      footerWrap.append(resetBtn, saveLimitsBtn);
+    }
+
+    const submitBtn = text(
+      "button",
+      "min-h-11 w-full rounded-md border border-accent/50 bg-accent/15 px-4 py-2 text-sm font-semibold text-accent transition-colors hover:bg-accent/25 focus-visible:outline-2 focus-visible:outline-accent sm:w-auto",
+      "Calibrate clean air",
+    );
+    submitBtn.type = "button";
+    submitBtn.addEventListener("click", () => runCalibrationAction(buildPayload(), submitBtn, "Could not calibrate clean air"));
+    actionButtons.push(submitBtn);
+
+    footerWrap.append(cancelBtn, submitBtn);
+  });
 }
 
 function getMachineComputed(device) {
@@ -1146,32 +2285,110 @@ function createMachineDetailModal(device, triggerButtonId) {
   catalogHead.append(text("h3", "text-base font-semibold text-ink", "Saved programs"));
   const addProgramButton = text("button", "min-h-11 min-w-11 rounded-md border border-control bg-navy px-4 text-sm font-semibold text-ink hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent disabled:bg-raised disabled:text-muted", "Add program");
   addProgramButton.type = "button";
-  addProgramButton.disabled = !enabled || !isFresh || effectiveStatus !== "IDLE" || availablePrograms.length >= 6;
   catalogHead.append(addProgramButton);
-  progsPanel.append(catalogHead);
+  const catalogStatus = text("p", "text-xs text-muted empty:hidden", "");
+  catalogStatus.setAttribute("role", "status");
+  progsPanel.append(catalogHead, catalogStatus);
   const programList = text("ul", "space-y-2", "");
-  for (const id of availablePrograms) {
-    const saved = observation.programs[id];
-    const item = text("li", "rounded-md border border-rule bg-raised p-4 text-sm text-ink", "");
-    const itemHead = text("div", "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between", "");
-    itemHead.append(text("h4", "text-base font-semibold text-ink", saved.name || (id === "quick" ? "Quick" : id === "standard" ? "Standard" : id)));
-    const edit = text("button", "min-h-11 min-w-11 rounded-md border border-control bg-navy px-4 text-sm font-semibold text-ink hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent disabled:bg-raised disabled:text-muted", "Edit");
-    edit.type = "button";
-    edit.disabled = !enabled || !isFresh || effectiveStatus !== "IDLE";
-    edit.addEventListener("click", () => openProgramForm(id));
-    itemHead.append(edit);
-    item.append(itemHead);
-    if (saved) {
-      const details = text("dl", "mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2", "");
-      for (const [label, value] of [["Cycle rate", `RM ${saved.price_myr}`], ["Cycle time", `${saved.duration_seconds} seconds`]]) {
-        const field = text("div", "", "");
-        field.append(text("dt", "text-xs text-muted", label), text("dd", "text-sm tabular-nums text-ink", value));
-        details.append(field);
+  let currentPrograms = (observation && observation.programs && typeof observation.programs === "object")
+    ? { ...observation.programs }
+    : {};
+  let deleteBusy = false;
+
+  async function deleteCreatedProgram(id, displayName) {
+    if (typeof window.confirm === "function" && !window.confirm(`Delete program "${displayName}" from ${device.label}?`)) return;
+    deleteBusy = true;
+    renderProgramCatalog();
+    catalogStatus.className = "text-xs text-muted";
+    catalogStatus.textContent = "Delete request queued. Awaiting machine result.";
+    try {
+      const submitted = await submitMachine(device.source_id, "delete_program", { program_id: id });
+      for (let attempt = 0; attempt < 20 && dialog.open; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const history = await fetch(`/api/dashboard/machines/${encodeURIComponent(device.source_id)}/commands?period=all&page=1`, { cache: "no-store" });
+        if (!history.ok) continue;
+        const record = (await history.json()).commands?.find(item => item.command_id === submitted.command_id);
+        if (!record || ["queued", "published"].includes(record.status)) continue;
+        if (record.status !== "succeeded") {
+          catalogStatus.className = "text-xs text-warning";
+          catalogStatus.textContent = `Delete ${record.status}${record.reason ? `: ${record.reason}` : "."}`;
+          deleteBusy = false;
+          renderProgramCatalog();
+          return;
+        }
+        const response = await fetch("/api/dashboard/machines", { cache: "no-store" });
+        if (!response.ok) continue;
+        const updatedDevice = (await response.json()).devices?.find(item => item.source_id === device.source_id);
+        const updatedCatalog = updatedDevice?.observation?.programs;
+        if (updatedCatalog && typeof updatedCatalog === "object" && !(id in updatedCatalog)) {
+          currentPrograms = { ...updatedCatalog };
+          if (observation) observation.programs = currentPrograms;
+          if (typeof editingProgramId !== "undefined" && editingProgramId === id) {
+            livePane.classList.add("hidden");
+          }
+          deleteBusy = false;
+          renderProgramCatalog();
+          catalogStatus.className = "text-xs text-positive";
+          catalogStatus.textContent = `Deleted "${displayName}" from machine.`;
+          return;
+        }
+        catalogStatus.className = "text-xs text-muted";
+        catalogStatus.textContent = "Machine applied delete. Waiting for updated catalog.";
       }
-      item.append(details);
+      catalogStatus.className = "text-xs text-warning";
+      catalogStatus.textContent = "Result unknown. Check command history before trying again.";
+    } catch (error) {
+      catalogStatus.className = "text-xs text-negative";
+      catalogStatus.textContent = error.message;
+    } finally {
+      deleteBusy = false;
+      renderProgramCatalog();
     }
-    programList.append(item);
   }
+
+  function renderProgramCatalog() {
+    const programIds = Object.keys(currentPrograms).sort();
+    addProgramButton.disabled = deleteBusy || !enabled || !isFresh || effectiveStatus !== "IDLE" || programIds.length >= 6;
+    programList.replaceChildren();
+    for (const id of programIds) {
+      const saved = currentPrograms[id];
+      const displayName = saved?.name || (id === "quick" ? "Quick" : id === "standard" ? "Standard" : id);
+      const item = text("li", "rounded-md border border-rule bg-raised p-4 text-sm text-ink", "");
+      const itemHead = text("div", "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between", "");
+      itemHead.append(text("h4", "text-base font-semibold text-ink", displayName));
+      const actionRow = text("div", "flex flex-wrap items-center gap-2 shrink-0", "");
+      const edit = text("button", "min-h-11 min-w-11 rounded-md border border-control bg-navy px-4 text-sm font-semibold text-ink hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent disabled:bg-raised disabled:text-muted", "Edit");
+      edit.type = "button";
+      edit.disabled = deleteBusy || !enabled || !isFresh || effectiveStatus !== "IDLE";
+      edit.addEventListener("click", () => openProgramForm(id));
+      actionRow.append(edit);
+      if (/^p_[a-f0-9]{12}$/.test(id)) {
+        const del = text(
+          "button",
+          "min-h-11 min-w-11 rounded-md border border-negative/40 bg-negative/10 px-4 text-sm font-semibold text-negative transition-colors enabled:hover:bg-negative enabled:hover:text-surface focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted",
+          "Delete",
+        );
+        del.type = "button";
+        del.setAttribute("aria-label", `Delete ${displayName}`);
+        del.disabled = deleteBusy || !enabled || !isFresh || effectiveStatus !== "IDLE";
+        del.addEventListener("click", () => deleteCreatedProgram(id, displayName));
+        actionRow.append(del);
+      }
+      itemHead.append(actionRow);
+      item.append(itemHead);
+      if (saved) {
+        const details = text("dl", "mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2", "");
+        for (const [label, val] of [["Cycle rate", `RM ${saved.price_myr}`], ["Cycle time", `${saved.duration_seconds} seconds`]]) {
+          const field = text("div", "", "");
+          field.append(text("dt", "text-xs text-muted", label), text("dd", "text-sm tabular-nums text-ink", val));
+          details.append(field);
+        }
+        item.append(details);
+      }
+      programList.append(item);
+    }
+  }
+  renderProgramCatalog();
   progsPanel.append(programList);
   // --- TAB 4: Read-only vendor parameter reference ---
   const paramsPanel = text("div", "hidden space-y-5", "");
@@ -1260,7 +2477,7 @@ function createMachineDetailModal(device, triggerButtonId) {
   function openProgramForm(id) {
     creatingProgram = !id;
     editingProgramId = id || `p_${Math.floor(Math.random() * 2 ** 48).toString(16).padStart(12, "0")}`;
-    const selected = id ? observation?.programs?.[id] : null;
+    const selected = id ? currentPrograms[id] : null;
     editorTitle.textContent = id ? `Edit ${selected?.name || id}` : "Add program";
     for (const key of requiredSettings) {
       if (key !== "program_id" && form.elements[key]) form.elements[key].value = selected?.[key] ?? settings[key] ?? "";
@@ -1303,9 +2520,17 @@ function createMachineDetailModal(device, triggerButtonId) {
         }
         const response = await fetch("/api/dashboard/machines", { cache: "no-store" });
         if (!response.ok) continue;
-        const updated = (await response.json()).devices?.find(item => item.source_id === device.source_id)?.observation?.programs?.[args.program_id];
+        const updatedDevice = (await response.json()).devices?.find(item => item.source_id === device.source_id);
+        const updatedCatalog = updatedDevice?.observation?.programs;
+        const updated = updatedCatalog?.[args.program_id];
         if (updated && updated.name === args.name && String(updated.price_myr) === String(Number(args.price_myr).toFixed(2)) && updated.duration_seconds === args.duration_seconds) {
-          formStatus.textContent = "Saved on machine. Close and reopen Programs to view the confirmed catalog.";
+          currentPrograms = { ...updatedCatalog };
+          if (observation) observation.programs = currentPrograms;
+          renderProgramCatalog();
+          saveBtn.disabled = false;
+          livePane.classList.add("hidden");
+          catalogStatus.className = "text-xs text-positive";
+          catalogStatus.textContent = `Saved "${updated.name}" on machine.`;
           return;
         }
         formStatus.textContent = "Machine applied the command. Waiting for updated state.";
@@ -1393,7 +2618,7 @@ function createMachineDetailModal(device, triggerButtonId) {
   return { dialog, selectTab };
 }
 
-// --- Full-Width Machine Row & Stacked Card (1:1 Match with MachineRowCard.tsx) ---
+// --- Full-Width Machine Row & Stacked Card (Matched Layout & Typography with safetyCard) ---
 function machineRowCard(device) {
   const computed = getMachineComputed(device);
   const { observation, isFresh, badge, effectiveStatus, isWasher, remainingSecs, remainingMins } = computed;
@@ -1414,58 +2639,84 @@ function machineRowCard(device) {
   );
   card.setAttribute("aria-label", `${device.label} (${badge.label})`);
 
-  // Machine identity, followed by separate compact facts and freshness panels.
+  // Tier 1: Machine Identity (Device ID only) & Status Badge Row (matching safetyCard Tier 1)
   const tier1 = text("div", "flex min-w-0 items-center gap-3.5", "");
-  const iconWrap = text("div", "flex size-12 shrink-0 items-center justify-center rounded-md border border-rule bg-raised/30 p-1.5", "");
-  iconWrap.append(isWasher ? createWasherSvg(effectiveStatus, "size-9 shrink-0") : createDryerSvg(effectiveStatus, "size-9 shrink-0"));
-  tier1.append(iconWrap, text("h3", "min-w-0 break-words text-base font-semibold leading-normal text-ink", device.label));
+  const vesselWrap = text("div", "flex size-16 shrink-0 items-center justify-center rounded-md border border-rule bg-raised/40 p-1.5", "");
+  vesselWrap.append(isWasher ? createWasherSvg(effectiveStatus, "size-12 shrink-0") : createDryerSvg(effectiveStatus, "size-12 shrink-0"));
+
+  const idRow = text("div", "flex min-w-0 flex-1 flex-col gap-2 lg:flex-row lg:items-center lg:justify-between lg:gap-4", "");
+  const titleMeta = text("div", "min-w-0", "");
+  titleMeta.append(text("h2", "min-w-0 break-words text-base font-semibold leading-normal text-ink", device.label));
+  const identity = text("dl", "mt-2 grid grid-cols-1 gap-y-1 text-xs", "");
+  const deviceIdField = text("div", "min-w-0", "");
+  deviceIdField.append(
+    text("dt", "text-faint", "Device ID"),
+    text("dd", "mt-0.5 break-all text-muted", device.source_id),
+  );
+  identity.append(deviceIdField);
+  titleMeta.append(identity);
+
+  const badgeWrap = text("div", "flex max-w-full flex-wrap items-center gap-2 shrink-0", "");
+  const statusPill = text("span", `inline-flex max-w-full shrink-0 items-center gap-2 whitespace-normal break-words rounded border px-2.5 py-1 text-xs font-medium ${badge.wrapper}`, "");
+  statusPill.append(text("span", `size-2 shrink-0 rounded-full ${badge.dot}`, ""), text("span", "", badge.label));
+  badgeWrap.append(statusPill);
+
+  idRow.append(titleMeta, badgeWrap);
+  tier1.append(vesselWrap, idRow);
   card.append(tier1);
 
-  const panelClass = "w-full min-w-0 rounded-md border border-line bg-raised/40 p-3.5 md:p-4";
-  const specsPanel = text("dl", `${panelClass} grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4`, "");
-  for (const [label, detail] of [
-    ["Capacity", device.capacity_kg == null ? "Unavailable" : `${number(device.capacity_kg, 1)} kg`],
-    ["Source", sourceText(device)],
-    ["Device ID", device.source_id],
-  ]) {
-    const field = text("div", "min-w-0", "");
-    field.append(text("dt", "text-sm leading-normal text-muted", label),
-      text("dd", "mt-1 break-words text-base font-medium leading-normal text-ink", detail));
-    specsPanel.append(field);
-  }
-  const statusField = text("div", "min-w-0", "");
-  statusField.append(text("dt", "text-sm leading-normal text-muted", "Status"));
-  const statusValue = text("dd", "mt-1", "");
-  const statusPill = text("span", `inline-flex min-w-0 max-w-full items-center gap-2 rounded border px-2.5 py-1 text-sm font-medium ${badge.wrapper}`, "");
-  statusPill.append(text("span", `size-2 rounded-full ${badge.dot}`, ""), text("span", "", badge.label));
-  statusValue.append(statusPill);
-  statusField.append(statusValue);
-  specsPanel.append(statusField);
+  // Tier 2: Horizontal 3-Box Detail Grid (row-stacked pairs, matching safetyCard font sizing)
+  const tier2 = text("div", "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3", "");
 
-  const freshnessPanel = text("dl", `${panelClass} grid grid-cols-1 gap-3 sm:grid-cols-2`, "");
-  for (const [label, detail] of [["Freshness", freshnessText(observation)], ["Last update", lastUpdate(observation)]]) {
-    const field = text("div", "min-w-0", "");
-    field.append(text("dt", "text-sm leading-normal text-muted", label),
-      text("dd", "mt-1 break-words text-base font-medium leading-normal text-ink", detail));
-    freshnessPanel.append(field);
-  }
-  // The card keeps only the remaining estimate; program, duration and rate are in the modal.
-  const remainingPanel = text("dl", "w-full min-w-0 rounded-md border border-line bg-raised/40 p-3.5 md:p-4", "");
-  const remainingField = text("div", "min-w-0", "");
+  const makeRowBox = (rows) => {
+    const box = text("dl", "flex flex-col justify-between gap-2.5 rounded-md border border-line bg-raised/40 p-3.5 md:p-4", "");
+    rows.forEach(([label, valText], idx) => {
+      const item = text("div", idx > 0 ? "min-w-0 border-t border-rule/60 pt-2.5" : "min-w-0", "");
+      item.append(
+        text("dt", "text-xs leading-normal text-muted truncate", label),
+        text("dd", "mt-1 min-w-0 break-words text-sm font-semibold leading-normal tabular-nums text-ink", valText),
+      );
+      box.append(item);
+    });
+    return box;
+  };
+
+  const machineStateText = effectiveStatus === "RUNNING"
+    ? "Running"
+    : effectiveStatus === "PAUSED"
+      ? "Paused"
+      : effectiveStatus === "IDLE"
+        ? "Idle"
+        : effectiveStatus === "ERROR"
+          ? (observation?.fault_code ? `Fault (${observation.fault_code})` : "Fault")
+          : "Offline";
   const remEstimateVal = isFresh && remainingSecs !== null ? `${remainingSecs} s (${remainingMins} min)` : "—";
-  remainingField.append(
-    text("dt", "text-sm leading-normal text-muted", "Remaining estimate"),
-    text("dd", "mt-1 text-base font-semibold leading-normal text-ink tabular-nums", remEstimateVal),
-  );
-  remainingPanel.append(remainingField);
 
-  // Tier 3: Machine Action Row
-  const tier3 = text("div", "flex flex-col gap-3 border-t border-rule pt-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between", "");
+  const cycleBox = makeRowBox([
+    ["Machine state", machineStateText],
+    ["Remaining estimate", remEstimateVal],
+  ]);
+
+  const specsBox = makeRowBox([
+    ["Capacity", device.capacity_kg == null ? "Unavailable" : `${number(device.capacity_kg, 1)} kg`],
+    ["Category", device.type === "washer_dryer" ? "Washer / Dryer" : isWasher ? "Washer" : "Dryer"],
+  ]);
+
+  const telemetryBox = makeRowBox([
+    ["Last sample", lastUpdate(observation)],
+    ["Freshness", freshnessText(observation)],
+  ]);
+
+  tier2.append(cycleBox, specsBox, telemetryBox);
+  card.append(tier2);
+
+  // Tier 3: Action Controls & Modal Trigger Footer
+  const tier3 = text("div", "flex flex-col gap-3 border-t border-rule pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between", "");
   const canStart = enabled && isFresh && (effectiveStatus === "IDLE" || effectiveStatus === "PAUSED");
   const canPause = enabled && isFresh && effectiveStatus === "RUNNING";
   const canStop = enabled && isFresh && (effectiveStatus === "RUNNING" || effectiveStatus === "PAUSED");
 
-  const actionError = text("p", "hidden rounded-md border-l-2 border-negative bg-raised px-4 py-3 text-sm text-ink", "");
+  const actionError = text("p", "hidden rounded-md border-l-2 border-negative bg-raised px-4 py-3 text-xs text-ink", "");
   actionError.setAttribute("role", "alert");
 
   const controlsGroup = text("div", "grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center", "");
@@ -1502,28 +2753,28 @@ function machineRowCard(device) {
       iconPlay("size-3.5 shrink-0"),
       effectiveStatus === "PAUSED" ? "resume" : "start",
       canStart,
-      "inline-flex min-h-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-3.5 py-2 text-sm font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted",
+      "inline-flex min-h-11 min-w-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-3.5 py-2 text-xs font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted",
     ),
     makeRowActionBtn(
       "Pause",
       iconPause("size-3.5 shrink-0"),
       "pause",
       canPause,
-      "inline-flex min-h-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-sm font-medium text-ink transition-colors duration-150 enabled:hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted",
+      "inline-flex min-h-11 min-w-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-xs font-medium text-ink transition-colors duration-150 enabled:hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted",
     ),
     makeRowActionBtn(
       "Stop",
       iconSquare("size-3.5 shrink-0"),
       "stop",
       canStop,
-      "inline-flex min-h-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-negative bg-negative px-3.5 py-2 text-sm font-semibold text-surface transition-colors duration-150 enabled:hover:border-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted",
+      "inline-flex min-h-11 min-w-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-negative bg-negative px-3.5 py-2 text-xs font-semibold text-surface transition-colors duration-150 enabled:hover:border-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted",
     ),
   );
 
   if (effectiveStatus === "IDLE" || effectiveStatus === "ERROR") {
     const unlockBtn = text(
       "button",
-      "inline-flex min-h-11 min-w-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-sm font-medium text-ink transition-colors duration-150 enabled:hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent",
+      "inline-flex min-h-11 min-w-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-xs font-medium text-ink transition-colors duration-150 enabled:hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
       "",
     );
     unlockBtn.type = "button";
@@ -1532,27 +2783,30 @@ function machineRowCard(device) {
     controlsGroup.append(unlockBtn);
   }
 
+  const secondaryGroup = text("div", "flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center", "");
   const detailsBtn = text(
     "button",
-    "inline-flex min-h-11 w-full sm:w-auto items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-sm font-medium text-ink transition-colors duration-150 hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent",
+    "inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-xs font-medium text-ink transition-colors duration-150 hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:w-auto",
     "",
   );
   detailsBtn.type = "button";
   detailsBtn.id = triggerId;
   detailsBtn.append(iconSliders("size-4 shrink-0 text-muted"), text("span", "", "Details & parameters"));
   detailsBtn.addEventListener("click", () => openModal("diagnostics"));
+  secondaryGroup.append(detailsBtn);
 
-  tier3.append(detailsBtn);
   if (enabled && device.source_id === "washer-sim-01") {
     const checkoutLink = text(
       "a",
-      "inline-flex min-h-11 w-full items-center justify-center rounded-md border border-control bg-navy px-4 text-sm font-medium text-ink hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent sm:w-auto",
+      "inline-flex min-h-11 min-w-11 w-full items-center justify-center rounded-md border border-control bg-navy px-3.5 py-2 text-xs font-medium text-ink transition-colors duration-150 hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:w-auto",
       "Create demo QR",
     );
     checkoutLink.href = "/demo/new?source_id=washer-sim-01";
-    tier3.append(checkoutLink);
+    secondaryGroup.append(checkoutLink);
   }
-  card.append(controlsGroup, specsPanel, freshnessPanel, remainingPanel, tier3, actionError, dialog);
+
+  tier3.append(controlsGroup, secondaryGroup);
+  card.append(tier3, actionError, dialog);
   return card;
 }
 
@@ -1726,6 +2980,11 @@ function safetyCard(device) {
       ? "bg-warning"
       : "bg-muted";
 
+  const isMaintenance = Boolean(device.maintenance_mode || device.status === "maintenance");
+  const gasInfo = device.gas_interpretation || {};
+  const maintSession = device.maintenance_session || null;
+  const estPpm = fresh ? value(observation, "estimated_ppm") : null;
+  const validEstPpm = typeof estPpm === "number" && Number.isFinite(estPpm);
   const card = text(
     "article",
     "flex min-w-0 w-full flex-col gap-4 rounded-md border border-line bg-surface p-4 sm:p-5 md:p-6",
@@ -1733,31 +2992,41 @@ function safetyCard(device) {
   );
   card.setAttribute("aria-label", `${device.label} (${freshnessText(observation)})`);
 
-  // Tier 1: Node Identity & Freshness Status Row (matching MachineRowCard Tier 1)
+  // Tier 1: Node Identity (Device ID only) & Freshness / Cloud Delivery Column
   const tier1 = text("div", "flex min-w-0 items-center gap-3.5", "");
   const vesselWrap = text("div", "flex size-16 shrink-0 items-center justify-center rounded-md border border-rule bg-raised/40 p-1.5", "");
-  vesselWrap.append(createCylinderSvg(validPercent ? percent : null, "UNKNOWN", false, "size-14"));
+  vesselWrap.append(createCylinderSvg(validPercent ? percent : null, "UNKNOWN", isMaintenance, "size-14"));
 
-  const idRow = text("div", "flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4", "");
+  const idRow = text("div", "flex min-w-0 flex-1 flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4", "");
   const titleMeta = text("div", "min-w-0", "");
   titleMeta.append(text("h2", "min-w-0 truncate text-base font-semibold leading-normal text-ink", device.label));
-  const identity = text("dl", "mt-2 grid grid-cols-1 gap-x-6 gap-y-2 text-xs sm:grid-cols-2", "");
-  for (const [label, detail] of [["Source", sourceText(device)], ["Device ID", device.source_id]]) {
-    const field = text("div", "min-w-0", "");
-    field.append(
-      text("dt", "text-faint", label),
-      text("dd", "mt-0.5 break-all text-muted", detail),
-    );
-    identity.append(field);
-  }
+  const identity = text("dl", "mt-2 grid grid-cols-1 gap-y-1 text-xs", "");
+  const deviceIdField = text("div", "min-w-0", "");
+  deviceIdField.append(
+    text("dt", "text-faint", "Device ID"),
+    text("dd", "mt-0.5 break-all text-muted", device.source_id),
+  );
+  identity.append(deviceIdField);
   titleMeta.append(identity);
 
-  const badgeWrap = text("div", "flex flex-wrap items-center gap-2 shrink-0", "");
+  const headerStatusCol = text("div", "flex flex-col items-end gap-1.5 shrink-0", "");
+  const badgeWrap = text("div", "flex flex-wrap items-center justify-end gap-2", "");
+  if (isMaintenance) {
+    const maintPill = text("span", "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-warning/30 bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning", "");
+    maintPill.append(iconWrench("size-3.5 shrink-0"), text("span", "", "Maintenance"));
+    badgeWrap.append(maintPill);
+  }
   const freshPill = text("span", `inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded border px-2.5 py-1 text-xs font-medium ${freshnessBadgeClass}`, "");
   freshPill.append(text("span", `size-2 rounded-full ${freshnessDotClass}`, ""), text("span", "", freshnessText(observation)));
   badgeWrap.append(freshPill);
 
-  idRow.append(titleMeta, badgeWrap);
+  const cloudStateText = observation?.sync_state
+    ? `Cloud delivery ${observation.sync_state}`
+    : "Cloud delivery unknown";
+  const cloudDeliveryLine = text("p", "text-right text-xs leading-normal text-muted", cloudStateText);
+  headerStatusCol.append(badgeWrap, cloudDeliveryLine);
+
+  idRow.append(titleMeta, headerStatusCol);
   tier1.append(vesselWrap, idRow);
   card.append(tier1);
 
@@ -1774,57 +3043,147 @@ function safetyCard(device) {
     return item;
   };
 
-  // Box 1: Fuel Mass & Reported Level
+  // Box 1: Fuel Mass & Reported Level (or Tank-Swap Paused State)
   const fuelBox = text("div", "flex flex-col justify-between gap-2.5 rounded-md border border-line bg-raised/40 p-3.5 md:p-4", "");
-  const levelTop = text("dl", "flex items-baseline justify-between gap-2", "");
-  const measuredPct = reading("lpg_percent");
-  levelTop.append(
-    text("dt", "text-xs leading-normal text-muted", "Reported level"),
-    text("dd", "text-sm font-semibold leading-normal tabular-nums text-ink", number(measuredPct, 1) + (measuredPct === null ? "" : "%")),
-  );
-  fuelBox.append(levelTop);
-  if (validPercent) {
-    fuelBox.append(createProgressBarSvg(percent, "fill-accent", "h-1.5 w-full overflow-hidden rounded-full bg-surface"));
+  if (isMaintenance) {
+    const pausedTop = text("dl", "flex flex-wrap items-baseline justify-between gap-2", "");
+    pausedTop.append(
+      text("dt", "text-xs leading-normal text-muted", "Fuel level"),
+      text("dd", "text-sm font-semibold leading-normal text-warning", "Paused (Tank swap)"),
+    );
+    fuelBox.append(pausedTop);
+    const pausedGrid = text("dl", "grid grid-cols-2 gap-3 border-t border-rule/60 pt-2.5", "");
+    const startedByCol = text("div", "min-w-0", "");
+    startedByCol.append(
+      text("dt", "text-xs leading-normal text-muted truncate", "Started by"),
+      text("dd", "mt-1 text-sm font-semibold leading-normal text-ink truncate", maintSession?.started_by || "Local staff"),
+    );
+    pausedGrid.append(
+      makeMetricPair("Live scale", "gross_weight_kg", " kg", 2),
+      startedByCol,
+    );
+    fuelBox.append(pausedGrid);
+  } else {
+    const levelTop = text("dl", "flex items-baseline justify-between gap-2", "");
+    const measuredPct = reading("lpg_percent");
+    levelTop.append(
+      text("dt", "text-xs leading-normal text-muted", "Reported level"),
+      text("dd", "text-sm font-semibold leading-normal tabular-nums text-ink", number(measuredPct, 1) + (measuredPct === null ? "" : "%")),
+    );
+    fuelBox.append(levelTop);
+    if (validPercent) {
+      fuelBox.append(createProgressBarSvg(percent, "fill-accent", "h-1.5 w-full overflow-hidden rounded-full bg-surface"));
+    }
+    const massGrid = text("dl", "grid grid-cols-2 gap-3 border-t border-rule/60 pt-2.5", "");
+    massGrid.append(
+      makeMetricPair("Gross mass", "gross_weight_kg", " kg", 2),
+      makeMetricPair("Reported fuel", "lpg_weight_kg", " kg", 2),
+    );
+    fuelBox.append(massGrid);
   }
-  const massGrid = text("dl", "grid grid-cols-2 gap-3 border-t border-rule/60 pt-2.5", "");
-  massGrid.append(
-    makeMetricPair("Gross mass", "gross_weight_kg", " kg", 2),
-    makeMetricPair("Reported fuel", "lpg_weight_kg", " kg", 2),
-  );
-  fuelBox.append(massGrid);
 
-  // Box 2: MQ-6 Gas Sensor Readings
-  const gasBox = text("div", "flex flex-col justify-between gap-2.5 rounded-md border border-line bg-raised/40 p-3.5 md:p-4", "");
-  const gasHead = text("div", "flex items-center gap-1.5 text-xs font-medium text-muted", "");
-  gasHead.append(iconFlame("size-3.5 shrink-0 text-muted"), text("span", "", "MQ-6 gas sensor"));
-  const gasGrid = text("dl", "grid grid-cols-2 gap-3 border-t border-rule/60 pt-2.5", "");
-  gasGrid.append(
-    makeMetricPair("MQ-6 raw ADC", "mq6_raw_adc", "", 0),
-    makeMetricPair("MQ-6 voltage", "voltage", " V", 2),
-  );
-  gasBox.append(gasHead, gasGrid);
+  // Box 2: Gas Status (top) & Estimated LPG PPM (bottom), no section header
+  let ppmText = "Baseline needed";
+  let ppmValueClass = "text-warning";
+  let gasStatusText = "Uncalibrated";
+  let gasStatusClass = "text-muted";
 
-  // Box 3: Environment Readings (Temperature & Humidity)
-  const envBox = text("div", "flex flex-col justify-between gap-2.5 rounded-md border border-line bg-raised/40 p-3.5 md:p-4", "");
-  const envHead = text("div", "flex items-center gap-1.5 text-xs font-medium text-muted", "");
-  envHead.append(iconThermometer("size-3.5 shrink-0 text-faint"), text("span", "", "Environment"));
-  const envGrid = text("dl", "grid grid-cols-2 gap-3 border-t border-rule/60 pt-2.5", "");
-  envGrid.append(
-    makeMetricPair("Temperature", "temperature", " °C", 1),
-    makeMetricPair("Humidity", "humidity", "%", 1),
-  );
-  envBox.append(envHead, envGrid);
+  if (gasInfo.ppm_calibrated) {
+    if (fresh && validEstPpm) {
+      ppmText = `${number(estPpm, estPpm < 100 ? 1 : 0)} ppm`;
+      ppmValueClass = gasInfo.gas_condition === "critical"
+        ? "text-negative"
+        : gasInfo.gas_condition === "warning"
+          ? "text-warning"
+          : "text-ink";
+
+      if (gasInfo.gas_condition === "critical") {
+        gasStatusText = "Critical";
+        gasStatusClass = "text-negative";
+      } else if (gasInfo.gas_condition === "warning") {
+        gasStatusText = "Elevated";
+        gasStatusClass = "text-warning";
+      } else if (gasInfo.gas_condition === "normal") {
+        gasStatusText = "Normal";
+        gasStatusClass = "text-positive";
+      } else if (gasInfo.gas_condition === "out_of_range") {
+        gasStatusText = "Out of range";
+        gasStatusClass = "text-warning";
+      } else {
+        gasStatusText = "Unavailable";
+      }
+    } else {
+      ppmText = "—";
+      ppmValueClass = "text-muted";
+      gasStatusText = fresh && gasInfo.gas_condition === "out_of_range" ? "Out of range" : "—";
+      if (fresh && gasInfo.gas_condition === "out_of_range") {
+        gasStatusClass = "text-warning";
+      }
+    }
+  }
+
+  const makeRowBox = rows => {
+    const box = text("dl", "flex flex-col justify-between gap-2.5 rounded-md border border-line bg-raised/40 p-3.5 md:p-4", "");
+    rows.forEach(([label, valText, valColorClass = "text-ink"], idx) => {
+      const item = text("div", idx > 0 ? "min-w-0 border-t border-rule/60 pt-2.5" : "min-w-0", "");
+      item.append(
+        text("dt", "text-xs leading-normal text-muted truncate", label),
+        text("dd", `mt-1 min-w-0 break-words text-sm font-semibold leading-normal tabular-nums ${valColorClass}`, valText),
+      );
+      box.append(item);
+    });
+    return box;
+  };
+
+  const gasBox = makeRowBox([
+    ["Gas status", gasStatusText, gasStatusClass],
+    ["Est. LPG", ppmText, ppmValueClass],
+  ]);
+
+  // Box 3: Temperature (top) & Humidity (bottom), no section header
+  const tempVal = reading("temperature");
+  const humVal = reading("humidity");
+  const envBox = makeRowBox([
+    ["Temperature", number(tempVal, 1) + (tempVal === null ? "" : " °C")],
+    ["Humidity", number(humVal, 1) + (humVal === null ? "" : "%")],
+  ]);
 
   tier2.append(fuelBox, gasBox, envBox);
   card.append(tier2);
 
-  const tier3 = text("dl", "grid grid-cols-1 gap-x-6 gap-y-2 border-t border-rule pt-3 text-xs sm:grid-cols-2", "");
-  for (const [label, detail] of [["Last sample", lastUpdate(observation)], ["Cloud delivery", observation?.sync_state || "Unknown"]]) {
-    const field = text("div", "min-w-0", "");
-    field.append(text("dt", "text-faint", label), text("dd", "mt-0.5 text-muted", detail));
-    tier3.append(field);
-  }
-  card.append(tier3);
+  // Tier 3: Last Sample Provenance + Mobile-first Maintenance & Gas Baseline Controls
+  const tier3Wrap = text("div", "flex flex-col gap-3 border-t border-rule pt-3 lg:flex-row lg:items-center lg:justify-between", "");
+  const tier3Meta = text("dl", "grid grid-cols-1 gap-y-1 text-xs", "");
+  const lastSampleField = text("div", "min-w-0", "");
+  lastSampleField.append(text("dt", "text-faint", "Last sample"), text("dd", "mt-0.5 text-muted", lastUpdate(observation)));
+  tier3Meta.append(lastSampleField);
+
+  const actionRow = text("div", "flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center shrink-0", "");
+  const baselineBtn = text(
+    "button",
+    "inline-flex min-h-11 w-full items-center justify-center rounded-md border border-control bg-raised/60 px-3.5 py-2 text-xs font-medium text-ink transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-accent sm:w-auto",
+    gasInfo.ppm_calibrated ? "Recalibrate gas" : "Calibrate clean air",
+  );
+  baselineBtn.type = "button";
+  baselineBtn.addEventListener("click", () => openGasBaselineModal(device));
+
+  const maintBtn = text(
+    "button",
+    isMaintenance
+      ? "inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md border border-positive/40 bg-positive/15 px-3.5 py-2 text-xs font-semibold text-positive transition-colors hover:bg-positive/25 focus-visible:outline-2 focus-visible:outline-accent sm:w-auto"
+      : "inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md border border-warning/40 bg-warning/15 px-3.5 py-2 text-xs font-semibold text-warning transition-colors hover:bg-warning/25 focus-visible:outline-2 focus-visible:outline-accent sm:w-auto",
+    "",
+  );
+  maintBtn.type = "button";
+  maintBtn.append(iconWrench("size-3.5 shrink-0"), text("span", "", isMaintenance ? "Complete tank swap" : "Start tank swap"));
+  maintBtn.addEventListener("click", () => {
+    if (isMaintenance) openCompleteMaintenanceModal(device);
+    else openStartMaintenanceModal(device);
+  });
+
+  actionRow.append(baselineBtn, maintBtn);
+  tier3Wrap.append(tier3Meta, actionRow);
+  card.append(tier3Wrap);
 
   return card;
 }
@@ -1846,6 +3205,646 @@ function renderSafety(snapshot) {
   section.append(heading, stack);
   root.append(section);
 }
+// --- Notifications: Live Popups, Header Dropdown & Full History Modal ---
+let notificationScope = "local";
+let mergedNotifications = [];
+let notificationModalFilter = "all";
+let activeNotificationsDialog = null;
+let renderActiveNotificationsModal = null;
+
+const getWebStorage = kind => {
+  try {
+    return typeof window !== "undefined" ? window[kind] : null;
+  } catch {
+    return null;
+  }
+};
+
+const readStorageJson = (kind, key, fallback) => {
+  const store = getWebStorage(kind);
+  if (!store) return fallback;
+  try {
+    const raw = store.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const writeStorageJson = (kind, key, val) => {
+  const store = getWebStorage(kind);
+  if (!store) return;
+  try {
+    store.setItem(key, JSON.stringify(val));
+  } catch {
+    // Ignore storage quota / private mode failures
+  }
+};
+
+const notificationStorageKeys = scope => ({
+  feed: `spinsense.pi.notifications.feed.${scope}`,
+  lastRead: `spinsense.pi.notifications.lastRead.${scope}`,
+  prevState: `spinsense.pi.notifications.prevState.${scope}`,
+});
+
+const lpgFillBand = pct => {
+  if (typeof pct !== "number" || !Number.isFinite(pct)) return null;
+  if (pct < 5) return "critical";
+  if (pct < 15) return "low";
+  return "normal";
+};
+
+const formatNotificationProgram = prog => {
+  if (typeof prog !== "string" || !prog.trim()) return null;
+  const norm = prog.trim().toLowerCase();
+  if (norm === "quick") return "Quick";
+  if (norm === "standard") return "Standard";
+  return norm.replaceAll("_", " ").replace(/\b\w/g, ch => ch.toUpperCase());
+};
+
+function notificationVisuals(item) {
+  const severity = item.severity || "neutral";
+  const badgeClass = severity === "negative"
+    ? "border-negative/30 bg-negative/10 text-negative"
+    : severity === "warning"
+      ? "border-warning/30 bg-warning/10 text-warning"
+      : severity === "positive"
+        ? "border-positive/30 bg-positive/10 text-positive"
+        : severity === "info"
+          ? "border-accent/30 bg-accent/10 text-accent"
+          : "border-line bg-raised text-muted";
+  const borderClass = severity === "negative"
+    ? "border-negative/50"
+    : severity === "warning"
+      ? "border-warning/50"
+      : severity === "info"
+        ? "border-accent/50"
+        : "border-line";
+
+  let icon = iconBell("size-4 shrink-0 text-muted");
+  if (item.kind === "machine_running") icon = iconPlay("size-4 shrink-0 text-accent");
+  else if (item.kind === "machine_fault") icon = iconAlertTriangle("size-4 shrink-0 text-negative");
+  else if (item.kind === "machine_completed") icon = iconCheckCircle("size-4 shrink-0 text-positive");
+  else if (item.kind === "lpg_maintenance") icon = iconWrench("size-4 shrink-0 text-warning");
+  else if (item.kind === "lpg_critical" || item.kind === "lpg_gas_critical") icon = iconFlame("size-4 shrink-0 text-negative");
+  else if (item.kind === "lpg_low" || item.kind === "lpg_gas_warning") icon = iconFlame("size-4 shrink-0 text-warning");
+
+  const kindLabel = item.kind === "machine_running" ? "Running"
+    : item.kind === "machine_fault" ? "Fault"
+      : item.kind === "machine_completed" ? "Completed"
+        : item.kind === "machine_stopped" ? "Stopped"
+          : item.kind === "lpg_maintenance" ? "Maintenance"
+            : item.kind === "lpg_gas_critical" ? "Gas Leak"
+              : item.kind === "lpg_gas_warning" ? "Elevated Gas"
+                : item.kind === "lpg_critical" ? "Critical Low"
+                  : item.kind === "lpg_low" ? "Low LPG"
+                    : "Activity";
+
+  return { badgeClass, borderClass, icon, kindLabel };
+}
+
+function detectNotificationTransitions(prevMap, devices, checkedAt) {
+  const nextMap = {};
+  const triggeredEvents = [];
+  const seeded = prevMap !== null && typeof prevMap === "object";
+
+  for (const dev of devices || []) {
+    if (!dev || !dev.source_id) continue;
+    const prev = seeded ? prevMap[dev.source_id] : null;
+    const isMachine = dev.type === "washer" || dev.type === "dryer" || dev.type === "washer_dryer";
+    const isLpg = dev.type === "lpg_edge_node";
+    const currBand = isLpg && !dev.maintenance_mode ? lpgFillBand(dev.lpg_percent) : null;
+    const currGasCond = (isLpg && dev.ppm_calibrated && dev.freshness === "fresh")
+      ? (dev.gas_condition || null)
+      : null;
+    const occurredAt = dev.sample_at || checkedAt || new Date().toISOString();
+
+    nextMap[dev.source_id] = {
+      state: dev.state || "UNKNOWN",
+      fault_code: dev.fault_code || null,
+      lpg_band: currBand,
+      gas_condition: currGasCond,
+      maintenance_mode: Boolean(dev.maintenance_mode),
+    };
+
+    if (!seeded) continue;
+
+    if (isMachine) {
+      if (dev.state === "RUNNING" && prev?.state !== "RUNNING") {
+        const prog = formatNotificationProgram(dev.program_id);
+        triggeredEvents.push({
+          id: `tx:machine:${dev.source_id}:running:${occurredAt}`,
+          category: "machine",
+          kind: "machine_running",
+          severity: "info",
+          title: "Machine running",
+          detail: `${dev.label || dev.source_id} started ${prog || "cycle"}`,
+          source_id: dev.source_id,
+          device_label: dev.label || dev.source_id,
+          occurred_at: occurredAt,
+          active: true,
+        });
+      }
+      if (dev.state === "ERROR" && (prev?.state !== "ERROR" || (dev.fault_code && dev.fault_code !== prev?.fault_code))) {
+        triggeredEvents.push({
+          id: `tx:machine:${dev.source_id}:error:${occurredAt}`,
+          category: "machine",
+          kind: "machine_fault",
+          severity: "negative",
+          title: "Machine fault",
+          detail: dev.fault_code
+            ? `${dev.label || dev.source_id} reported fault ${dev.fault_code}`
+            : `${dev.label || dev.source_id} broke down`,
+          source_id: dev.source_id,
+          device_label: dev.label || dev.source_id,
+          occurred_at: occurredAt,
+          active: true,
+        });
+      }
+    } else if (isLpg) {
+      if (dev.maintenance_mode && !prev?.maintenance_mode) {
+        triggeredEvents.push({
+          id: `tx:lpg:${dev.source_id}:maintenance:${occurredAt}`,
+          category: "lpg",
+          kind: "lpg_maintenance",
+          severity: "warning",
+          title: "LPG undergoing maintenance",
+          detail: `${dev.label || dev.source_id} is undergoing maintenance`,
+          source_id: dev.source_id,
+          device_label: dev.label || dev.source_id,
+          occurred_at: occurredAt,
+          active: true,
+        });
+      }
+      if (!dev.maintenance_mode) {
+        if (currBand === "critical" && prev?.lpg_band !== "critical") {
+          triggeredEvents.push({
+            id: `tx:lpg:${dev.source_id}:critical:${occurredAt}`,
+            category: "lpg",
+            kind: "lpg_critical",
+            severity: "negative",
+            title: "LPG gas critically low",
+            detail: `${dev.label || dev.source_id} at ${Number(dev.lpg_percent).toFixed(1)}% remaining`,
+            source_id: dev.source_id,
+            device_label: dev.label || dev.source_id,
+            occurred_at: occurredAt,
+            active: true,
+          });
+        } else if (currBand === "low" && prev?.lpg_band !== "low" && prev?.lpg_band !== "critical") {
+          triggeredEvents.push({
+            id: `tx:lpg:${dev.source_id}:low:${occurredAt}`,
+            category: "lpg",
+            kind: "lpg_low",
+            severity: "warning",
+            title: "LPG gas level low",
+            detail: `${dev.label || dev.source_id} at ${Number(dev.lpg_percent).toFixed(1)}% remaining`,
+            source_id: dev.source_id,
+            device_label: dev.label || dev.source_id,
+            occurred_at: occurredAt,
+            active: true,
+          });
+        }
+      }
+      if (currGasCond === "critical" || currGasCond === "warning") {
+        const hasPpm = dev.estimated_ppm !== null && dev.estimated_ppm !== undefined && Number.isFinite(Number(dev.estimated_ppm));
+        const devLabel = dev.label || dev.source_id;
+        if (currGasCond === "critical" && prev?.gas_condition !== "critical") {
+          triggeredEvents.push({
+            id: `tx:lpg:${dev.source_id}:gas_critical:${occurredAt}`,
+            category: "lpg",
+            kind: "lpg_gas_critical",
+            severity: "negative",
+            title: "LPG gas leak critical",
+            detail: hasPpm
+              ? `${devLabel} estimated ${Math.round(Number(dev.estimated_ppm))} ppm (MQ-6)`
+              : `${devLabel} detected dangerous LPG gas levels`,
+            source_id: dev.source_id,
+            device_label: devLabel,
+            occurred_at: occurredAt,
+            active: true,
+          });
+        } else if (currGasCond === "warning" && prev?.gas_condition !== "warning" && prev?.gas_condition !== "critical") {
+          triggeredEvents.push({
+            id: `tx:lpg:${dev.source_id}:gas_warning:${occurredAt}`,
+            category: "lpg",
+            kind: "lpg_gas_warning",
+            severity: "warning",
+            title: "LPG gas elevated",
+            detail: hasPpm
+              ? `${devLabel} estimated ${Math.round(Number(dev.estimated_ppm))} ppm (MQ-6)`
+              : `${devLabel} detected elevated LPG gas levels`,
+            source_id: dev.source_id,
+            device_label: devLabel,
+            occurred_at: occurredAt,
+            active: true,
+          });
+        }
+      }
+    }
+  }
+
+  return { nextMap, triggeredEvents };
+}
+
+function mergeNotificationEvents(serverEvents, localEvents) {
+  const txList = (localEvents || []).filter(item => item && typeof item.id === "string" && item.id.startsWith("tx:"));
+  const byId = new Map();
+
+  for (const item of serverEvents || []) {
+    if (!item || !item.id) continue;
+    if (item.id.startsWith("live:")) {
+      const liveMs = Date.parse(item.occurred_at || "");
+      const coveredByRecentTx = txList.some(tx => {
+        if (tx.source_id !== item.source_id || tx.kind !== item.kind) return false;
+        const txMs = Date.parse(tx.occurred_at || "");
+        return Number.isFinite(liveMs) && Number.isFinite(txMs) ? Math.abs(liveMs - txMs) <= 180000 : true;
+      });
+      if (coveredByRecentTx) continue;
+    }
+    byId.set(item.id, item);
+  }
+
+  for (const item of localEvents || []) {
+    if (!item || !item.id || byId.has(item.id)) continue;
+    byId.set(item.id, item);
+  }
+
+  return [...byId.values()]
+    .sort((a, b) => String(b.occurred_at || "").localeCompare(String(a.occurred_at || "")))
+    .slice(0, 200);
+}
+
+function pushToastNotification(item) {
+  const region = byId("toastRegion");
+  if (!region) return;
+  while (region.children.length >= 3) {
+    const removable = [...region.children].find(node => node.dataset.sticky !== "true") || region.firstElementChild;
+    removable?.remove();
+  }
+
+  const visuals = notificationVisuals(item);
+  const isSticky = item.severity === "negative";
+  const toast = text(
+    "div",
+    `pointer-events-auto flex w-full items-start gap-3 rounded-md border ${visuals.borderClass} bg-surface p-3.5 text-ink shadow-xl`,
+    "",
+  );
+  toast.setAttribute("role", isSticky ? "alert" : "status");
+  if (isSticky) toast.dataset.sticky = "true";
+
+  const iconWrap = text("div", "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-rule bg-raised/60", "");
+  iconWrap.append(visuals.icon);
+
+  const body = text("div", "min-w-0 flex-1", "");
+  const headerRow = text("div", "flex items-center justify-between gap-2", "");
+  headerRow.append(
+    text("p", "truncate text-xs font-semibold text-ink", item.title || "Notification"),
+    text("span", `shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium ${visuals.badgeClass}`, visuals.kindLabel),
+  );
+  body.append(
+    headerRow,
+    text("p", "mt-0.5 break-words text-xs text-muted", item.detail || item.device_label || item.source_id || ""),
+    text("p", "mt-1 text-[11px] tabular-nums text-faint", dateLabel(item.occurred_at)),
+  );
+
+  const closeBtn = text(
+    "button",
+    "inline-flex size-11 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-accent",
+    "",
+  );
+  closeBtn.type = "button";
+  closeBtn.setAttribute("aria-label", "Dismiss notification");
+  closeBtn.append(iconX("size-4"), text("span", "sr-only", "Dismiss"));
+
+  let timerId = null;
+  const dismiss = () => {
+    if (timerId !== null) {
+      clearTimeout(timerId);
+      timerId = null;
+    }
+    toast.remove();
+  };
+  closeBtn.addEventListener("click", dismiss);
+
+  toast.append(iconWrap, body, closeBtn);
+  region.append(toast);
+
+  if (!isSticky) {
+    const duration = item.severity === "warning" ? 8000 : 6000;
+    timerId = setTimeout(dismiss, duration);
+  }
+}
+
+function buildNotificationListItem(item, compact = false) {
+  const visuals = notificationVisuals(item);
+  const li = text("li", compact ? "px-4 py-3 transition-colors hover:bg-raised/40" : "px-4 py-3.5 sm:px-5 transition-colors hover:bg-raised/30", "");
+  const row = text("div", "flex items-start gap-3", "");
+  const iconWrap = text("div", "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-rule bg-raised/60", "");
+  iconWrap.append(visuals.icon);
+
+  const content = text("div", "min-w-0 flex-1", "");
+  const topLine = text("div", "flex flex-wrap items-center justify-between gap-2", "");
+  const leftMeta = text("div", "flex min-w-0 flex-wrap items-center gap-2", "");
+  leftMeta.append(
+    text("span", "truncate text-xs font-semibold text-ink", item.title || "Notification"),
+    text("span", `rounded border px-1.5 py-0.5 text-[11px] font-medium ${visuals.badgeClass}`, visuals.kindLabel),
+  );
+  if (!compact) {
+    const categoryLabel = item.category === "lpg" ? "LPG & Safety" : "Machine";
+    leftMeta.append(text("span", "rounded border border-rule bg-raised/40 px-1.5 py-0.5 text-[11px] text-muted", categoryLabel));
+  }
+  topLine.append(
+    leftMeta,
+    text("span", "shrink-0 text-[11px] tabular-nums text-faint", dateLabel(item.occurred_at)),
+  );
+  content.append(
+    topLine,
+    text("p", "mt-1 break-words text-xs text-muted", item.detail || item.device_label || item.source_id || ""),
+  );
+  if (!compact && item.source_id) {
+    content.append(text("p", "mt-1 text-[11px] tabular-nums text-faint", `Device: ${item.device_label || item.source_id} (${item.source_id})`));
+  }
+  row.append(iconWrap, content);
+  li.append(row);
+  return li;
+}
+
+function renderNotificationControls() {
+  const badge = byId("notificationsBadge");
+  const list = byId("notificationsDropdownList");
+  const keys = notificationStorageKeys(notificationScope);
+  const lastReadAt = readStorageJson("localStorage", keys.lastRead, "");
+
+  if (badge) {
+    const unread = mergedNotifications.filter(item => !lastReadAt || (item.occurred_at && String(item.occurred_at) > String(lastReadAt)));
+    const hasCriticalUnread = unread.some(item => item.severity === "negative");
+    if (unread.length > 0) {
+      badge.textContent = unread.length > 99 ? "99+" : String(unread.length);
+      badge.className = `absolute -right-1 -top-1 inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-[11px] font-bold leading-none tabular-nums ${
+        hasCriticalUnread ? "bg-negative text-ink" : "bg-accent text-surface"
+      }`;
+    } else {
+      badge.className = "hidden";
+      badge.textContent = "0";
+    }
+  }
+
+  if (list) {
+    list.replaceChildren();
+    const preview = mergedNotifications.slice(0, 5);
+    if (!preview.length) {
+      list.append(text("li", "px-4 py-6 text-center text-xs text-muted", "No notifications recorded."));
+    } else {
+      for (const item of preview) {
+        list.append(buildNotificationListItem(item, true));
+      }
+    }
+  }
+
+  if (activeNotificationsDialog && renderActiveNotificationsModal) {
+    renderActiveNotificationsModal();
+  }
+}
+
+function setNotificationsDropdownOpen(open) {
+  const btn = byId("notificationsButton");
+  const dropdown = byId("notificationsDropdown");
+  if (!btn || !dropdown) return;
+  dropdown.classList.toggle("hidden", !open);
+  dropdown.classList.toggle("flex", open);
+  btn.setAttribute("aria-expanded", String(open));
+}
+
+function markNotificationsRead() {
+  const keys = notificationStorageKeys(notificationScope);
+  const newest = mergedNotifications.find(item => item.occurred_at)?.occurred_at || new Date().toISOString();
+  writeStorageJson("localStorage", keys.lastRead, newest);
+  renderNotificationControls();
+}
+
+const NOTIFICATIONS_PAGE_SIZE = 10;
+
+function openNotificationsModal() {
+  if (activeNotificationsDialog) {
+    activeNotificationsDialog.close();
+    activeNotificationsDialog.remove();
+  }
+  setNotificationsDropdownOpen(false);
+  markNotificationsRead();
+
+  const dialog = text(
+    "dialog",
+    "fixed inset-0 z-50 m-auto hidden h-11/12 w-11/12 max-w-none flex-col overflow-hidden rounded-md border border-control bg-surface p-0 text-ink shadow-2xl backdrop:bg-canvas/80 open:flex",
+    "",
+  );
+  dialog.setAttribute("aria-labelledby", "allNotificationsTitle");
+
+  const header = text("div", "flex items-center justify-between gap-3 border-b border-rule px-4 py-3.5 sm:px-5", "");
+  const headerLeft = text("div", "flex min-w-0 items-center gap-2.5", "");
+  const iconBox = text("div", "flex size-10 shrink-0 items-center justify-center rounded-md border border-line bg-raised/60", "");
+  iconBox.append(iconBell("size-5 text-accent"));
+  const title = text("h2", "truncate text-base font-semibold text-ink sm:text-lg", "Notifications");
+  title.id = "allNotificationsTitle";
+  headerLeft.append(iconBox, title);
+
+  const closeBtn = text(
+    "button",
+    "inline-flex size-11 shrink-0 items-center justify-center rounded-md border border-control bg-raised/40 text-muted transition-colors hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-accent",
+    "",
+  );
+  closeBtn.type = "button";
+  closeBtn.setAttribute("aria-label", "Close notifications modal");
+  closeBtn.append(iconX("size-5"), text("span", "sr-only", "Close"));
+  closeBtn.addEventListener("click", () => dialog.close());
+  header.append(headerLeft, closeBtn);
+  dialog.append(header);
+
+  const filterBar = text("div", "flex flex-wrap gap-2 border-b border-rule bg-raised/20 px-4 py-3 sm:px-5", "");
+  filterBar.setAttribute("role", "group");
+  filterBar.setAttribute("aria-label", "Filter notification history");
+
+  const listWrap = text("div", "min-h-0 flex-1 overflow-y-auto", "");
+  const modalList = text("ul", "divide-y divide-rule", "");
+  listWrap.append(modalList);
+
+  const pagerWrap = text(
+    "div",
+    "hidden flex-col gap-2 border-t border-rule bg-raised/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5",
+    "",
+  );
+  pagerWrap.id = "notificationsModalPager";
+  const pageLabel = text("p", "text-xs sm:text-sm text-muted tabular-nums", "Page 1 of 1");
+  const pagerButtons = text("div", "flex gap-2", "");
+  const pagerBtnClass = "inline-flex min-h-11 min-w-11 flex-1 sm:flex-initial items-center justify-center rounded-md border border-control bg-navy px-4 text-sm font-medium text-ink transition-colors enabled:hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted";
+  const previousBtn = text("button", pagerBtnClass, "Previous");
+  const nextBtn = text("button", pagerBtnClass, "Next");
+  previousBtn.type = "button";
+  nextBtn.type = "button";
+  pagerButtons.append(previousBtn, nextBtn);
+  pagerWrap.append(pageLabel, pagerButtons);
+
+  dialog.append(filterBar, listWrap, pagerWrap);
+
+  let modalPage = 1;
+  const filterBtns = {};
+  const filters = [
+    ["all", "All"],
+    ["machine", "Machines"],
+    ["lpg", "LPG & Safety"],
+  ];
+
+  const renderModalContent = () => {
+    const filtered = notificationModalFilter === "all"
+      ? mergedNotifications
+      : mergedNotifications.filter(item => item.category === notificationModalFilter);
+
+    for (const [key, label] of filters) {
+      const btn = filterBtns[key];
+      if (!btn) continue;
+      const active = notificationModalFilter === key;
+      const count = key === "all"
+        ? mergedNotifications.length
+        : mergedNotifications.filter(item => item.category === key).length;
+      btn.textContent = `${label} (${count})`;
+      btn.setAttribute("aria-pressed", String(active));
+      btn.className = active
+        ? "inline-flex min-h-11 items-center justify-center rounded-md border border-control bg-navy-selected px-3.5 py-2 text-xs font-semibold text-ink focus-visible:outline-2 focus-visible:outline-accent"
+        : "inline-flex min-h-11 items-center justify-center rounded-md border border-line bg-raised/40 px-3.5 py-2 text-xs font-medium text-muted transition-colors hover:border-control hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-accent";
+    }
+
+    const totalCount = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(totalCount / NOTIFICATIONS_PAGE_SIZE));
+    modalPage = Math.min(Math.max(1, modalPage), totalPages);
+    const startIdx = (modalPage - 1) * NOTIFICATIONS_PAGE_SIZE;
+    const pageItems = filtered.slice(startIdx, startIdx + NOTIFICATIONS_PAGE_SIZE);
+
+    if (totalPages > 1) {
+      pagerWrap.classList.remove("hidden");
+      pagerWrap.classList.add("flex");
+      pageLabel.textContent = `Page ${modalPage} of ${totalPages} (${totalCount} notifications)`;
+      previousBtn.disabled = modalPage <= 1;
+      nextBtn.disabled = modalPage >= totalPages;
+    } else {
+      pagerWrap.classList.add("hidden");
+      pagerWrap.classList.remove("flex");
+    }
+
+    modalList.replaceChildren();
+    if (!pageItems.length) {
+      modalList.append(text("li", "px-5 py-10 text-center text-sm text-muted", "No notifications match this filter."));
+      return;
+    }
+    for (const item of pageItems) {
+      modalList.append(buildNotificationListItem(item, false));
+    }
+  };
+
+  previousBtn.addEventListener("click", () => {
+    if (modalPage <= 1) return;
+    modalPage -= 1;
+    renderModalContent();
+    listWrap.scrollTop = 0;
+  });
+
+  nextBtn.addEventListener("click", () => {
+    modalPage += 1;
+    renderModalContent();
+    listWrap.scrollTop = 0;
+  });
+
+  for (const [key, label] of filters) {
+    const btn = text("button", "", label);
+    btn.type = "button";
+    btn.addEventListener("click", () => {
+      notificationModalFilter = key;
+      modalPage = 1;
+      renderModalContent();
+      listWrap.scrollTop = 0;
+    });
+    filterBtns[key] = btn;
+    filterBar.append(btn);
+  }
+
+  dialog.addEventListener("click", event => {
+    if (event.target === dialog) dialog.close();
+  });
+  dialog.addEventListener("close", () => {
+    activeNotificationsDialog = null;
+    renderActiveNotificationsModal = null;
+    dialog.remove();
+    byId("notificationsButton")?.focus();
+  });
+
+  document.body.append(dialog);
+  activeNotificationsDialog = dialog;
+  renderActiveNotificationsModal = renderModalContent;
+  renderModalContent();
+  dialog.showModal();
+}
+
+function setupNotificationUi() {
+  const wrap = byId("notificationsWrap");
+  const btn = byId("notificationsButton");
+  const dropdown = byId("notificationsDropdown");
+  const markReadBtn = byId("notificationsMarkRead");
+  const displayAllBtn = byId("displayAllNotificationsBtn");
+  if (!wrap || !btn || !dropdown) return;
+
+  btn.addEventListener("click", () => {
+    const isOpen = !dropdown.classList.contains("hidden");
+    setNotificationsDropdownOpen(!isOpen);
+  });
+  markReadBtn?.addEventListener("click", markNotificationsRead);
+  displayAllBtn?.addEventListener("click", openNotificationsModal);
+
+  document.addEventListener("pointerdown", event => {
+    if (!dropdown.classList.contains("hidden") && !wrap.contains(event.target)) {
+      setNotificationsDropdownOpen(false);
+    }
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && !dropdown.classList.contains("hidden")) {
+      setNotificationsDropdownOpen(false);
+      btn.focus();
+    }
+  });
+  renderNotificationControls();
+}
+
+async function refreshNotifications() {
+  if (!byId("notificationsButton")) return;
+  try {
+    const response = await fetch("/api/dashboard/notifications", { cache: "no-store", signal: AbortSignal.timeout(8000) });
+    if (response.status === 401) {
+      window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`);
+      return;
+    }
+    if (!response.ok) return;
+    const payload = await response.json();
+    const scope = (payload.gateway && (payload.gateway.branch_id || payload.gateway.status)) || "local";
+    notificationScope = scope;
+    const keys = notificationStorageKeys(scope);
+    const prevMap = readStorageJson("sessionStorage", keys.prevState, null);
+    const { nextMap, triggeredEvents } = detectNotificationTransitions(prevMap, payload.devices || [], payload.checked_at);
+    writeStorageJson("sessionStorage", keys.prevState, nextMap);
+
+    let localEvents = readStorageJson("localStorage", keys.feed, []);
+    if (!Array.isArray(localEvents)) localEvents = [];
+    if (triggeredEvents.length) {
+      localEvents = [...triggeredEvents, ...localEvents].slice(0, 100);
+      writeStorageJson("localStorage", keys.feed, localEvents);
+      for (const evt of triggeredEvents) {
+        pushToastNotification(evt);
+      }
+    }
+
+    mergedNotifications = mergeNotificationEvents(payload.events || [], localEvents);
+    renderNotificationControls();
+  } catch {
+    // Keep existing rendered notification state cleanly when transient poll fails
+  }
+}
+
 let busy = false;
 async function refresh() {
   if (busy) return;
@@ -1866,17 +3865,22 @@ async function refresh() {
     if (page === "overview") renderOverview(snapshot);
     if (page === "machines") renderMachines(snapshot);
     if (page === "safety") renderSafety(snapshot);
-    if (page === "overview") await refreshHistory();
+    if (page === "overview") await Promise.all([refreshHistory(), refreshOverviewAnalytics(false)]);
+    await refreshNotifications();
     byId("pageNotice").classList.add("hidden");
   } catch {
     byId("pageNotice").textContent = "Local data could not be refreshed. Any values shown are from the last successful check.";
     byId("pageNotice").classList.remove("hidden");
     byId("checkedAt").textContent = "Local data refresh failed";
+    const checkedAtDot = byId("checkedAtDot");
+    if (checkedAtDot) checkedAtDot.className = "size-2 shrink-0 rounded-full bg-negative";
   } finally {
     busy = false;
     button.disabled = false;
   }
 }
+
+setupNotificationUi();
 
 const menu = byId("menuToggle");
 menu.addEventListener("click", () => {
@@ -1885,28 +3889,78 @@ menu.addEventListener("click", () => {
   nav.classList.toggle("flex", open);
   menu.setAttribute("aria-expanded", String(open));
 });
-byId("refreshButton").addEventListener("click", refresh);
+byId("refreshButton").addEventListener("click", () => {
+  if (page === "overview") lastAnalyticsRefreshAt = 0;
+  refresh();
+});
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 refresh();
 setInterval(() => { if (!document.hidden && !paused) refresh(); }, 4000);
 
 if (page === "overview") {
+  if (typeof document.querySelectorAll === "function") {
+    document.querySelectorAll("[data-analytics-period]").forEach(button => button.addEventListener("click", () => {
+      const nextPeriod = button.dataset.analyticsPeriod;
+      if (!nextPeriod || nextPeriod === overviewAnalyticsPeriod) return;
+      overviewAnalyticsPeriod = nextPeriod;
+      updateAnalyticsPeriodButtons(overviewAnalyticsPeriod);
+      refreshOverviewAnalytics(true);
+    }));
+    document.querySelectorAll("[data-machine-metric]").forEach(button => button.addEventListener("click", () => {
+      const nextMetric = button.dataset.machineMetric;
+      if (!nextMetric || nextMetric === overviewMachineMetric) return;
+      overviewMachineMetric = nextMetric;
+      updateMachineMetricButtons(overviewMachineMetric);
+      if (latestOverviewAnalytics) renderMachineMetricsChart(latestOverviewAnalytics);
+    }));
+  }
   byId("pauseButton").addEventListener("click", () => {
     paused = !paused;
     byId("pauseButton").setAttribute("aria-pressed", String(paused));
     byId("pauseButton").textContent = paused ? "Resume refresh" : "Pause refresh";
     if (!paused) refresh();
   });
-  document.querySelectorAll("[data-history-filter]").forEach(button => button.addEventListener("click", () => {
-    historyFilter = button.dataset.historyFilter;
-    document.querySelectorAll("[data-history-filter]").forEach(item => {
-      const selected = item === button;
-      item.setAttribute("aria-pressed", String(selected));
-      item.classList.toggle("bg-navy-selected", selected);
-      item.classList.toggle("bg-navy", !selected);
-    });
-    renderHistory();
-  }));
+  if (typeof document.querySelectorAll === "function") {
+    document.querySelectorAll("[data-history-category]").forEach(button => button.addEventListener("click", () => {
+      const nextCategory = button.dataset.historyCategory;
+      if (!nextCategory || nextCategory === historyCategory || !historyViewState[nextCategory]) return;
+      historyCategory = nextCategory;
+      syncHistoryControls();
+      refreshHistory();
+    }));
+    document.querySelectorAll("[data-history-filter]").forEach(button => button.addEventListener("click", () => {
+      const nextDelivery = button.dataset.historyFilter;
+      if (!nextDelivery) return;
+      const viewState = historyViewState[historyCategory] || historyViewState.lpg;
+      if (viewState.delivery === nextDelivery) return;
+      viewState.delivery = nextDelivery;
+      viewState.page = 1;
+      syncHistoryControls();
+      refreshHistory();
+    }));
+  }
+  byId("historyPeriod")?.addEventListener("change", event => {
+    const nextPeriod = event.target?.value || "all";
+    const viewState = historyViewState[historyCategory] || historyViewState.lpg;
+    if (viewState.period === nextPeriod) return;
+    viewState.period = nextPeriod;
+    viewState.page = 1;
+    syncHistoryControls();
+    refreshHistory();
+  });
+  byId("historyPrevPage")?.addEventListener("click", () => {
+    const viewState = historyViewState[historyCategory] || historyViewState.lpg;
+    if (viewState.page <= 1) return;
+    viewState.page -= 1;
+    refreshHistory();
+  });
+  byId("historyNextPage")?.addEventListener("click", () => {
+    const viewState = historyViewState[historyCategory] || historyViewState.lpg;
+    if (viewState.page >= historyPageMeta.total_pages) return;
+    viewState.page += 1;
+    refreshHistory();
+  });
+  syncHistoryControls();
 }
 
 if (page === "overview" && new URLSearchParams(window.location.search).get("setup") === "1") {

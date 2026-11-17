@@ -1,13 +1,26 @@
 "use client";
 
-import React, { useState, useEffect, useActionState } from "react";
+import React, { useState, useEffect, useActionState, useTransition } from "react";
 import { LogOut } from "lucide-react";
 import { signOut } from "@/app/auth/actions";
+import { unregisterPushSubscription } from "@/app/notifications/actions";
+import { clearWorkspaceNotificationsStorage } from "@/components/workspace/notifications/notificationLogic";
+import { cleanupPushOnSignOut } from "@/components/workspace/notifications/pushClient";
 import type { AuthFormState } from "@/lib/auth/validation";
 
 export function MobileSignOutTab() {
   const [isOpen, setIsOpen] = useState(false);
   const [state, action, pending] = useActionState<AuthFormState>(signOut, {});
+  const [cleaning, startTransition] = useTransition();
+  const isPending = pending || cleaning;
+
+  function handleSignOutAction() {
+    clearWorkspaceNotificationsStorage();
+    startTransition(async () => {
+      await cleanupPushOnSignOut(unregisterPushSubscription);
+      action();
+    });
+  }
 
   useEffect(() => {
     if (!isOpen) return;
@@ -74,18 +87,20 @@ export function MobileSignOutTab() {
               <button
                 type="button"
                 onClick={() => setIsOpen(false)}
-                disabled={pending}
-                className="inline-flex min-h-10 items-center justify-center rounded-md border border-control bg-navy px-3.5 py-2 text-xs font-medium text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={isPending}
+                className="inline-flex min-h-11 items-center justify-center rounded-md border border-control bg-navy px-3.5 py-2 text-xs font-medium text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Cancel
               </button>
-              <form action={action}>
+              <form
+                action={handleSignOutAction}
+              >
                 <button
                   type="submit"
-                  disabled={pending}
-                  className="inline-flex min-h-10 items-center justify-center rounded-md border border-negative bg-negative px-3.5 py-2 text-xs font-medium text-surface transition-colors hover:bg-negative/90 focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={isPending}
+                  className="inline-flex min-h-11 items-center justify-center rounded-md border border-negative bg-negative px-3.5 py-2 text-xs font-medium text-surface transition-colors hover:bg-negative/90 focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {pending ? "Signing out…" : "Sign out"}
+                  {isPending ? "Signing out…" : "Sign out"}
                 </button>
               </form>
             </div>
