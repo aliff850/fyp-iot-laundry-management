@@ -323,7 +323,7 @@ def _role_metadata(user_id: str, role: str | None, user: dict):
 def _status(conn, user_id: str):
     row = conn.execute(
         """select m.organization_id, m.state, m.role, m.active, o.name as organization_name,
-                  o.state as organization_state
+                  o.state as organization_state, o.logo_url as organization_logo_url
            from public.memberships m join public.organizations o on o.id = m.organization_id
            where m.user_id = %s""", (user_id,),
     ).fetchone()
@@ -336,7 +336,7 @@ def _status(conn, user_id: str):
         state = "incomplete"
     return {
         "state": state,
-        "organization": {"id": str(row["organization_id"]), "name": row["organization_name"]},
+        "organization": {"id": str(row["organization_id"]), "name": row["organization_name"], "logo_url": row.get("organization_logo_url")},
         "role": row["role"] if state in ("active", "approved_unassigned") else None,
     }
 

@@ -101,7 +101,7 @@ function createOverviewTestEnv(fetchImpl) {
     'historyPeriod', 'historyPageLabel', 'historyPrevPage', 'historyNextPage',
     'overviewAnalyticsSection', 'analyticsTotalCycles', 'analyticsTotalMinutes', 'analyticsTotalRevenue',
     'analyticsAvgGas', 'overviewMachineChartLabel', 'overviewMachineChartWrap', 'overviewMachineChart',
-    'overviewMachineTableBody', 'overviewRevenueWindow', 'overviewRevenueChartWrap', 'overviewRevenueChart',
+    'overviewMachineTableBody', 'overviewRevenueChartHeading', 'overviewRevenueWindow', 'overviewRevenueChartWrap', 'overviewRevenueChart',
     'overviewGasMode', 'overviewGasChartWrap', 'overviewGasChart',
     'overviewLpgTankSection', 'overviewLpgTankHeading', 'overviewLpgTankStatus',
     'overviewLpgTankChartWrap', 'overviewLpgTankChart', 'overviewLpgTankDetails',
@@ -362,6 +362,11 @@ test('Overview analytics renders stacked program cycles, toggleable machine bar 
   assert.deepEqual([...revChart.config.data.datasets[0].data], [13, 6.5]);
   assert.deepEqual(analyticsCalls, ['day']);
 
+  const dayRevenueTrendChart = env.createdCharts.find(c => c.canvas.id === 'overviewRevenueChart');
+  assert.equal(env.ids.get('overviewRevenueChartHeading').textContent, 'Hourly estimated revenue');
+  assert.equal(dayRevenueTrendChart.config.data.datasets[0].label, 'Hourly revenue (RM)');
+  assert.deepEqual([...dayRevenueTrendChart.config.data.datasets[0].data], [13, 6.5]);
+
   const gasChart = env.createdCharts.find(c => c.canvas.id === 'overviewGasChart');
   assert.equal(gasChart.config.type, 'line');
   assert.equal(gasChart.config.data.datasets[0].spanGaps, false);
@@ -371,7 +376,7 @@ test('Overview analytics renders stacked program cycles, toggleable machine bar 
   assert.equal(complaintsChart.config.type, 'bar');
   assert.deepEqual([...complaintsChart.config.data.datasets[0].data], [null, null]);
 
-  // Switch period to 7 days ('week') and verify prior charts destroyed + multi-node label shown
+  // Switch period to 7 days ('week') and verify prior charts destroyed + daily revenue + multi-node label shown
   env.periodButtons[1].dispatchEvent({ type: 'click' });
   await new Promise(resolve => setTimeout(resolve, 20));
 
@@ -380,6 +385,10 @@ test('Overview analytics renders stacked program cycles, toggleable machine bar 
   assert.equal(env.periodButtons[1].getAttribute('aria-pressed'), 'true');
   assert.equal(env.ids.get('analyticsTotalCycles').textContent, '14');
   assert.equal(env.ids.get('overviewGasMode').textContent, '2 nodes averaged');
+  assert.equal(env.ids.get('overviewRevenueChartHeading').textContent, 'Daily estimated revenue');
+  const weekRevenueTrendChart = env.createdCharts.filter(c => c.canvas.id === 'overviewRevenueChart').at(-1);
+  assert.equal(weekRevenueTrendChart.config.data.datasets[0].label, 'Daily revenue (RM)');
+  assert.deepEqual([...weekRevenueTrendChart.config.data.datasets[0].data], [13, 6.5]);
   assert.ok(env.createdCharts.slice(0, 6).every(c => c.destroyed === true));
   assert.equal(env.createdCharts.length, 10);
 });

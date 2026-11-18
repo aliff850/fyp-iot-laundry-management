@@ -1,9 +1,12 @@
 import { createClient } from "@/lib/supabase/server";
 
 export type MembershipState = "incomplete" | "pending" | "approval_pending" | "rejected" | "active" | "approved_unassigned" | "deactivated";
-export type Membership = { state: MembershipState; organization: { id: string; name: string } | null; role: string | null };
+export type Membership = { state: MembershipState; organization: { id: string; name: string; logo_url?: string | null } | null; role: string | null };
 export type JoinRequest = { id: string; user_id: string; state: string; full_name: string; phone: string; requested_at: string; decision_role: string | null };
-export type WorkspaceBranch = { id: string; name: string; address: string; city: string; region: string; postal_code: string; contact_phone: string; opening_hours: string; latitude: number | null; longitude: number | null; service_status: "open" | "closed"; primary_manager_user_id: string; created_at: string };
+export type WeekdayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+export type WeeklyHoursInterval = { open: string; close: string };
+export type WeeklyHoursSchedule = Record<WeekdayKey, WeeklyHoursInterval[]>;
+export type WorkspaceBranch = { id: string; name: string; address: string; city: string; region: string; postal_code: string; contact_phone: string; opening_hours: string; latitude: number | null; longitude: number | null; service_status: "open" | "closed"; is_published?: boolean; weekly_hours?: WeeklyHoursSchedule | null; primary_manager_user_id: string; created_at: string };
 export type ManagerOption = { user_id: string; full_name: string; role: "owner" | "branch_manager" | null };
 export type OrganizationPersonnel = { user_id: string; full_name: string; phone: string; role: "owner" | "branch_manager" | "machine_maintenance" | "lpg_maintenance" | null; state: "active" | "approved_unassigned"; created_at: string; assigned_branches: string[]; assigned_branch_ids?: string[]; is_primary_manager?: boolean };
 export type BranchDirectory = { branches: WorkspaceBranch[]; summary: { branch_count: number; personnel_count: number; pending_request_count: number } | null };
@@ -291,6 +294,8 @@ export interface BranchUpdatePayload {
   latitude: number | null;
   longitude: number | null;
   primary_manager_user_id?: string;
+  is_published?: boolean;
+  weekly_hours?: WeeklyHoursSchedule | null;
 }
 
 export async function updateBranchDetails(
@@ -845,7 +850,7 @@ export interface CustomerReportItem {
   branch_id: string;
   asset_id: string;
   asset_name: string;
-  asset_type: "washer" | "dryer" | "facility";
+  asset_type: "washer" | "dryer" | "washer_dryer" | "facility";
   category: string;
   description: string;
   status: CustomerReportStatus;
@@ -1310,6 +1315,26 @@ export interface PushSubscriptionSavePayload {
   endpoint: string;
   keys: PushSubscriptionKeysPayload;
   user_agent?: string;
+}
+
+export async function uploadOrganizationLogo(
+  contentType: "image/png" | "image/jpeg" | "image/webp",
+  dataBase64: string,
+): Promise<Result<{ logo_url: string }>> {
+  const result = await businessRequest<{ logo_url: string }>(
+    "/organization/logo",
+    "POST",
+    { content_type: contentType, data_base64: dataBase64 },
+  );
+  if (!result.ok) return result;
+  if (!result.value || typeof result.value.logo_url !== "string") return invalid();
+  return { ok: true, value: result.value };
+}
+
+export async function removeOrganizationLogo(): Promise<Result<{ logo_url: null }>> {
+  const result = await businessRequest<{ logo_url: null }>("/organization/logo", "DELETE", {});
+  if (!result.ok) return result;
+  return { ok: true, value: { logo_url: null } };
 }
 
 export async function getPushPublicKey(): Promise<Result<PushPublicKeyResponse>> {

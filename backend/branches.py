@@ -1,10 +1,20 @@
 """Current-membership, organization-scoped branch directory and creation."""
 
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, model_validator
+
+from branch_schedules import validate_weekly_hours
+from customer_reports import (
+    compute_reports_summary,
+    investigate_branch_report,
+    list_branch_customer_reports,
+    load_branch_report_counts,
+    resolve_branch_report,
+)
 
 from onboarding import (
     PERSONNEL_ROLES,
@@ -55,6 +65,8 @@ class BranchUpdate(BaseModel):
     latitude: float | None = Field(default=None, ge=-90, le=90, allow_inf_nan=False)
     longitude: float | None = Field(default=None, ge=-180, le=180, allow_inf_nan=False)
     primary_manager_user_id: UUID | None = None
+    is_published: bool | None = None
+    weekly_hours: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def valid_location(self):
@@ -65,6 +77,8 @@ class BranchUpdate(BaseModel):
             if not value:
                 raise ValueError(f"{field} cannot be blank")
             setattr(self, field, value)
+        if "weekly_hours" in self.model_fields_set and self.weekly_hours is not None:
+            self.weekly_hours = validate_weekly_hours(self.weekly_hours)
         return self
 
 
@@ -86,6 +100,8 @@ def _branch(row):
         "contact_phone": row["contact_phone"], "opening_hours": row["opening_hours"],
         "latitude": row["latitude"], "longitude": row["longitude"],
         "service_status": row["service_status"],
+        "is_published": bool(row.get("is_published", False)),
+        "weekly_hours": row.get("weekly_hours"),
         "primary_manager_user_id": str(row["primary_manager_user_id"]),
         "created_at": row["created_at"],
     }
@@ -329,11 +345,26 @@ def update_branch(branch_id: UUID, payload: BranchUpdate, user=Depends(_user)):
                     (new_manager_id, organization),
                 )
 
+        existing_published = bool(existing.get("is_published", False))
+        if "is_published" in payload.model_fields_set and payload.is_published is not None:
+            if not owner and bool(payload.is_published) != existing_published:
+                raise HTTPException(403, "Only organization owners may change branch publication")
+            next_published = bool(payload.is_published)
+        else:
+            next_published = existing_published
+
+        if "weekly_hours" in payload.model_fields_set:
+            next_weekly_hours = Jsonb(payload.weekly_hours) if payload.weekly_hours is not None else None
+        else:
+            existing_wh = existing.get("weekly_hours")
+            next_weekly_hours = Jsonb(existing_wh) if existing_wh is not None else None
+
         row = conn.execute(
             """update public.branches
                   set name=%s, address=%s, city=%s, region=%s, postal_code=%s,
                       contact_phone=%s, opening_hours=%s, service_status=%s,
-                      latitude=%s, longitude=%s, primary_manager_user_id=%s
+                      latitude=%s, longitude=%s, primary_manager_user_id=%s,
+                      is_published=%s, weekly_hours=%s
                 where id=%s and organization_id=%s
                 returning *""",
             (
@@ -348,6 +379,8 @@ def update_branch(branch_id: UUID, payload: BranchUpdate, user=Depends(_user)):
                 payload.latitude,
                 payload.longitude,
                 new_manager_id,
+                next_published,
+                next_weekly_hours,
                 branch_id,
                 organization,
             ),
@@ -466,10 +499,7 @@ def get_branch_overview(branch_id: UUID, user=Depends(_user)):
             "lpg": summarize_branch_lpg_overview(
                 load_branch_safety_nodes(conn, organization, branch_id, now=now)
             ),
-            "customer_reports": {
-                "pending_count": sum(1 for r in _get_branch_reports(branch_id) if r["status"] == "received"),
-                "investigating_count": sum(1 for r in _get_branch_reports(branch_id) if r["status"] == "investigating"),
-            },
+            "customer_reports": load_branch_report_counts(conn, organization, branch_id),
             "performance": {
                 "today_revenue_myr": None,
                 "today_cycles": None,
@@ -946,171 +976,6 @@ class CustomerReportResolveRequest(BaseModel):
         return self
 
 
-_branch_reports_db: dict[UUID, list[dict]] = {}
-
-
-def _init_default_reports(branch_id: UUID) -> list[dict]:
-    from datetime import datetime, timedelta, timezone
-    now_dt = datetime.now(timezone.utc)
-    b_str = str(branch_id)
-
-    t1 = (now_dt - timedelta(minutes=38)).isoformat()
-    t2 = (now_dt - timedelta(hours=2, minutes=15)).isoformat()
-    t3_created = (now_dt - timedelta(hours=5, minutes=40)).isoformat()
-    t3_inv = (now_dt - timedelta(hours=3, minutes=10)).isoformat()
-    t4_created = (now_dt - timedelta(days=1, hours=4)).isoformat()
-    t4_inv = (now_dt - timedelta(days=1, hours=2)).isoformat()
-    t4_res = (now_dt - timedelta(days=1, hours=1)).isoformat()
-
-    return [
-        {
-            "id": "RPT-1041",
-            "branch_id": b_str,
-            "asset_id": "W-02",
-            "asset_name": "Washer #02 (15kg)",
-            "asset_type": "washer",
-            "category": "Door Latch / Lock",
-            "description": "Door handle feels stiff after spin cycle completes; took two tries to open and retrieve laundry.",
-            "status": "received",
-            "source_kind": "simulated",
-            "reporter_name": "Nurul Aisyah",
-            "reporter_contact": "+60 12-834 9102",
-            "created_at": t1,
-            "updated_at": t1,
-            "investigation_notes": None,
-            "assigned_specialist_role": None,
-            "resolution_reason": None,
-            "history": [
-                {
-                    "id": "hist-1041-1",
-                    "action": "received",
-                    "actor_role": "customer",
-                    "timestamp": t1,
-                    "note": "Submitted via customer branch QR support portal (Simulated)",
-                }
-            ],
-        },
-        {
-            "id": "RPT-1040",
-            "branch_id": b_str,
-            "asset_id": "D-02",
-            "asset_name": "Dryer #02 (Gas 16kg)",
-            "asset_type": "dryer",
-            "category": "Insufficient Heating",
-            "description": "Selected 65Â°C high heat for 30 minutes, but clothes came out slightly damp and lukewarm.",
-            "status": "received",
-            "source_kind": "simulated",
-            "reporter_name": "Hafizuddin Razak",
-            "reporter_contact": "+60 17-390 4421",
-            "created_at": t2,
-            "updated_at": t2,
-            "investigation_notes": None,
-            "assigned_specialist_role": None,
-            "resolution_reason": None,
-            "history": [
-                {
-                    "id": "hist-1040-1",
-                    "action": "received",
-                    "actor_role": "customer",
-                    "timestamp": t2,
-                    "note": "Submitted via customer branch QR support portal (Simulated)",
-                }
-            ],
-        },
-        {
-            "id": "RPT-1039",
-            "branch_id": b_str,
-            "asset_id": "W-01",
-            "asset_name": "Washer #01 (15kg)",
-            "asset_type": "washer",
-            "category": "Detergent Dispenser",
-            "description": "Fabric softener compartment did not flush completely during the rinse phase.",
-            "status": "investigating",
-            "source_kind": "simulated",
-            "reporter_name": "Tan Wei Ming",
-            "reporter_contact": "+60 16-218 7730",
-            "created_at": t3_created,
-            "updated_at": t3_inv,
-            "investigation_notes": "Checked inlet water pressure; flagged machine maintenance to inspect dispenser nozzle.",
-            "assigned_specialist_role": "machine_maintenance",
-            "resolution_reason": None,
-            "history": [
-                {
-                    "id": "hist-1039-1",
-                    "action": "received",
-                    "actor_role": "customer",
-                    "timestamp": t3_created,
-                    "note": "Submitted via customer branch QR support portal (Simulated)",
-                },
-                {
-                    "id": "hist-1039-2",
-                    "action": "investigating",
-                    "actor_role": "branch_manager",
-                    "timestamp": t3_inv,
-                    "note": "Checked inlet water pressure; flagged machine maintenance to inspect dispenser nozzle.",
-                },
-            ],
-        },
-        {
-            "id": "RPT-1038",
-            "branch_id": b_str,
-            "asset_id": "FACILITY",
-            "asset_name": "QR Payment Terminal #1",
-            "asset_type": "facility",
-            "category": "Payment / Kiosk",
-            "description": "Touchscreen froze briefly while generating DuitNow QR code for Washer #03.",
-            "status": "resolved",
-            "source_kind": "simulated",
-            "reporter_name": "Siti Sarah",
-            "reporter_contact": "+60 19-552 1084",
-            "created_at": t4_created,
-            "updated_at": t4_res,
-            "investigation_notes": "Verified network latency spike on local router; rebooted terminal and ran test checkout.",
-            "assigned_specialist_role": None,
-            "resolution_reason": "Rebooted payment terminal and verified QR code generation across 3 test transactions.",
-            "history": [
-                {
-                    "id": "hist-1038-1",
-                    "action": "received",
-                    "actor_role": "customer",
-                    "timestamp": t4_created,
-                    "note": "Submitted via customer branch QR support portal (Simulated)",
-                },
-                {
-                    "id": "hist-1038-2",
-                    "action": "investigating",
-                    "actor_role": "branch_manager",
-                    "timestamp": t4_inv,
-                    "note": "Verified network latency spike on local router; rebooted terminal and ran test checkout.",
-                },
-                {
-                    "id": "hist-1038-3",
-                    "action": "resolved",
-                    "actor_role": "owner",
-                    "timestamp": t4_res,
-                    "note": "Rebooted payment terminal and verified QR code generation across 3 test transactions.",
-                },
-            ],
-        },
-    ]
-
-
-def _get_branch_reports(branch_id: UUID) -> list[dict]:
-    if branch_id not in _branch_reports_db:
-        _branch_reports_db[branch_id] = _init_default_reports(branch_id)
-    return _branch_reports_db[branch_id]
-
-
-def _compute_reports_summary(reports: list[dict]) -> dict:
-    return {
-        "total": len(reports),
-        "received": sum(1 for r in reports if r["status"] == "received"),
-        "investigating": sum(1 for r in reports if r["status"] == "investigating"),
-        "resolved": sum(1 for r in reports if r["status"] == "resolved"),
-        "dismissed": sum(1 for r in reports if r["status"] == "dismissed"),
-    }
-
-
 def _authorize_reports_access(conn, user_id: UUID, branch_id: UUID):
     member = _membership(conn, user_id)
     if member["state"] != "active":
@@ -1145,9 +1010,11 @@ def _authorize_reports_access(conn, user_id: UUID, branch_id: UUID):
 @router.get("/branches/{branch_id}/customer-reports")
 def get_branch_customer_reports(branch_id: UUID, status: str | None = None, user=Depends(_user)):
     with _database(read_only=True) as conn:
-        _authorize_reports_access(conn, user["id"], branch_id)
-        reports = _get_branch_reports(branch_id)
-        summary = _compute_reports_summary(reports)
+        member, _ = _authorize_reports_access(conn, user["id"], branch_id)
+        reports = list_branch_customer_reports(
+            conn, member["organization_id"], branch_id, role=member["role"]
+        )
+        summary = compute_reports_summary(reports)
         filtered = reports
         if status and status.lower() != "all":
             filtered = [r for r in reports if r["status"] == status.lower()]
@@ -1166,36 +1033,20 @@ def investigate_customer_report(
 ):
     with _database() as conn:
         member, _ = _authorize_reports_access(conn, user["id"], branch_id)
-        reports = _get_branch_reports(branch_id)
-        report = next((r for r in reports if r["id"] == report_id), None)
-        if not report:
-            raise HTTPException(404, f"Customer report '{report_id}' not found")
-
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
-        report["status"] = "investigating"
-        report["investigation_notes"] = body.notes
-        report["assigned_specialist_role"] = body.assigned_specialist_role
-        report["updated_at"] = now
-
-        specialist_suffix = (
-            f" (Flagged for {body.assigned_specialist_role.replace('_', ' ')})"
-            if body.assigned_specialist_role
-            else ""
-        )
-        report["history"].append(
-            {
-                "id": f"hist-{report_id}-{len(report['history']) + 1}",
-                "action": "investigating",
-                "actor_role": member["role"],
-                "timestamp": now,
-                "note": f"{body.notes}{specialist_suffix}",
-            }
+        updated, reports = investigate_branch_report(
+            conn,
+            member["organization_id"],
+            branch_id,
+            report_id,
+            notes=body.notes,
+            assigned_specialist_role=body.assigned_specialist_role,
+            actor_user_id=user["id"],
+            actor_role=member["role"],
         )
         return {
             "success": True,
-            "report": report,
-            "summary": _compute_reports_summary(reports),
+            "report": updated,
+            "summary": compute_reports_summary(reports),
         }
 
 
@@ -1208,30 +1059,18 @@ def resolve_customer_report(
 ):
     with _database() as conn:
         member, _ = _authorize_reports_access(conn, user["id"], branch_id)
-        reports = _get_branch_reports(branch_id)
-        report = next((r for r in reports if r["id"] == report_id), None)
-        if not report:
-            raise HTTPException(404, f"Customer report '{report_id}' not found")
-
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
-        new_status = "resolved" if body.action == "resolve" else "dismissed"
-        report["status"] = new_status
-        report["resolution_reason"] = body.reason
-        report["updated_at"] = now
-
-        report["history"].append(
-            {
-                "id": f"hist-{report_id}-{len(report['history']) + 1}",
-                "action": new_status,
-                "actor_role": member["role"],
-                "timestamp": now,
-                "note": body.reason,
-            }
+        updated, reports = resolve_branch_report(
+            conn,
+            member["organization_id"],
+            branch_id,
+            report_id,
+            action=body.action,
+            reason=body.reason,
+            actor_user_id=user["id"],
+            actor_role=member["role"],
         )
         return {
             "success": True,
-            "report": report,
-            "summary": _compute_reports_summary(reports),
+            "report": updated,
+            "summary": compute_reports_summary(reports),
         }
-

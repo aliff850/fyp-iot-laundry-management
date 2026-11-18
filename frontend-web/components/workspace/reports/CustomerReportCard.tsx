@@ -56,7 +56,7 @@ function getStatusBadge(status: CustomerReportStatus) {
 }
 
 function getAssetIcon(type: CustomerReportItem["asset_type"]) {
-  if (type === "washer") {
+  if (type === "washer" || type === "washer_dryer") {
     return <WashingMachine className="size-4 text-accent" aria-hidden="true" />;
   }
   if (type === "dryer") {

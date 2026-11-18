@@ -4,7 +4,12 @@ import dynamic from "next/dynamic";
 import { useActionState, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
-import type { BranchDetail, ManagerOption } from "@/lib/auth/business";
+import type {
+  BranchDetail,
+  ManagerOption,
+  WeekdayKey,
+  WeeklyHoursSchedule,
+} from "@/lib/auth/business";
 import {
   updateWorkspaceBranch,
   type UpdateBranchState,
@@ -51,6 +56,31 @@ function parseInitialHours(raw: string): {
   return { is24Hours: false, openTime: "07:00", closeTime: "23:00" };
 }
 
+const WEEKDAY_LABELS: Array<{ key: WeekdayKey; label: string }> = [
+  { key: "mon", label: "Mon" },
+  { key: "tue", label: "Tue" },
+  { key: "wed", label: "Wed" },
+  { key: "thu", label: "Thu" },
+  { key: "fri", label: "Fri" },
+  { key: "sat", label: "Sat" },
+  { key: "sun", label: "Sun" },
+];
+
+function buildDefaultSchedule(is24h: boolean, open: string, close: string): WeeklyHoursSchedule {
+  const interval = is24h
+    ? { open: "00:00", close: "24:00" }
+    : { open: open || "07:00", close: close || "23:00" };
+  return {
+    mon: [{ ...interval }],
+    tue: [{ ...interval }],
+    wed: [{ ...interval }],
+    thu: [{ ...interval }],
+    fri: [{ ...interval }],
+    sat: [{ ...interval }],
+    sun: [{ ...interval }],
+  };
+}
+
 function roleLabel(role: ManagerOption["role"]) {
   if (role === "owner") return "Owner";
   if (role === "branch_manager") return "Branch manager";
@@ -77,6 +107,12 @@ export function BranchDetailsForm({
   const [openTime, setOpenTime] = useState(parsedHours.openTime);
   const [closeTime, setCloseTime] = useState(parsedHours.closeTime);
   const [serviceStatus, setServiceStatus] = useState<"open" | "closed">(branch.service_status);
+  const [isPublished, setIsPublished] = useState<boolean>(Boolean(branch.is_published));
+  const [scheduleEnabled, setScheduleEnabled] = useState<boolean>(Boolean(branch.weekly_hours));
+  const [weeklyHours, setWeeklyHours] = useState<WeeklyHoursSchedule>(
+    branch.weekly_hours ??
+      buildDefaultSchedule(parsedHours.is24Hours, parsedHours.openTime, parsedHours.closeTime),
+  );
   const [latitude, setLatitude] = useState(
     branch.latitude !== null ? String(branch.latitude) : "",
   );
@@ -144,12 +180,34 @@ export function BranchDetailsForm({
                 name="service_status"
                 value={serviceStatus}
                 onChange={(e) => setServiceStatus(e.target.value as "open" | "closed")}
-                className="h-10 w-full rounded border border-line bg-canvas px-3 text-sm text-ink"
+                className="min-h-11 w-full rounded border border-line bg-canvas px-3 text-sm text-ink"
               >
                 <option value="open">Open to customers</option>
                 <option value="closed">Closed to customers</option>
               </select>
             </label>
+
+            {isOwner ? (
+              <label className="block space-y-1.5 text-xs text-muted">
+                <span>Customer directory visibility</span>
+                <select
+                  name="is_published"
+                  value={isPublished ? "true" : "false"}
+                  onChange={(e) => setIsPublished(e.target.value === "true")}
+                  className="min-h-11 w-full rounded border border-line bg-canvas px-3 text-sm text-ink"
+                >
+                  <option value="false">Unpublished (hidden from customer app)</option>
+                  <option value="true">Published in customer app</option>
+                </select>
+              </label>
+            ) : (
+              <div className="block space-y-1.5 text-xs text-muted">
+                <span>Customer directory visibility</span>
+                <div className="flex min-h-11 w-full items-center rounded border border-line bg-canvas/60 px-3 text-sm text-ink">
+                  {branch.is_published ? "Published in customer app" : "Unpublished (owner only)"}
+                </div>
+              </div>
+            )}
 
             <label className="block space-y-1.5 text-xs text-muted">
               <span>Contact phone</span>
@@ -249,6 +307,112 @@ export function BranchDetailsForm({
                 </label>
               </div>
             ) : null}
+          </div>
+
+          <input
+            type="hidden"
+            name="weekly_hours_json"
+            value={scheduleEnabled ? JSON.stringify(weeklyHours) : "null"}
+          />
+
+          <div className="rounded border border-line bg-canvas p-3.5 space-y-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <label className="inline-flex min-h-11 cursor-pointer items-center gap-2.5 text-xs font-medium text-ink">
+                <input
+                  type="checkbox"
+                  checked={scheduleEnabled}
+                  onChange={(e) => setScheduleEnabled(e.target.checked)}
+                  className="size-4 accent-accent"
+                />
+                <span>Use structured weekly schedule for Open now status</span>
+              </label>
+
+              {scheduleEnabled && (
+                <button
+                  type="button"
+                  onClick={() => setWeeklyHours(buildDefaultSchedule(is24Hours, openTime, closeTime))}
+                  className="min-h-11 rounded border border-control bg-surface px-3 py-2 text-xs font-medium text-ink transition-colors hover:border-ink/40"
+                >
+                  Apply daily hours to Mon–Sun
+                </button>
+              )}
+            </div>
+
+            {scheduleEnabled && (
+              <div className="space-y-2 pt-1">
+                {WEEKDAY_LABELS.map(({ key, label }) => {
+                  const dayIntervals = weeklyHours[key] ?? [];
+                  const first = dayIntervals[0];
+                  const isDayOpen = Boolean(first);
+                  const openVal = first?.open ?? "07:00";
+                  const closeVal = first?.close === "24:00" ? "23:59" : (first?.close ?? "23:00");
+                  return (
+                    <div
+                      key={key}
+                      className="flex flex-col gap-2 rounded border border-rule bg-surface p-2.5 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="w-10 text-xs font-semibold text-ink">{label}</span>
+                        <button
+                          type="button"
+                          aria-pressed={isDayOpen}
+                          onClick={() => {
+                            setWeeklyHours((prev) => ({
+                              ...prev,
+                              [key]: isDayOpen ? [] : [{ open: "07:00", close: "23:00" }],
+                            }));
+                          }}
+                          className={`min-h-11 rounded border px-3 py-1.5 text-xs font-medium transition-colors ${
+                            isDayOpen
+                              ? "border-navy-selected bg-navy-selected text-ink"
+                              : "border-control bg-canvas text-muted"
+                          }`}
+                        >
+                          {isDayOpen ? "Open" : "Closed"}
+                        </button>
+                      </div>
+
+                      {isDayOpen && (
+                        <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
+                          <label className="block space-y-1 text-xs text-muted">
+                            <span className="sm:sr-only">Opens</span>
+                            <input
+                              type="time"
+                              aria-label={`${label} opening time`}
+                              value={openVal}
+                              onChange={(e) => {
+                                const nextOpen = e.target.value || "07:00";
+                                setWeeklyHours((prev) => ({
+                                  ...prev,
+                                  [key]: [{ open: nextOpen, close: first?.close ?? "23:00" }],
+                                }));
+                              }}
+                              className="min-h-11 w-full rounded border border-control bg-canvas px-2.5 font-mono text-xs text-ink"
+                            />
+                          </label>
+                          <label className="block space-y-1 text-xs text-muted">
+                            <span className="sm:sr-only">Closes</span>
+                            <input
+                              type="time"
+                              aria-label={`${label} closing time`}
+                              value={closeVal}
+                              onChange={(e) => {
+                                const nextClose = e.target.value || "23:00";
+                                setWeeklyHours((prev) => ({
+                                  ...prev,
+                                  [key]: [{ open: first?.open ?? "07:00", close: nextClose }],
+                                }));
+                              }}
+                              className="min-h-11 w-full rounded border border-control bg-canvas px-2.5 font-mono text-xs text-ink"
+                            />
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </section>
 

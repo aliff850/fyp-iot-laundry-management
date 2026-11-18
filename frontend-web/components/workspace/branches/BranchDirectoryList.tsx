@@ -46,7 +46,7 @@ export function BranchDirectoryCard({
           <span className="break-words">{branch.name}</span>
         </button>
 
-        <div className="flex items-center gap-2 shrink-0 self-start sm:self-auto">
+        <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-auto">
           <span
             className={`inline-flex min-h-7 shrink-0 items-center whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium ${branch.service_status === "open"
               ? "border border-positive/30 bg-positive/10 text-positive"
@@ -55,6 +55,17 @@ export function BranchDirectoryCard({
           >
             {branch.service_status === "open" ? "Open to customers" : "Closed to customers"}
           </span>
+
+          {branch.is_published !== undefined && (
+            <span
+              className={`inline-flex min-h-7 shrink-0 items-center whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium ${branch.is_published
+                ? "border border-navy-selected bg-navy text-ink"
+                : "border border-line bg-raised text-muted"
+                }`}
+            >
+              {branch.is_published ? "Published" : "Unpublished"}
+            </span>
+          )}
 
           {owner && onDelete && (
             <button

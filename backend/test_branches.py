@@ -532,7 +532,7 @@ def test_get_branch_overview_owner_success(monkeypatch):
             "state": "active",
             "is_primary_manager": True,
         }
-    ], [], []]
+    ], [], [], []]
     @contextmanager
     def db(**_kwargs):
         yield conn
@@ -594,19 +594,54 @@ def test_legacy_fixture_lpg_mutations_are_retired(legacy_lpg_call):
 
 def test_get_branch_customer_reports_owner_manager_and_maintenance_access(monkeypatch):
     branch_id = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    report_id = UUID("12121212-1212-1212-1212-121212121212")
+    hist_id = UUID("34343434-3434-3434-3434-343434343434")
+    sample_row = {
+        "id": report_id,
+        "reference_code": "RPT-12121212",
+        "branch_id": branch_id,
+        "source_id": "washer-sim-01",
+        "asset_name": "Washer 01",
+        "asset_type": "washer",
+        "category": "door_lock",
+        "description": "Door latch stuck after cycle completed.",
+        "status": "received",
+        "source_kind": "customer",
+        "reporter_name": "Nurul Aisyah",
+        "contact_value": "+60128349102",
+        "investigation_notes": None,
+        "assigned_specialist_role": None,
+        "resolution_reason": None,
+        "created_at": "2026-11-18T00:00:00Z",
+        "updated_at": "2026-11-18T00:00:00Z",
+    }
+    sample_hist = {
+        "id": hist_id,
+        "report_id": report_id,
+        "action": "received",
+        "actor_role": "customer",
+        "note": "Submitted via public customer app",
+        "created_at": "2026-11-18T00:00:00Z",
+    }
     conn = MagicMock()
     conn.execute.return_value.fetchone.side_effect = [
         member("owner", "active"),
         {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},
         member("branch_manager", "active"),
         {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},
-        {"?column?": 1},  # assigned check for branch_manager
+        {"?column?": 1},
         member("machine_maintenance", "active"),
         {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},
-        {"?column?": 1},  # assigned check for machine_maintenance
+        {"?column?": 1},
         member("lpg_maintenance", "active"),
         {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},
-        {"?column?": 1},  # assigned check for lpg_maintenance
+        {"?column?": 1},
+    ]
+    conn.execute.return_value.fetchall.side_effect = [
+        [sample_row], [sample_hist],
+        [sample_row], [sample_hist],
+        [sample_row], [sample_hist],
+        [sample_row], [sample_hist],
     ]
     @contextmanager
     def db(**_kwargs):
@@ -614,20 +649,21 @@ def test_get_branch_customer_reports_owner_manager_and_maintenance_access(monkey
     monkeypatch.setattr(branches, "_database", db)
 
     res_owner = branches.get_branch_customer_reports(branch_id, user={"id": USER})
-    assert res_owner["summary"]["total"] == 4
-    assert res_owner["summary"]["received"] == 2
-    assert res_owner["summary"]["investigating"] == 1
-    assert res_owner["summary"]["resolved"] == 1
-    assert all(r["source_kind"] == "simulated" for r in res_owner["reports"])
+    assert res_owner["summary"]["total"] == 1
+    assert res_owner["summary"]["received"] == 1
+    assert res_owner["reports"][0]["reporter_name"] == "Nurul Aisyah"
+    assert res_owner["reports"][0]["reporter_contact"] == "+60128349102"
 
     res_manager = branches.get_branch_customer_reports(branch_id, user={"id": USER})
-    assert len(res_manager["reports"]) == 4
+    assert res_manager["reports"][0]["reporter_contact"] == "+60128349102"
 
     res_mm = branches.get_branch_customer_reports(branch_id, user={"id": USER})
-    assert len(res_mm["reports"]) == 4
+    assert res_mm["reports"][0]["reporter_name"] == ""
+    assert res_mm["reports"][0]["reporter_contact"] == ""
 
     res_lpg = branches.get_branch_customer_reports(branch_id, user={"id": USER})
-    assert len(res_lpg["reports"]) == 4
+    assert res_lpg["reports"][0]["reporter_name"] == ""
+    assert res_lpg["reports"][0]["reporter_contact"] == ""
 
 
 def test_get_branch_customer_reports_unassigned_personnel_forbidden(monkeypatch):
@@ -636,10 +672,10 @@ def test_get_branch_customer_reports_unassigned_personnel_forbidden(monkeypatch)
     conn.execute.return_value.fetchone.side_effect = [
         member("machine_maintenance", "active"),
         {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},
-        None,  # unassigned machine_maintenance
+        None,
         member("lpg_maintenance", "active"),
         {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},
-        None,  # unassigned lpg_maintenance
+        None,
     ]
     @contextmanager
     def db(**_kwargs):
@@ -657,23 +693,56 @@ def test_get_branch_customer_reports_unassigned_personnel_forbidden(monkeypatch)
 
 def test_customer_report_investigate_and_resolve_lifecycle(monkeypatch):
     branch_id = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+    report_id = UUID("12121212-1212-1212-1212-121212121212")
+    inv_row = {
+        "id": report_id,
+        "reference_code": "RPT-12121212",
+        "branch_id": branch_id,
+        "source_id": "washer-sim-01",
+        "asset_name": "Washer 01",
+        "asset_type": "washer",
+        "category": "door_lock",
+        "description": "Door latch stuck after cycle completed.",
+        "status": "investigating",
+        "source_kind": "customer",
+        "reporter_name": "Nurul Aisyah",
+        "contact_value": "+60128349102",
+        "investigation_notes": "Checked door lock sensor logs; inspecting latch solenoid.",
+        "assigned_specialist_role": "machine_maintenance",
+        "resolution_reason": None,
+        "created_at": "2026-11-18T00:00:00Z",
+        "updated_at": "2026-11-18T00:05:00Z",
+    }
+    res_row = {
+        **inv_row,
+        "status": "resolved",
+        "resolution_reason": "Lubricated door latch mechanism and verified smooth release after spin cycle.",
+        "updated_at": "2026-11-18T00:10:00Z",
+    }
     conn = MagicMock()
     conn.execute.return_value.fetchone.side_effect = [
         member("machine_maintenance", "active"),
         {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},
-        {"?column?": 1},  # assigned check for machine_maintenance
+        {"?column?": 1},
+        {"id": report_id},
         member("owner", "active"),
         {"id": branch_id, "name": "MSU Shah Alam", "organization_id": ORG},
+        {"id": report_id},
+    ]
+    conn.execute.return_value.fetchall.side_effect = [
+        [inv_row],
+        [{"id": UUID("44444444-4444-4444-4444-444444444444"), "report_id": report_id, "action": "investigating", "actor_role": "machine_maintenance", "note": "Checked door lock sensor logs.", "created_at": "2026-11-18T00:05:00Z"}],
+        [res_row],
+        [{"id": UUID("55555555-5555-5555-5555-555555555555"), "report_id": report_id, "action": "resolved", "actor_role": "owner", "note": "Lubricated latch.", "created_at": "2026-11-18T00:10:00Z"}],
     ]
     @contextmanager
     def db(**_kwargs):
         yield conn
     monkeypatch.setattr(branches, "_database", db)
 
-    # 1. Investigate RPT-1041 as machine_maintenance crew and flag machine_maintenance domain
     res_inv = branches.investigate_customer_report(
         branch_id,
-        "RPT-1041",
+        str(report_id),
         branches.CustomerReportInvestigateRequest(
             notes="Checked door lock sensor logs; inspecting latch solenoid.",
             assigned_specialist_role="machine_maintenance",
@@ -683,13 +752,13 @@ def test_customer_report_investigate_and_resolve_lifecycle(monkeypatch):
     assert res_inv["success"] is True
     assert res_inv["report"]["status"] == "investigating"
     assert res_inv["report"]["assigned_specialist_role"] == "machine_maintenance"
+    assert res_inv["report"]["reporter_contact"] == ""
     assert res_inv["report"]["history"][-1]["action"] == "investigating"
     assert res_inv["report"]["history"][-1]["actor_role"] == "machine_maintenance"
 
-    # 2. Resolve RPT-1041 with required resolution reason
     res_resolve = branches.resolve_customer_report(
         branch_id,
-        "RPT-1041",
+        str(report_id),
         branches.CustomerReportResolveRequest(
             action="resolve",
             reason="Lubricated door latch mechanism and verified smooth release after spin cycle.",
@@ -912,3 +981,39 @@ def test_update_branch_duplicate_name_and_unauthorized_roles(monkeypatch):
     assert exc_mgr.value.status_code == 403
 
 
+
+def test_branch_manager_cannot_change_branch_publication(monkeypatch):
+    branch_id = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+    existing_row = {
+        "id": branch_id,
+        "name": "MSU Shah Alam",
+        "primary_manager_user_id": UUID(USER),
+        "is_published": False,
+        "weekly_hours": None,
+    }
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.side_effect = [
+        member("branch_manager", "active"),
+        {"?column?": 1},
+        existing_row,
+        None,
+    ]
+    @contextmanager
+    def db(**_kwargs):
+        yield conn
+    monkeypatch.setattr(branches, "_database", db)
+
+    payload = branches.BranchUpdate(
+        name="MSU Shah Alam",
+        address="1 Jalan University",
+        city="Shah Alam",
+        region="Selangor",
+        postal_code="40100",
+        contact_phone="+60355216868",
+        opening_hours="07:00 - 23:00",
+        service_status="open",
+        is_published=True,
+    )
+    with pytest.raises(HTTPException) as exc:
+        branches.update_branch(branch_id, payload, user={"id": USER})
+    assert exc.value.status_code == 403

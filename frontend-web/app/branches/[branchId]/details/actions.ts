@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { updateBranchDetails } from "@/lib/auth/business";
+import { updateBranchDetails, type WeeklyHoursSchedule } from "@/lib/auth/business";
 
 export type UpdateBranchState = { message?: string; success?: boolean };
 
@@ -53,6 +53,29 @@ export async function updateWorkspaceBranch(
     return { success: false, message: "Coordinates are outside the valid range." };
   }
 
+  const isPublishedRaw = read("is_published");
+  const isPublished =
+    isPublishedRaw === "true"
+      ? true
+      : isPublishedRaw === "false"
+        ? false
+        : undefined;
+
+  let weeklyHours: WeeklyHoursSchedule | null | undefined = undefined;
+  const weeklyHoursRaw = read("weekly_hours_json");
+  if (typeof weeklyHoursRaw === "string" && weeklyHoursRaw.trim()) {
+    try {
+      const parsed = JSON.parse(weeklyHoursRaw);
+      if (parsed === null || (typeof parsed === "object" && !Array.isArray(parsed))) {
+        weeklyHours = parsed as WeeklyHoursSchedule | null;
+      } else {
+        return { success: false, message: "Weekly schedule format is invalid." };
+      }
+    } catch {
+      return { success: false, message: "Weekly schedule format is invalid." };
+    }
+  }
+
   const result = await updateBranchDetails(branchId, {
     name: String(read("name")).trim(),
     address: String(read("address")).trim(),
@@ -65,6 +88,8 @@ export async function updateWorkspaceBranch(
     latitude: lat,
     longitude: lng,
     ...(primaryManagerRaw ? { primary_manager_user_id: primaryManagerRaw } : {}),
+    ...(isPublished !== undefined ? { is_published: isPublished } : {}),
+    ...(weeklyHours !== undefined ? { weekly_hours: weeklyHours } : {}),
   });
 
   if (!result.ok) {

@@ -81,6 +81,21 @@ function emptyFallbackAnalytics(branchId: string, period: OverviewAnalyticsPerio
   };
 }
 
+export function selectRevenueSeriesValues(analytics: Pick<BranchOverviewAnalytics, "period" | "granularity" | "revenue_series">): {
+  isHourly: boolean;
+  heading: string;
+  datasetLabel: string;
+  values: number[];
+} {
+  const isHourly = analytics.period === "day" || analytics.granularity === "hour";
+  return {
+    isHourly,
+    heading: isHourly ? "Hourly estimated revenue" : "Daily estimated revenue",
+    datasetLabel: isHourly ? "Hourly revenue (RM)" : "Daily revenue (RM)",
+    values: analytics.revenue_series.map((pt) => Number(pt.period_revenue_myr || 0)),
+  };
+}
+
 export function PerformanceChart({
   branchId,
   initialAnalytics,
@@ -295,6 +310,11 @@ export function PerformanceChart({
     };
   }, [activeData.machines, activeData.programs, metricView, viewingAllBranches]);
 
+  const revenueView = useMemo(
+    () => selectRevenueSeriesValues(activeData),
+    [activeData]
+  );
+
   const revenueChartConfig = useMemo(() => {
     return (theme: ResolvedTheme): ChartConfiguration => {
       const series = activeData.revenue_series;
@@ -304,8 +324,8 @@ export function PerformanceChart({
           labels: series.map((pt) => pt.label),
           datasets: [
             {
-              label: "Cumulative revenue (RM)",
-              data: series.map((pt) => Number(pt.cumulative_revenue_myr || 0)),
+              label: revenueView.datasetLabel,
+              data: revenueView.values,
               borderColor: theme.accent,
               backgroundColor: withHexAlpha(theme.accent, "26"),
               fill: true,
@@ -342,7 +362,7 @@ export function PerformanceChart({
         },
       };
     };
-  }, [activeData.granularity, activeData.revenue_series]);
+  }, [activeData.granularity, activeData.revenue_series, revenueView.datasetLabel, revenueView.values]);
 
   const gasChartConfig = useMemo(() => {
     return (theme: ResolvedTheme): ChartConfiguration => {
@@ -669,11 +689,11 @@ export function PerformanceChart({
         />
       )}
 
-      {/* Section 2: Cumulative Estimated Revenue */}
+      {/* Section 2: Estimated Revenue Timeline (Hourly for Today; Cumulative for 7d/30d) */}
       <div className="rounded-md border border-rule bg-raised p-4 sm:p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-base font-bold text-ink">
-            Cumulative estimated revenue
+            {revenueView.heading}
           </h3>
           <span className="text-xs font-medium text-faint">
             {activeData.granularity === "hour" ? "Hourly MYT" : "Daily MYT"}
@@ -687,7 +707,7 @@ export function PerformanceChart({
             </div>
           ) : (
             <ChartCanvas
-              ariaLabel="Cumulative estimated revenue line chart"
+              ariaLabel={`${revenueView.heading} line chart`}
               buildConfig={revenueChartConfig}
             />
           )}

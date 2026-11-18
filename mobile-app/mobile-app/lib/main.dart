@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'screens/landing_screen.dart';
-import 'theme/app_theme.dart';
+import 'screens/discovery_screen.dart';
+import 'theme/spinsense_theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -13,10 +13,10 @@ class SpinSenseApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'MSU SpinSense',
+      title: 'SpinSense',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.lightTheme,
-      home: const LandingScreen(),
+      theme: SpinSenseTheme.darkTheme,
+      home: const DiscoveryScreen(),
     );
   }
 }

@@ -6,6 +6,7 @@ import { Notice } from "@/components/auth/AuthForm";
 import { SignOutButton } from "@/components/auth/SignOutButton";
 import { WorkspaceShell } from "@/components/workspace/layout/WorkspaceShell";
 import { PushNotificationToggle } from "@/components/workspace/notifications/PushNotificationToggle";
+import { OrganizationLogoCard } from "@/components/workspace/account/OrganizationLogoCard";
 import { getMembership } from "@/lib/auth/business";
 import { createClient } from "@/lib/supabase/server";
 
@@ -175,6 +176,13 @@ export default async function AccountPage() {
             </div>
           </div>
         </section>
+
+        {isOwner && (
+          <OrganizationLogoCard
+            organizationName={orgName}
+            initialLogoUrl={membership.organization?.logo_url ?? null}
+          />
+        )}
 
         {["owner", "branch_manager", "machine_maintenance", "lpg_maintenance"].includes(
           membership.role ?? "",

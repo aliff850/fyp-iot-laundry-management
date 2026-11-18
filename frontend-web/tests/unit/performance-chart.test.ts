@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToString } from "react-dom/server";
 import Chart from "chart.js/auto";
-import { PerformanceChart } from "@/components/workspace/branches/PerformanceChart";
+import {
+  PerformanceChart,
+  selectRevenueSeriesValues,
+} from "@/components/workspace/branches/PerformanceChart";
 import type { BranchOverviewAnalytics } from "@/lib/auth/business";
 
 const BRANCH_ID = "22222222-2222-2222-2222-222222222222";
@@ -135,7 +138,7 @@ describe("PerformanceChart (Pi-aligned Chart.js Branch Overview Analytics)", () 
     expect(text).toContain("Machine metrics");
     expect(text).toContain("Running minutes");
     expect(text).toContain("Estimated revenue");
-    expect(text).toContain("Cumulative estimated revenue");
+    expect(text).toContain("Hourly estimated revenue");
     expect(text).toContain("Hourly MYT");
     expect(text).toContain("Average environmental gas");
     expect(text).toContain("2 nodes averaged");
@@ -371,7 +374,7 @@ describe("PerformanceChart (Pi-aligned Chart.js Branch Overview Analytics)", () 
     );
     const text = raw.replace(/<!--.*?-->/g, "");
     expect(text).not.toContain("Machine metrics");
-    expect(text).toContain("Cumulative estimated revenue");
+    expect(text).toContain("Hourly estimated revenue");
     expect(text).toContain("Average environmental gas");
     expect(text).toContain("Customer complaints");
     expect(text).toContain("Branch comparison");
@@ -384,5 +387,48 @@ describe("PerformanceChart (Pi-aligned Chart.js Branch Overview Analytics)", () 
     expect(text).toContain("Normal Wash");
     expect(text).not.toContain("·");
     expect(text).not.toMatch(/WF-0\d|CR-0\d|FM-0\d|RP-0\d/);
+  });
+
+  it("plots hourly period revenue for Today and daily period revenue for 7 days and 30 days", () => {
+    const dayView = selectRevenueSeriesValues(buildAnalytics({ period: "day", granularity: "hour" }));
+    expect(dayView.isHourly).toBe(true);
+    expect(dayView.heading).toBe("Hourly estimated revenue");
+    expect(dayView.datasetLabel).toBe("Hourly revenue (RM)");
+    expect(dayView.values).toEqual([15, 22.5]);
+
+    const weekAnalytics = buildAnalytics({
+      period: "week",
+      granularity: "day",
+      revenue_series: [
+        { bucket: "2026-11-14", label: "14 Nov", period_revenue_myr: "15.00", cumulative_revenue_myr: "15.00" },
+        { bucket: "2026-11-15", label: "15 Nov", period_revenue_myr: "0.00", cumulative_revenue_myr: "15.00" },
+        { bucket: "2026-11-16", label: "16 Nov", period_revenue_myr: "22.50", cumulative_revenue_myr: "37.50" },
+      ],
+    });
+    const weekView = selectRevenueSeriesValues(weekAnalytics);
+    expect(weekView.isHourly).toBe(false);
+    expect(weekView.heading).toBe("Daily estimated revenue");
+    expect(weekView.datasetLabel).toBe("Daily revenue (RM)");
+    expect(weekView.values).toEqual([15, 0, 22.5]);
+
+    const monthView = selectRevenueSeriesValues(
+      buildAnalytics({
+        period: "month",
+        granularity: "day",
+        revenue_series: weekAnalytics.revenue_series,
+      })
+    );
+    expect(monthView.isHourly).toBe(false);
+    expect(monthView.heading).toBe("Daily estimated revenue");
+    expect(monthView.values).toEqual([15, 0, 22.5]);
+
+    const weekHtml = renderToString(
+      React.createElement(PerformanceChart, {
+        branchId: BRANCH_ID,
+        initialAnalytics: weekAnalytics,
+      })
+    );
+    expect(weekHtml).toContain("Daily estimated revenue");
+    expect(weekHtml).toContain("Daily MYT");
   });
 });

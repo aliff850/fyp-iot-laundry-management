@@ -565,7 +565,15 @@ function renderOverviewAnalytics(data) {
   renderMachineBreakdownTable(machines);
   renderMachineMetricsChart(data);
 
-  // 2. Cumulative estimated revenue line chart
+  // 2. Revenue line chart (per-period revenue across all machines: hourly for Today, daily for 7d/30d)
+  const isHourlyRevenue = data?.period === "day" || data?.granularity === "hour";
+  const revenueHeadingText = isHourlyRevenue ? "Hourly estimated revenue" : "Daily estimated revenue";
+  if (byId("overviewRevenueChartHeading")) {
+    byId("overviewRevenueChartHeading").textContent = revenueHeadingText;
+  }
+  if (byId("overviewRevenueChart")) {
+    byId("overviewRevenueChart").setAttribute("aria-label", `${revenueHeadingText} by period`);
+  }
   if (byId("overviewRevenueWindow")) {
     byId("overviewRevenueWindow").textContent = data?.granularity === "hour" ? "Hourly MYT" : "Daily MYT";
   }
@@ -581,8 +589,8 @@ function renderOverviewAnalytics(data) {
         labels: revenueSeries.map(pt => pt.label),
         datasets: [
           {
-            label: "Cumulative revenue (RM)",
-            data: revenueSeries.map(pt => Number(pt.cumulative_revenue_myr || 0)),
+            label: isHourlyRevenue ? "Hourly revenue (RM)" : "Daily revenue (RM)",
+            data: revenueSeries.map(pt => Number(pt.period_revenue_myr || 0)),
             borderColor: palette.positive,
             backgroundColor: "rgba(46, 160, 67, 0.16)",
             fill: true,

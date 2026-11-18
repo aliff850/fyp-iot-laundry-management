@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToString } from "react-dom/server";
 import { BranchDetailsForm } from "@/components/workspace/branches/BranchDetailsForm";
+import { BranchDirectoryCard } from "@/components/workspace/branches/BranchDirectoryList";
+import { OrganizationLogoCard } from "@/components/workspace/account/OrganizationLogoCard";
 import type { BranchDetail, ManagerOption } from "@/lib/auth/business";
 
 vi.mock("next/navigation", () => ({
@@ -81,8 +83,74 @@ describe("BranchDetailsForm component", () => {
     expect(text).toContain("Operating Hours");
     expect(text).toContain("Address &amp; Location");
     expect(text).toContain("Siti Manager");
+    expect(text).toContain("Unpublished (owner only)");
     expect(text).not.toContain("Delete Branch");
     expect(text).toContain("Save changes");
+  });
+
+  it("renders customer directory visibility selector and weekly schedule controls for owner", () => {
+    const raw = renderToString(
+      React.createElement(BranchDetailsForm, {
+        branch: {
+          ...mockBranch,
+          is_published: true,
+          weekly_hours: {
+            mon: [{ open: "08:00", close: "22:00" }],
+            tue: [{ open: "08:00", close: "22:00" }],
+            wed: [{ open: "08:00", close: "22:00" }],
+            thu: [{ open: "08:00", close: "22:00" }],
+            fri: [{ open: "08:00", close: "22:00" }],
+            sat: [{ open: "08:00", close: "22:00" }],
+            sun: [],
+          },
+        },
+        isOwner: true,
+        managers: mockManagers,
+      }),
+    );
+    const text = raw.replace(/<!--.*?-->/g, "");
+    expect(text).toContain("Customer directory visibility");
+    expect(text).toContain("Published in customer app");
+    expect(text).toContain("Use structured weekly schedule for Open now status");
+    expect(text).toContain("Apply daily hours to Mon–Sun");
+  });
+
+  it("renders OrganizationLogoCard with initials fallback and uploaded logo", () => {
+    const noLogoRaw = renderToString(
+      React.createElement(OrganizationLogoCard, {
+        organizationName: "SpinSense Laundry",
+        initialLogoUrl: null,
+      }),
+    );
+    expect(noLogoRaw).toContain("SL");
+    expect(noLogoRaw).toContain("Public organization logo");
+    expect(noLogoRaw).toContain("Upload logo");
+
+    const withLogoRaw = renderToString(
+      React.createElement(OrganizationLogoCard, {
+        organizationName: "SpinSense Laundry",
+        initialLogoUrl: "https://example.supabase.co/storage/v1/object/public/organization-logos/org/logo.png",
+      }),
+    );
+    expect(withLogoRaw).toContain("Remove logo");
+    expect(withLogoRaw).toContain("SpinSense Laundry public logo");
+  });
+
+  it("renders Published and Unpublished customer directory badges on BranchDirectoryCard", () => {
+    const unpublishedRaw = renderToString(
+      React.createElement(BranchDirectoryCard, {
+        branch: { ...mockBranch, is_published: false },
+      }),
+    );
+    expect(unpublishedRaw).toContain("Open to customers");
+    expect(unpublishedRaw).toContain("Unpublished");
+
+    const publishedRaw = renderToString(
+      React.createElement(BranchDirectoryCard, {
+        branch: { ...mockBranch, is_published: true },
+      }),
+    );
+    expect(publishedRaw).toContain("Published");
   });
 });
 
