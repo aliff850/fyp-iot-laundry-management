@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pymysql
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 BACKUP = Path("/home/aliff850/edge_backups/machine-controls-20261112/edge_iot-pre-machine.sql")
 
 

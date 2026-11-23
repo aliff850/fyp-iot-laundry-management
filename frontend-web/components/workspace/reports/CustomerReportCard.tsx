@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import Link from "next/link";
 import {
   AlertCircle,
   Building2,
@@ -116,6 +117,19 @@ export function CustomerReportCard({
                   {report.assigned_specialist_role.replace("_", " ")}
                 </span>
               </span>
+            )}
+            {report.linked_incident && (
+              <Link
+                href={`/branches/${report.branch_id}/incidents/${report.linked_incident.id}`}
+                className="inline-flex items-center gap-1 rounded border border-accent/40 bg-accent/10 px-2 py-0.5 text-[11px] font-semibold text-accent tabular-nums transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+              >
+                <span>
+                  Linked: {report.linked_incident.reference_code}
+                  {report.linked_incident.fault_code
+                    ? ` · ${report.linked_incident.fault_code}`
+                    : ""}
+                </span>
+              </Link>
             )}
           </div>
 

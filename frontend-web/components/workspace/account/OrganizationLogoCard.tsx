@@ -11,6 +11,7 @@ import {
 export interface OrganizationLogoCardProps {
   organizationName: string;
   initialLogoUrl: string | null;
+  embedded?: boolean;
 }
 
 function initialsFromName(name: string): string {
@@ -23,6 +24,7 @@ function initialsFromName(name: string): string {
 export function OrganizationLogoCard({
   organizationName,
   initialLogoUrl,
+  embedded = false,
 }: OrganizationLogoCardProps) {
   const initialState: OrganizationLogoState = { logoUrl: initialLogoUrl };
   const [uploadState, uploadAction, uploadPending] = useActionState(
@@ -51,11 +53,8 @@ export function OrganizationLogoCard({
     (Boolean(uploadState.message) && uploadState.success === false) ||
     (Boolean(removeState.message) && removeState.success === false);
 
-  return (
-    <section
-      aria-labelledby="org-logo-heading"
-      className="rounded-md border border-rule bg-surface p-4 sm:p-6"
-    >
+  const content = (
+    <>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3.5">
           {activeLogoUrl ? (
@@ -77,9 +76,9 @@ export function OrganizationLogoCard({
           )}
 
           <div className="min-w-0">
-            <h2 id="org-logo-heading" className="text-base font-semibold text-ink">
+            <h3 id="org-logo-heading" className="text-sm font-semibold text-ink">
               Public organization logo
-            </h2>
+            </h3>
             <p className="mt-0.5 text-xs text-muted">
               PNG, JPEG, or WebP up to 1 MB for customer map markers
             </p>
@@ -91,7 +90,7 @@ export function OrganizationLogoCard({
             <button
               type="submit"
               disabled={uploadPending || removePending}
-              className="min-h-11 w-full rounded-md border border-control bg-canvas px-4 py-2 text-xs font-semibold text-muted transition-colors hover:border-ink/40 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-50 sm:w-auto"
+              className="min-h-11 w-full rounded-md border border-control bg-canvas px-4 py-2 text-xs font-semibold text-muted transition-colors hover:border-ink/40 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:opacity-50 sm:w-auto"
             >
               {removePending ? "Removing…" : "Remove logo"}
             </button>
@@ -102,10 +101,8 @@ export function OrganizationLogoCard({
       {feedback && (
         <p
           role={feedbackIsError ? "alert" : "status"}
-          className={`mt-4 rounded-md border px-3.5 py-2.5 text-xs ${
-            feedbackIsError
-              ? "border-negative/40 bg-negative/10 text-negative"
-              : "border-positive/40 bg-positive/10 text-positive"
+          className={`mt-4 rounded-md border-l-2 bg-raised px-4 py-3 text-sm text-ink ${
+            feedbackIsError ? "border-negative" : "border-positive"
           }`}
         >
           {feedback}
@@ -136,18 +133,35 @@ export function OrganizationLogoCard({
               }
               setSelectedFileName(file.name);
             }}
-            className="min-h-11 w-full rounded-md border border-control bg-canvas px-3 py-2 text-xs text-ink file:mr-3 file:rounded file:border-0 file:bg-raised file:px-2.5 file:py-1.5 file:text-xs file:font-semibold file:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+            className="min-h-11 w-full min-w-0 rounded-md border border-control bg-canvas px-3 py-2 text-xs text-ink file:mr-3 file:rounded file:border-0 file:bg-raised file:px-2.5 file:py-1.5 file:text-xs file:font-semibold file:text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent"
           />
         </label>
 
         <button
           type="submit"
           disabled={uploadPending || removePending || Boolean(clientError) || !selectedFileName}
-          className="min-h-11 w-full whitespace-nowrap rounded-md border border-navy-selected bg-navy px-4 py-2 text-xs font-semibold text-ink transition-colors hover:bg-navy-selected focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-50 sm:w-auto"
+          className="min-h-11 w-full whitespace-nowrap rounded-md border border-control bg-navy px-4 py-2 text-xs font-semibold text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:opacity-50 sm:w-auto"
         >
           {uploadPending ? "Uploading…" : "Upload logo"}
         </button>
       </form>
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div aria-labelledby="org-logo-heading" className="border-t border-rule pt-6">
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <section
+      aria-labelledby="org-logo-heading"
+      className="rounded-md border border-rule bg-surface p-4 sm:p-6"
+    >
+      {content}
     </section>
   );
 }

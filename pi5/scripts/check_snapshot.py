@@ -24,7 +24,7 @@ def main() -> None:
             value = value[1:-1]
         if key.strip() and key.strip() not in os.environ:
             os.environ[key.strip()] = value
-    sys.path.insert(0, str(Path(__file__).parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dashboard"))
     import dashboard
 
     try:

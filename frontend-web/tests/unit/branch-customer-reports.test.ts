@@ -206,4 +206,50 @@ describe("CustomerReportTriageModal component", () => {
     expect(text).toContain("Checked inlet water pressure");
     expect(raw).not.toContain("font-mono");
   });
+
+  it("renders linked active incident selector and deep-link badge without font-mono", () => {
+    const linkedReport: CustomerReportItem = {
+      ...mockReportInvestigating,
+      linked_incident_id: "inc-99",
+      linked_incident: {
+        id: "inc-99",
+        reference_code: "INC-9099",
+        asset_name: "Washer #01 (15kg)",
+        fault_code: "E01",
+        severity: "critical",
+        edge_condition_state: "active",
+        workflow_state: "open",
+      },
+    };
+    const rawModal = renderToString(
+      React.createElement(CustomerReportTriageModal, {
+        report: linkedReport,
+        branchId: "b-01",
+        userRole: "owner",
+        openIncidents: [
+          {
+            id: "inc-99",
+            reference_code: "INC-9099",
+            source_id: "washer-1",
+            asset_name: "Washer #01 (15kg)",
+            domain: "machine",
+            severity: "critical",
+            fault_code: "E01",
+            fault_name: "Water Inlet Failure",
+            edge_condition_state: "active",
+            workflow_state: "open",
+            summary: "Machine fault active: E01",
+            opened_at: "2026-11-23T09:00:00Z",
+          },
+        ],
+        onClose: () => {},
+        onReportUpdated: () => {},
+      })
+    );
+    const cleanModal = rawModal.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
+    expect(cleanModal).toContain("Link to active incident");
+    expect(cleanModal).toContain("INC-9099 — Washer #01 (15kg) (E01)");
+    expect(cleanModal).toContain("Open linked incident INC-9099");
+    expect(rawModal).not.toContain("font-mono");
+  });
 });

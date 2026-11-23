@@ -138,7 +138,7 @@ class EdgeSyncWorker:
                     arguments = command["arguments"]
                     expires_at = datetime.fromisoformat(command["expires_at"].replace("Z", "+00:00"))
                     if (expires_at.tzinfo is None or expires_at <= datetime.now(timezone.utc)
-                            or action not in {"start", "pause", "resume", "stop", "set_settings"}
+                            or action not in {"start", "pause", "resume", "stop", "set_settings", "clear_fault"}
                             or not isinstance(arguments, dict)):
                         continue
                     with self.get_db_connection().cursor() as cursor:
@@ -1231,6 +1231,111 @@ class EdgeSyncWorker:
             logger.warning("Machine cycle sync failed: %s", type(error).__name__)
             return 0
 
+    def sync_incidents(self) -> int:
+        """Upload ordered edge incident transitions and mark only cloud-accepted IDs."""
+        if self.status != "active" or not self.gateway_id or not self.credential:
+            return 0
+        try:
+            conn = self.get_db_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """SELECT transition_id, source_id, episode_id, domain, condition_key,
+                              transition_type, severity, fault_code, fault_name, summary,
+                              rule_version, revision, evidence_json, occurred_at
+                       FROM edge_incident_outbox
+                       WHERE gateway_id=%s AND is_synced=0
+                       ORDER BY id ASC
+                       LIMIT 25""",
+                    (self.gateway_id,),
+                )
+                rows = cursor.fetchall()
+            conn.commit()
+        except Exception as err:
+            err_code = err.args[0] if getattr(err, "args", None) else None
+            if err_code == 1146:
+                return 0
+            logger.warning("Edge incident outbox read failed: %s", type(err).__name__)
+            return 0
+
+        if not rows:
+            return 0
+
+        transitions = []
+        submitted_ids = set()
+        for row in rows:
+            tid = str(row["transition_id"])
+            submitted_ids.add(tid)
+            raw_ev = row.get("evidence_json")
+            if isinstance(raw_ev, str):
+                try:
+                    raw_ev = json.loads(raw_ev)
+                except ValueError:
+                    raw_ev = {}
+            occ = row["occurred_at"]
+            occ_iso = occ.isoformat() if hasattr(occ, "isoformat") else str(occ)
+            transitions.append(
+                {
+                    "transition_id": tid,
+                    "source_id": row["source_id"],
+                    "episode_id": str(row["episode_id"]),
+                    "domain": row["domain"],
+                    "condition_key": row["condition_key"],
+                    "transition_type": row["transition_type"],
+                    "severity": row["severity"],
+                    "fault_code": row.get("fault_code"),
+                    "fault_name": row.get("fault_name"),
+                    "summary": row["summary"],
+                    "rule_version": row["rule_version"],
+                    "revision": int(row["revision"]),
+                    "evidence": raw_ev if isinstance(raw_ev, dict) else {},
+                    "occurred_at": occ_iso,
+                }
+            )
+
+        try:
+            resp = self.session.post(
+                f"{CLOUD_BASE_URL}/edge/incidents",
+                json={"gateway_id": self.gateway_id, "transitions": transitions},
+                headers={"Authorization": f"Bearer {self.credential}"},
+                timeout=API_TIMEOUT_SECONDS,
+            )
+            if resp.status_code != 200:
+                logger.warning("Edge incident sync returned HTTP %d", resp.status_code)
+                return 0
+            body = resp.json()
+            accepted = body.get("accepted_ids", [])
+            rejected = body.get("rejected", [])
+            if not isinstance(accepted, list) or any(t not in submitted_ids for t in accepted):
+                logger.warning("Cloud incident acknowledgement included invalid transition ID")
+                return 0
+            conn = self.get_db_connection()
+            with conn.cursor() as cursor:
+                if accepted:
+                    placeholders = ", ".join(["%s"] * len(accepted))
+                    cursor.execute(
+                        f"""UPDATE edge_incident_outbox
+                            SET is_synced=1, sync_error=NULL, synced_at=UTC_TIMESTAMP(6)
+                            WHERE gateway_id=%s AND transition_id IN ({placeholders})""",
+                        (self.gateway_id, *accepted),
+                    )
+                if isinstance(rejected, list):
+                    for rej in rejected:
+                        if not isinstance(rej, dict):
+                            continue
+                        rtid = rej.get("transition_id")
+                        if rtid in submitted_ids and not rej.get("retryable", True):
+                            cursor.execute(
+                                """UPDATE edge_incident_outbox
+                                   SET is_synced=-1, sync_error=%s
+                                   WHERE gateway_id=%s AND transition_id=%s""",
+                                (str(rej.get("reason") or "rejected")[:255], self.gateway_id, rtid),
+                            )
+            conn.commit()
+            return len(accepted)
+        except (requests.exceptions.RequestException, ValueError) as error:
+            logger.warning("Edge incident sync failed: %s", type(error).__name__)
+            return 0
+
     def close(self):
         if self.connection and self.connection.open:
             self.connection.close()
@@ -1246,6 +1351,7 @@ def run_worker_iteration(worker: EdgeSyncWorker) -> None:
     worker.run_sync_cycle()
     if worker.status == "active":
         worker.sync_machine_cycles()
+        worker.sync_incidents()
 
 
 def main():

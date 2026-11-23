@@ -29,6 +29,8 @@ class WeeklyHoursCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final trimmedHoursText = openingHoursText?.trim() ?? '';
+    final hasOpeningHoursText = trimmedHoursText.isNotEmpty;
     final hasStructured = weeklyHours != null && weeklyHours!.isNotEmpty;
 
     return Card(
@@ -37,17 +39,21 @@ class WeeklyHoursCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Opening hours',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                const SizedBox(width: 8),
-                Flexible(child: StatusBadge.fromHoursStatus(hoursStatus)),
-              ],
+            SizedBox(
+              width: double.infinity,
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text(
+                    'Opening hours',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  StatusBadge.fromHoursStatus(hoursStatus),
+                ],
+              ),
             ),
             const SizedBox(height: 8),
             Text(
@@ -56,13 +62,40 @@ class WeeklyHoursCard extends StatelessWidget {
                     color: SpinSenseColors.faint,
                   ),
             ),
-            if (openingHoursText != null && openingHoursText!.trim().isNotEmpty) ...[
-              const SizedBox(height: 10),
-              Text(
-                openingHoursText!.trim(),
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: SpinSenseColors.muted,
+            if (hasOpeningHoursText) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: SpinSenseColors.raised,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: SpinSenseColors.rule),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.schedule_rounded,
+                      size: 20,
+                      color: hoursStatus == HoursStatus.openRegularHours
+                          ? SpinSenseColors.positive
+                          : SpinSenseColors.muted,
                     ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        trimmedHoursText,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
+                          color: SpinSenseColors.ink,
+                          height: 1.25,
+                          fontFeatures: [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
             if (hasStructured) ...[
@@ -75,15 +108,15 @@ class WeeklyHoursCard extends StatelessWidget {
                     ? 'Closed'
                     : intervals.map((e) => e.displayRange).join(', ');
                 return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  padding: const EdgeInsets.symmetric(vertical: 6),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
                         day.value,
                         style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
                           color: SpinSenseColors.muted,
                         ),
                       ),
@@ -93,7 +126,8 @@ class WeeklyHoursCard extends StatelessWidget {
                           rangeText,
                           textAlign: TextAlign.right,
                           style: const TextStyle(
-                            fontSize: 13,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
                             color: SpinSenseColors.ink,
                             fontFeatures: [FontFeature.tabularFigures()],
                           ),
@@ -103,13 +137,24 @@ class WeeklyHoursCard extends StatelessWidget {
                   ),
                 );
               }),
-            ] else if (hoursStatus == HoursStatus.hoursUnknown) ...[
-              const SizedBox(height: 8),
-              Text(
-                'Structured weekly hours have not been configured for this branch.',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: SpinSenseColors.faint,
-                    ),
+            ] else if (!hasOpeningHoursText) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: SpinSenseColors.raised,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: SpinSenseColors.rule),
+                ),
+                child: const Text(
+                  'Operating hours unavailable',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                    color: SpinSenseColors.muted,
+                  ),
+                ),
               ),
             ],
           ],

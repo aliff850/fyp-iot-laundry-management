@@ -67,12 +67,58 @@ def test_weekly_hours_overnight_closure_override_and_missing_unknown():
     assert reg_still_true is True
     assert closed_reason == "closed_by_operator"
 
-    # Missing schedule yields unknown (None)
+    # Missing schedule and opening_hours yields unknown (None)
     missing_open, _, missing_reason = branch_schedules.compute_open_now(
         None, "Asia/Kuala_Lumpur", "open", now_utc=tue_0130_myt
     )
     assert missing_open is None
     assert missing_reason == "hours_unknown"
+
+    # Explicit 24-hour opening_hours fallback without structured weekly_hours resolves open_regular_hours
+    for label_24h in ("24 Hours", "24/7", "00:00 - 24:00", "24 Hours / Always Open"):
+        open_24h, reg_24h, reason_24h = branch_schedules.compute_open_now(
+            None,
+            "Asia/Kuala_Lumpur",
+            "open",
+            now_utc=tue_0130_myt,
+            opening_hours=label_24h,
+        )
+        assert open_24h is True
+        assert reg_24h is True
+        assert reason_24h == "open_regular_hours"
+
+    # Closed operator status still overrides 24-hour opening_hours
+    closed_24h, reg_closed_24h, reason_closed_24h = branch_schedules.compute_open_now(
+        None,
+        "Asia/Kuala_Lumpur",
+        "closed",
+        now_utc=tue_0130_myt,
+        opening_hours="24 Hours",
+    )
+    assert closed_24h is False
+    assert reg_closed_24h is True
+    assert reason_closed_24h == "closed_by_operator"
+
+    # Daily HH:MM - HH:MM opening_hours evaluates accurately in branch timezone (10:00 MYT vs 01:30 MYT)
+    tue_1000_myt = datetime(2026, 11, 17, 2, 0, tzinfo=timezone.utc)
+    open_day, _, reason_day = branch_schedules.compute_open_now(
+        None, "Asia/Kuala_Lumpur", "open", now_utc=tue_1000_myt, opening_hours="07:00 - 23:00"
+    )
+    assert open_day is True
+    assert reason_day == "open_regular_hours"
+
+    closed_night, _, reason_night = branch_schedules.compute_open_now(
+        None, "Asia/Kuala_Lumpur", "open", now_utc=tue_0130_myt, opening_hours="07:00 - 23:00"
+    )
+    assert closed_night is False
+    assert reason_night == "closed_regular_hours"
+
+    # Ambiguous free text stays hours_unknown
+    ambig_open, _, ambig_reason = branch_schedules.compute_open_now(
+        None, "Asia/Kuala_Lumpur", "open", now_utc=tue_1000_myt, opening_hours="Call for holiday hours"
+    )
+    assert ambig_open is None
+    assert ambig_reason == "hours_unknown"
 
 
 def test_image_magic_bytes_and_dimension_validation():
@@ -304,3 +350,138 @@ def test_public_and_logo_routes_not_blocked_by_prototype_middleware():
     assert res_avail.status_code != 410
     res_logo = client.post("/organization/logo", json={"content_type": "image/png", "data_base64": "AAAA"})
     assert res_logo.status_code != 410
+
+
+def test_public_branch_availability_projects_ordered_branch_images(monkeypatch):
+    img_id = UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = {
+        "id": BRANCH_A,
+        "organization_id": ORG_A,
+        "name": "MSU Shah Alam",
+        "address": "1 Jalan University",
+        "city": "Shah Alam",
+        "region": "Selangor",
+        "postal_code": "40100",
+        "contact_phone": "+60123456789",
+        "opening_hours": "07:00 - 23:00",
+        "weekly_hours": None,
+        "latitude": 3.07,
+        "longitude": 101.55,
+        "service_status": "open",
+        "organization_name": "SpinCo",
+        "organization_logo_url": None,
+        "business_timezone": "Asia/Kuala_Lumpur",
+    }
+    conn.execute.return_value.fetchall.side_effect = [
+        [],  # devices
+        [{"id": img_id, "image_url": "https://proj.supabase.co/storage/v1/object/public/branch-images/a.png", "storage_path": "internal/secret.png"}],
+        [],  # machine_cycles
+    ]
+
+    @contextmanager
+    def db(**_kwargs):
+        yield conn
+
+    monkeypatch.setattr(public_customer, "_database", db)
+    res = public_customer.get_public_branch_availability(BRANCH_A)
+    assert res["branch"]["images"] == [
+        {"id": str(img_id), "image_url": "https://proj.supabase.co/storage/v1/object/public/branch-images/a.png"}
+    ]
+    assert "storage_path" not in res["branch"]["images"][0]
+    assert res["peak_hours"]["has_data"] is False
+    assert res["peak_hours"]["default_bucket"] == "overall"
+
+
+def test_compute_public_peak_demand_hours_normalizes_weekdays_and_omits_financials():
+    # Saturday 2026-11-21T12:00 UTC == 20:00 MYT; Monday 2026-11-16T02:00 UTC == 10:00 MYT
+    now_sat = datetime(2026, 11, 21, 14, 0, tzinfo=timezone.utc)
+    cycles = [
+        # Two Saturday evening overlaps (19:30 - 20:30 MYT => 30 min in 19:00, 30 min in 20:00 each)
+        {
+            "started_at": datetime(2026, 11, 21, 11, 30, tzinfo=timezone.utc),
+            "finished_at": datetime(2026, 11, 21, 12, 30, tzinfo=timezone.utc),
+        },
+        {
+            "started_at": datetime(2026, 11, 21, 12, 0, tzinfo=timezone.utc),
+            "finished_at": datetime(2026, 11, 21, 13, 0, tzinfo=timezone.utc),
+        },
+        # Lighter Monday morning session (10:00 - 10:15 MYT => 15 min vs Saturday 90 min at 20:00 MYT)
+        {
+            "started_at": datetime(2026, 11, 16, 2, 0, tzinfo=timezone.utc),
+            "finished_at": datetime(2026, 11, 16, 2, 15, tzinfo=timezone.utc),
+        },
+    ]
+
+    result = public_customer.compute_public_peak_demand_hours(
+        cycles, timezone_name="Asia/Kuala_Lumpur", now_utc=now_sat
+    )
+    assert result["has_data"] is True
+    assert result["default_bucket"] == "sat"
+    assert result["buckets"]["sat"]["peak_hour"] == 20
+    assert result["buckets"]["sat"]["peak_hour_label"] == "20:00"
+    assert result["buckets"]["sat"]["hours"][20]["busy_pct"] == 100
+    assert result["buckets"]["sat"]["hours"][20]["level"] == "busy"
+    # Monday 10:00 is 15 / 90 = 17% (quiet compared to branch Saturday peak)
+    assert result["buckets"]["mon"]["hours"][10]["busy_pct"] == 17
+    assert result["buckets"]["mon"]["hours"][10]["level"] == "quiet"
+    assert result["buckets"]["overall"]["has_data"] is True
+    assert result["buckets"]["overall"]["peak_hour"] == 20
+    # Privacy check: no raw cycle counts or revenue fields
+    assert "completed_cycles" not in result["buckets"]["overall"]["hours"][20]
+    assert "estimated_revenue_myr" not in result["buckets"]["overall"]["hours"][20]
+
+    # When checked on Tuesday (no Tuesday data yet), default_bucket falls back cleanly to 'overall'
+    now_tue = datetime(2026, 11, 17, 4, 0, tzinfo=timezone.utc)
+    fallback_res = public_customer.compute_public_peak_demand_hours(
+        cycles, timezone_name="Asia/Kuala_Lumpur", now_utc=now_tue
+    )
+    assert fallback_res["default_bucket"] == "overall"
+
+
+def test_public_branches_list_includes_cover_image_url_when_uploaded(monkeypatch):
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.side_effect = [
+        [
+            {
+                "id": BRANCH_A,
+                "organization_id": ORG_A,
+                "name": "Test Branch 3",
+                "address": "1 Jalan University",
+                "city": "Shah Alam",
+                "region": "Selangor",
+                "postal_code": "40100",
+                "contact_phone": "+60123456789",
+                "opening_hours": "07:00 - 23:00",
+                "weekly_hours": None,
+                "latitude": 3.07,
+                "longitude": 101.55,
+                "service_status": "open",
+                "organization_name": "SpinCo",
+                "organization_logo_url": None,
+                "business_timezone": "Asia/Kuala_Lumpur",
+            }
+        ],
+        [],  # devices
+        [
+            {
+                "branch_id": BRANCH_A,
+                "image_url": "https://proj.supabase.co/storage/v1/object/public/branch-images/cover.jpg",
+            }
+        ],
+    ]
+
+    @contextmanager
+    def db(**_kwargs):
+        yield conn
+
+    monkeypatch.setattr(public_customer, "_database", db)
+    client = TestClient(main.app)
+    resp = client.get("/public/branches")
+    assert resp.status_code == 200
+    res = resp.json()
+    assert len(res["branches"]) == 1
+    assert (
+        res["branches"][0]["cover_image_url"]
+        == "https://proj.supabase.co/storage/v1/object/public/branch-images/cover.jpg"
+    )

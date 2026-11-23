@@ -73,6 +73,8 @@ class MachineEngine {
       data.to<JsonObject>();
       data["state"] = "idle";
       data["fault_code"] = nullptr;
+      data["fault_name"] = nullptr;
+      data["fault_cycle_index"] = 0;
       data["remaining_seconds"] = 0;
       data["sequence"] = 0;
       JsonObject programs = data.createNestedObject("programs");
@@ -128,6 +130,7 @@ class MachineEngine {
       finish("interrupted");
       data["state"] = "error";
       data["fault_code"] = "SIM_INTERRUPTED";
+      data["fault_name"] = faultNameFor("SIM_INTERRUPTED");
       data["remaining_seconds"] = 0;
       queueSample();
       save();
@@ -157,6 +160,7 @@ class MachineEngine {
     target["category"] = "washer";
     target["state"] = data["state"];
     target["fault_code"] = data["fault_code"];
+    target["fault_name"] = data["fault_name"];
     target["remaining_seconds"] = data["remaining_seconds"];
     target["settings"] = data["settings"].is<JsonObject>() ? data["settings"] : data["programs"]["standard"];
     target["programs"] = data["programs"];
@@ -248,6 +252,17 @@ class MachineEngine {
     return false;
   }
 
+  static const char *faultNameFor(const char *fault) {
+    if (!fault) return "Commercial Washer Fault";
+    if (strcmp(fault, "E01") == 0 || strcmp(fault, "SIM_WATER") == 0) return "Water Inlet Failure";
+    if (strcmp(fault, "E02") == 0) return "Drain Pump Blockage";
+    if (strcmp(fault, "E03") == 0 || strcmp(fault, "SIM_DOOR") == 0) return "Door Lock Interlock Fault";
+    if (strcmp(fault, "E04") == 0 || strcmp(fault, "SIM_HEAT") == 0) return "Heater / Thermal Cutoff";
+    if (strcmp(fault, "E05") == 0) return "Drum Imbalance / Spin Trip";
+    if (strcmp(fault, "SIM_INTERRUPTED") == 0) return "Power / Boot Interruption";
+    return "Commercial Washer Fault";
+  }
+
   bool enterFault(const char *fault, const char *origin) {
     if (!ready || !hasClock()) return false;
     String state = data["state"] | "unknown";
@@ -258,13 +273,20 @@ class MachineEngine {
     finish("faulted");
     data["state"] = "error";
     data["fault_code"] = fault;
+    data["fault_name"] = faultNameFor(fault);
     data["remaining_seconds"] = 0;
     save();
     return ready;
   }
 
-  bool injectLocalWaterFault() {
-    if (!enterFault("SIM_WATER", "local_buttons")) return false;
+  bool injectNextLocalFault() {
+    static const char *const kRotatingFaults[5] = {"E01", "E02", "E03", "E04", "E05"};
+    int idx = data["fault_cycle_index"] | 0;
+    if (idx < 0 || idx >= 5) idx = 0;
+    const char *fault = kRotatingFaults[idx];
+    if (!enterFault(fault, "local_buttons")) return false;
+    data["fault_cycle_index"] = (idx + 1) % 5;
+    save();
     queueSample();
     return ready;
   }
@@ -364,10 +386,12 @@ class MachineEngine {
         }
       } else if (action == "inject_fault" && (state == "idle" || state == "running" || state == "paused")) {
         String fault = args["fault_code"] | "";
-        if (fault != "SIM_DOOR" && fault != "SIM_WATER" && fault != "SIM_HEAT") reason = "unsupported_fault";
+        bool supported = fault == "E01" || fault == "E02" || fault == "E03" || fault == "E04" ||
+                         fault == "E05" || fault == "SIM_DOOR" || fault == "SIM_WATER" || fault == "SIM_HEAT";
+        if (!supported) reason = "unsupported_fault";
         else if (!enterFault(fault.c_str(), "mqtt_command")) reason = "fault_unavailable";
       } else if (action == "clear_fault" && state == "error") {
-        data["state"] = "idle"; data["fault_code"] = nullptr;
+        data["state"] = "idle"; data["fault_code"] = nullptr; data["fault_name"] = nullptr;
         data["fault_origin"] = nullptr; data["remaining_seconds"] = 0;
       } else reason = "invalid_transition";
     }

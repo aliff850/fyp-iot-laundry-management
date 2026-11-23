@@ -139,8 +139,23 @@ void main() {
       expect(machine.remainingSecondsEstimate, isNull);
       expect(machine.isSimulated, isTrue);
       expect(machine.isStaleOrMissing, isTrue);
+      expect(machine.availability.displayLabel, 'Offline');
+      expect(machine.availabilityReasonLabel, isNull);
       expect(machine.capabilities.supportsWash, isTrue);
       expect(machine.capabilities.supportsDry, isTrue);
+
+      final closedMachine = PublicMachine.fromJson({
+        'machine_id': 'm-closed',
+        'source_id': 'w-02',
+        'label': 'Washer #02',
+        'device_type': 'washer',
+        'availability': 'unknown',
+        'availability_reason': 'branch_closed',
+        'source_kind': 'physical',
+        'freshness': 'fresh',
+      });
+      expect(closedMachine.availability.displayLabel, 'Offline');
+      expect(closedMachine.availabilityReasonLabel, 'Branch closed by operator');
     });
 
     test('zero remaining seconds while in_use does not convert state to available', () {
@@ -227,6 +242,125 @@ void main() {
               .having((e) => e.kind, 'kind', ApiFailureKind.network),
         ),
       );
+    });
+
+    test('parses ordered PublicBranchDetail.images and defaults safely when omitted', () {
+      final withImages = PublicBranchDetail.fromJson({
+        'branch_id': 'b-1',
+        'name': 'Test Branch 3',
+        'organization_id': 'org-1',
+        'organization_name': 'SpinCo',
+        'timezone': 'Asia/Kuala_Lumpur',
+        'service_status': 'open',
+        'hours_status': 'open_regular_hours',
+        'cover_image_url': 'https://proj.supabase.co/storage/v1/object/public/branch-images/1.jpg',
+        'images': [
+          {'id': 'img-1', 'image_url': 'https://proj.supabase.co/storage/v1/object/public/branch-images/1.jpg'},
+          {'id': 'img-bad', 'image_url': '   '},
+          {'id': 'img-2', 'image_url': 'https://proj.supabase.co/storage/v1/object/public/branch-images/2.jpg'},
+        ],
+      });
+      expect(withImages.images.map((e) => e.id).toList(), ['img-1', 'img-2']);
+      expect(
+        withImages.coverImage?.imageUrl,
+        'https://proj.supabase.co/storage/v1/object/public/branch-images/1.jpg',
+      );
+      expect(
+        withImages.images.first.imageUrl,
+        'https://proj.supabase.co/storage/v1/object/public/branch-images/1.jpg',
+      );
+
+      final summaryWithCover = PublicBranchSummary.fromJson({
+        'branch_id': 'b-1',
+        'name': 'Test Branch 3',
+        'organization_id': 'org-1',
+        'organization_name': 'SpinCo',
+        'cover_image_url': 'https://proj.supabase.co/storage/v1/object/public/branch-images/1.jpg',
+        'timezone': 'Asia/Kuala_Lumpur',
+        'service_status': 'open',
+        'hours_status': 'open_regular_hours',
+        'availability': {},
+      });
+      expect(summaryWithCover.hasCoverImage, isTrue);
+      expect(
+        summaryWithCover.coverImageUrl,
+        'https://proj.supabase.co/storage/v1/object/public/branch-images/1.jpg',
+      );
+
+      final withoutImages = PublicBranchDetail.fromJson({
+        'branch_id': 'b-2',
+        'name': 'Empty Branch',
+        'organization_id': 'org-1',
+        'organization_name': 'SpinCo',
+        'timezone': 'Asia/Kuala_Lumpur',
+        'service_status': 'open',
+        'hours_status': 'open_regular_hours',
+      });
+      expect(withoutImages.images, isEmpty);
+    });
+
+    test('parses PublicPeakDemandHours with weekday buckets and safe empty fallback', () {
+      final resp = PublicBranchAvailabilityResponse.fromJson({
+        'branch': {
+          'branch_id': 'b-1',
+          'name': 'Test Branch 3',
+          'organization_id': 'org-1',
+          'organization_name': 'SpinCo',
+          'timezone': 'Asia/Kuala_Lumpur',
+          'service_status': 'open',
+          'hours_status': 'open_regular_hours',
+        },
+        'summary': {},
+        'machines': [],
+        'peak_hours': {
+          'has_data': true,
+          'window_days': 90,
+          'timezone': 'Asia/Kuala_Lumpur',
+          'default_bucket': 'sat',
+          'buckets': {
+            'overall': {
+              'has_data': true,
+              'peak_hour': 20,
+              'peak_hour_label': '20:00',
+              'hours': [
+                {'hour': 20, 'hour_label': '20:00', 'busy_pct': 100, 'level': 'busy'},
+              ],
+            },
+            'sat': {
+              'has_data': true,
+              'peak_hour': 21,
+              'peak_hour_label': '21:00',
+              'hours': [
+                {'hour': 21, 'hour_label': '21:00', 'busy_pct': 100, 'level': 'busy'},
+              ],
+            },
+          },
+        },
+      });
+
+      expect(resp.peakHours.hasData, isTrue);
+      expect(resp.peakHours.defaultBucket, 'sat');
+      expect(resp.peakHours.bucketFor('sat').peakHourLabel, '21:00');
+      expect(resp.peakHours.bucketFor('sat').hours[21].busyPct, 100);
+      expect(resp.peakHours.bucketFor('sat').hours[21].displayLevel, 'Usually busiest');
+      expect(resp.peakHours.bucketFor('mon').hasData, isFalse);
+
+      final emptyResp = PublicBranchAvailabilityResponse.fromJson({
+        'branch': {
+          'branch_id': 'b-2',
+          'name': 'New Branch',
+          'organization_id': 'org-1',
+          'organization_name': 'SpinCo',
+          'timezone': 'Asia/Kuala_Lumpur',
+          'service_status': 'open',
+          'hours_status': 'open_regular_hours',
+        },
+        'summary': {},
+        'machines': [],
+      });
+      expect(emptyResp.peakHours.hasData, isFalse);
+      expect(emptyResp.peakHours.defaultBucket, 'overall');
+      expect(emptyResp.peakHours.bucketFor('overall').hours, hasLength(24));
     });
   });
 }

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pymysql
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 GATEWAY_ROOT = ROOT.parent if ROOT.name.startswith("staging-") else ROOT
 BACKUP = Path("/home/aliff850/edge_backups/machine-cycles-20261113")
 TEST_DB = "edge_iot_cycles_test_20261113"

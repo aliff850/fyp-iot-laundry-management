@@ -10,11 +10,12 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 import psycopg
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from psycopg.rows import dict_row
 from dotenv import load_dotenv
 
@@ -323,22 +324,82 @@ def _role_metadata(user_id: str, role: str | None, user: dict):
 def _status(conn, user_id: str):
     row = conn.execute(
         """select m.organization_id, m.state, m.role, m.active, o.name as organization_name,
-                  o.state as organization_state, o.logo_url as organization_logo_url
-           from public.memberships m join public.organizations o on o.id = m.organization_id
+                  o.state as organization_state, o.logo_url as organization_logo_url,
+                  o.business_timezone, p.full_name, p.phone
+           from public.memberships m
+           join public.organizations o on o.id = m.organization_id
+           left join public.profiles p on p.user_id = m.user_id
            where m.user_id = %s""", (user_id,),
     ).fetchone()
     if not row:
-        return {"state": "incomplete", "organization": None, "role": None}
+        return {"state": "incomplete", "organization": None, "role": None, "profile": None}
     state = row["state"]
     if not row["active"] or row["organization_state"] == "closed":
         state = "deactivated"
     elif state == "provisioning":
         state = "incomplete"
+    profile = (
+        {"full_name": row["full_name"], "phone": row.get("phone") or ""}
+        if row.get("full_name") is not None
+        else None
+    )
     return {
         "state": state,
-        "organization": {"id": str(row["organization_id"]), "name": row["organization_name"], "logo_url": row.get("organization_logo_url")},
+        "organization": {
+            "id": str(row["organization_id"]),
+            "name": row["organization_name"],
+            "logo_url": row.get("organization_logo_url"),
+            "business_timezone": row.get("business_timezone") or "Asia/Kuala_Lumpur",
+        },
         "role": row["role"] if state in ("active", "approved_unassigned") else None,
+        "profile": profile,
     }
+
+
+class ProfileUpdate(BaseModel):
+    full_name: str = Field(min_length=2, max_length=100)
+    phone: str = Field(min_length=7, max_length=32)
+
+    @field_validator("full_name")
+    @classmethod
+    def validate_full_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not 2 <= len(cleaned) <= 100:
+            raise ValueError("Enter your full name (2–100 characters).")
+        return cleaned
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not PHONE.fullmatch(cleaned):
+            raise ValueError("Enter a phone number, including its country or area code.")
+        return cleaned
+
+
+class OrganizationUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    business_timezone: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("name")
+    @classmethod
+    def validate_org_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not 1 <= len(cleaned) <= 120:
+            raise ValueError("Enter an organization name (1–120 characters).")
+        return cleaned
+
+    @field_validator("business_timezone")
+    @classmethod
+    def validate_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        try:
+            ZoneInfo(cleaned)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("Select a valid IANA business timezone.") from exc
+        return cleaned
 
 
 @router.get("/public/organizations")
@@ -355,6 +416,54 @@ def public_organizations():
 def onboarding_status(user=Depends(_user)):
     with _database() as conn:
         return _status(conn, user["id"])
+
+
+@router.patch("/me")
+def update_own_profile(payload: ProfileUpdate, user=Depends(_user)):
+    user_id = user["id"]
+    with _database() as conn:
+        member = conn.execute(
+            """select m.state, m.active, o.state as organization_state
+               from public.memberships m
+               join public.organizations o on o.id = m.organization_id
+               where m.user_id = %s
+               for update of m""",
+            (user_id,),
+        ).fetchone()
+        if not member:
+            raise HTTPException(404, "Account profile is not initialized yet")
+        if not member["active"] or member["state"] == "deactivated" or member["organization_state"] == "closed":
+            raise HTTPException(403, "This account is inactive")
+        conn.execute(
+            "update public.profiles set full_name = %s, phone = %s where user_id = %s",
+            (payload.full_name, payload.phone, user_id),
+        )
+        return _status(conn, user_id)
+
+
+@router.patch("/organization")
+def update_organization(payload: OrganizationUpdate, user=Depends(_user)):
+    user_id = user["id"]
+    with _database() as conn:
+        organization_id = _owner_organization(conn, user_id)
+        updated = conn.execute(
+            """update public.organizations
+               set name = %s,
+                   business_timezone = coalesce(%s, business_timezone)
+               where id = %s and state = 'active'
+               returning id, name, business_timezone, logo_url""",
+            (payload.name, payload.business_timezone, organization_id),
+        ).fetchone()
+        if not updated:
+            raise HTTPException(404, "Active organization not found")
+    return {
+        "organization": {
+            "id": str(updated["id"]),
+            "name": updated["name"],
+            "business_timezone": updated.get("business_timezone") or "Asia/Kuala_Lumpur",
+            "logo_url": updated.get("logo_url"),
+        }
+    }
 
 
 @router.post("/onboarding")

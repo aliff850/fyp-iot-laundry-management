@@ -1,11 +1,17 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useActionState, useState, useTransition } from "react";
+import { useActionState, useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
+import {
+  BranchImagesManager,
+  type BranchPhotoToastPayload,
+} from "@/components/workspace/branches/BranchImagesManager";
+import { ActionToast } from "@/components/workspace/common/ActionToast";
 import type {
   BranchDetail,
+  BranchImage,
   ManagerOption,
   WeekdayKey,
   WeeklyHoursSchedule,
@@ -120,9 +126,42 @@ export function BranchDetailsForm({
     branch.longitude !== null ? String(branch.longitude) : "",
   );
 
+  const [images, setImages] = useState<BranchImage[]>(branch.images ?? []);
+  const [photoToast, setPhotoToast] = useState<BranchPhotoToastPayload | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [dismissedSavedAt, setDismissedSavedAt] = useState<number | null>(null);
   const [isDeleting, startDeleteTransition] = useTransition();
+
+  const activeToast =
+    photoToast && (!state.savedAt || photoToast.savedAt >= state.savedAt)
+      ? {
+          success: photoToast.success,
+          message: photoToast.message,
+          savedAt: photoToast.savedAt,
+          title: photoToast.success ? "Branch photos updated" : "Unable to update photos",
+        }
+      : state.message && state.savedAt
+        ? {
+            success: Boolean(state.success),
+            message: state.message,
+            savedAt: state.savedAt,
+            title: state.success ? "Settings saved" : "Unable to save settings",
+          }
+        : null;
+
+  const activeSavedAt = activeToast?.savedAt;
+  const showToast = Boolean(
+    activeToast && activeSavedAt && activeSavedAt !== dismissedSavedAt,
+  );
+
+  useEffect(() => {
+    if (!showToast || !activeToast?.success || !activeSavedAt) return;
+    const timer = window.setTimeout(() => {
+      setDismissedSavedAt(activeSavedAt);
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [showToast, activeToast?.success, activeSavedAt]);
 
   const openingHoursValue = is24Hours ? "24 Hours" : `${openTime} - ${closeTime}`;
 
@@ -151,8 +190,8 @@ export function BranchDetailsForm({
             role={state.success ? "status" : "alert"}
             className={`rounded border px-3 py-2 text-xs ${
               state.success
-                ? "border-ok/40 bg-ok/10 text-ok"
-                : "border-danger bg-canvas text-danger"
+                ? "border-positive/40 bg-positive/10 text-positive"
+                : "border-negative bg-canvas text-negative"
             }`}
           >
             {state.message}
@@ -480,15 +519,24 @@ export function BranchDetailsForm({
           <button
             type="submit"
             disabled={pending}
-            className="inline-flex h-10 items-center justify-center rounded bg-accent px-5 text-xs font-medium text-canvas transition-opacity hover:opacity-90 disabled:opacity-50"
+            aria-busy={pending}
+            className="inline-flex min-h-11 w-full items-center justify-center rounded-md border border-ink bg-ink px-4 py-2 text-sm font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted motion-reduce:transition-none sm:w-auto"
           >
-            {pending ? "Saving…" : "Save changes"}
+            {pending ? "Saving changes…" : "Save changes"}
           </button>
         </div>
       </form>
 
+      <BranchImagesManager
+        mode="managed"
+        branchId={branch.id}
+        images={images}
+        onImagesChange={setImages}
+        onNotify={setPhotoToast}
+      />
+
       {isOwner ? (
-        <section className="rounded-md border border-danger/40 bg-surface p-5 md:p-6">
+        <section className="rounded-md border border-negative/40 bg-surface p-5 md:p-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="space-y-1">
               <h2 className="text-sm font-semibold text-ink">Delete Branch</h2>
@@ -501,18 +549,18 @@ export function BranchDetailsForm({
               <button
                 type="button"
                 onClick={() => setConfirmingDelete(true)}
-                className="inline-flex h-9 items-center gap-1.5 rounded border border-danger/50 bg-danger/10 px-3.5 text-xs font-medium text-danger transition-colors hover:bg-danger/20"
+                className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border border-negative/50 bg-negative/10 px-3.5 text-xs font-medium text-negative transition-colors hover:bg-negative/20 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent"
               >
                 <Trash2 className="size-3.5" aria-hidden="true" />
                 Delete branch
               </button>
             ) : (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   disabled={isDeleting}
                   onClick={() => setConfirmingDelete(false)}
-                  className="inline-flex h-9 items-center rounded border border-line bg-canvas px-3 text-xs font-medium text-muted hover:text-ink"
+                  className="inline-flex min-h-11 items-center rounded-md border border-control bg-navy px-3.5 text-xs font-medium text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent"
                 >
                   Cancel
                 </button>
@@ -520,7 +568,7 @@ export function BranchDetailsForm({
                   type="button"
                   disabled={isDeleting}
                   onClick={handleDeleteBranch}
-                  className="inline-flex h-9 items-center rounded bg-danger px-3.5 text-xs font-medium text-canvas hover:opacity-90 disabled:opacity-50"
+                  className="inline-flex min-h-11 items-center rounded-md border border-negative bg-negative px-3.5 text-xs font-semibold text-surface transition-colors hover:border-ink disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent"
                 >
                   {isDeleting ? "Deleting…" : "Confirm delete"}
                 </button>
@@ -531,12 +579,22 @@ export function BranchDetailsForm({
           {deleteError ? (
             <p
               role="alert"
-              className="mt-3 rounded border border-danger bg-canvas px-3 py-2 text-xs text-danger"
+              className="mt-3 rounded border border-negative bg-canvas px-3 py-2 text-xs text-negative"
             >
               {deleteError}
             </p>
           ) : null}
         </section>
+      ) : null}
+
+      {showToast && activeToast ? (
+        <ActionToast
+          kind={activeToast.success ? "success" : "error"}
+          title={activeToast.title}
+          message={activeToast.message}
+          timestamp={activeSavedAt}
+          onDismiss={() => setDismissedSavedAt(activeSavedAt ?? null)}
+        />
       ) : null}
     </div>
   );

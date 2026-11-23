@@ -118,6 +118,43 @@ void drawDrum() {
   lastAnimationAt = millis();
 }
 
+void drawErrorScreen(const String &faultCode, const String &faultName) {
+  heading("Machine fault", "Out of service - Staff notified");
+  tft.fillRoundRect(16, 66, 288, 122, 8, surface);
+  tft.drawRoundRect(16, 66, 288, 122, 8, accent);
+  tft.setTextSize(1);
+  tft.setTextColor(muted, surface);
+  tft.setCursor(28, 78);
+  tft.print("FAULT CODE");
+  tft.setTextColor(accent, surface);
+  tft.setTextSize(faultCode.length() > 10 ? 2 : 3);
+  tft.setCursor(28, 92);
+  tft.print(faultCode);
+  tft.setTextColor(ink, surface);
+  tft.setTextSize(2);
+  const int maxChars = 21;
+  String line1 = faultName;
+  String line2 = "";
+  if ((int)faultName.length() > maxChars) {
+    int splitAt = faultName.lastIndexOf(' ', maxChars);
+    if (splitAt <= 0) splitAt = maxChars;
+    line1 = faultName.substring(0, splitAt);
+    line2 = faultName.substring(splitAt);
+    line2.trim();
+    if ((int)line2.length() > maxChars) line2 = line2.substring(0, maxChars);
+  }
+  tft.setCursor(28, 132);
+  tft.print(line1);
+  if (line2.length()) {
+    tft.setCursor(28, 156);
+    tft.print(line2);
+  }
+  tft.setTextSize(1);
+  tft.setTextColor(ink, canvas);
+  tft.setCursor(16, 206);
+  tft.print("Use SpinSense app for help");
+}
+
 void drawRunningMachine(const String &program) {
   heading("Wash in progress", program + " program");
   tft.setTextSize(1);
@@ -145,6 +182,13 @@ void render() {
     return;
   }
   String deviceState = machine.data["state"] | "unknown";
+  if (deviceState == "error") {
+    String faultCode = machine.data["fault_code"] | "ERR";
+    const char *fallbackName = MachineEngine::faultNameFor(faultCode.c_str());
+    String faultName = machine.data["fault_name"] | fallbackName;
+    drawErrorScreen(faultCode, faultName);
+    return;
+  }
   if (remoteFinishedAt && millis() - remoteFinishedAt < 5000) {
     heading("Wash complete!", "Your cycle has finished");
     tft.drawCircle(160, 144, 52, positive);
@@ -160,10 +204,6 @@ void render() {
   }
   if (checkoutState != "confirmed" && deviceState == "paused") {
     heading("Wash paused", "Resume from the staff dashboard");
-    return;
-  }
-  if (checkoutState != "confirmed" && deviceState == "error") {
-    heading("Machine fault", "Staff assistance required");
     return;
   }
   if (checkoutState == "ready" && checkoutUrl.length()) {
@@ -280,7 +320,16 @@ void onMessage(char *topic, byte *payload, unsigned int length) {
     if (result.length()) {
       mqtt.publish(topicResults.c_str(), result.c_str(), false);
       machinePresenceDirty = true;
-      if (String(machine.data["state"] | "unknown") == "running") remoteFinishedAt = 0;
+      String nextState = String(machine.data["state"] | "unknown");
+      if (nextState == "running") remoteFinishedAt = 0;
+      else if (nextState == "error") {
+        checkoutState = "";
+        checkoutUrl = "";
+        requestId = "";
+        cycleOutcome = "";
+        commandStatus = "";
+        remoteFinishedAt = 0;
+      }
       int progCount = machine.data["programs"].as<JsonObjectConst>().size();
       if (progCount > 0 && selectedProgramIndex >= progCount) selectedProgramIndex = progCount - 1;
       else if (progCount == 0) selectedProgramIndex = 0;
@@ -480,10 +529,18 @@ void loop() {
     if (!bothPressedAt) bothPressedAt = millis();
     comboSeen = true;
     pendingMove = 0;
-    if (!comboTriggered && millis() - bothPressedAt >= 2000 && checkoutState.isEmpty() &&
-        machine.injectLocalWaterFault()) {
+    bool canTriggerLocalFault = checkoutState != "waiting" && checkoutState != "ready" &&
+                                checkoutState != "cancelling";
+    if (!comboTriggered && millis() - bothPressedAt >= 2000 && canTriggerLocalFault &&
+        machine.injectNextLocalFault()) {
       comboTriggered = true;
       machinePresenceDirty = true;
+      checkoutState = "";
+      checkoutUrl = "";
+      requestId = "";
+      cycleOutcome = "";
+      commandStatus = "";
+      remoteFinishedAt = 0;
       render();
     }
   } else bothPressedAt = 0;

@@ -4,7 +4,7 @@ import pymysql
 
 
 def main():
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parents[1]
     gateway_root = root.parent if root.name.startswith("staging-") else root
     values = {}
     for line in (gateway_root / ".env").read_text().splitlines():

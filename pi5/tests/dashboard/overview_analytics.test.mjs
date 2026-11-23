@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import vm from 'node:vm';
 
-const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
-const jsSource = readFileSync(new URL('./static/dashboard.js', import.meta.url), 'utf8');
+const html = readFileSync(new URL('../../dashboard/index.html', import.meta.url), 'utf8');
+const jsSource = readFileSync(new URL('../../dashboard/static/dashboard.js', import.meta.url), 'utf8');
 
 function createOverviewTestEnv(fetchImpl) {
   const storeData = { localStorage: {}, sessionStorage: {} };

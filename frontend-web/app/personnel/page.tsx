@@ -2,8 +2,10 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { Notice } from "@/components/auth/AuthForm";
 import { DecisionForm } from "@/components/auth/DecisionForm";
-import { PersonnelDirectoryTable } from "@/components/workspace/personnel/PersonnelDirectoryTable";
+import { OrganizationLogoCard } from "@/components/workspace/account/OrganizationLogoCard";
 import { WorkspaceShell } from "@/components/workspace/layout/WorkspaceShell";
+import { OrganizationSettingsForm } from "@/components/workspace/personnel/OrganizationSettingsForm";
+import { PersonnelDirectoryTable } from "@/components/workspace/personnel/PersonnelDirectoryTable";
 import {
   getBranchDirectory,
   getJoinRequests,
@@ -11,7 +13,7 @@ import {
   getOrganizationPersonnel,
 } from "@/lib/auth/business";
 
-export const metadata: Metadata = { title: "Personnel" };
+export const metadata: Metadata = { title: "Organization & Personnel" };
 export const dynamic = "force-dynamic";
 
 export default async function PersonnelPage() {
@@ -35,15 +37,17 @@ export default async function PersonnelPage() {
   if (!owner) redirect("/membership-status");
 
   const orgName = current.value.organization?.name ?? "Your Organization";
+  const orgTimezone = current.value.organization?.business_timezone ?? "Asia/Kuala_Lumpur";
+  const orgLogoUrl = current.value.organization?.logo_url ?? null;
   const requests = requestsResult.ok ? requestsResult.value : [];
   const personnel = personnelResult.ok ? personnelResult.value : [];
   const branches = branchDirectoryResult.ok ? branchDirectoryResult.value.branches : [];
 
   const pendingRequests = requests.filter(
-    r => r.state === "pending" || r.state === "approval_pending"
+    (r) => r.state === "pending" || r.state === "approval_pending",
   );
   const resolvedRequests = requests.filter(
-    r => r.state === "approved" || r.state === "rejected"
+    (r) => r.state === "approved" || r.state === "rejected",
   );
 
   return (
@@ -55,59 +59,67 @@ export default async function PersonnelPage() {
       userRole={current.value.role}
     >
       <div className="space-y-8">
-        {/* Heading & Subpage Action Row */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="text-xs text-muted">Organization personnel</p>
-            <h1 className="mt-2 text-2xl font-semibold tracking-tight">{orgName}</h1>
-            <p className="mt-2 max-w-xl text-sm text-muted">
-              Review applicant join requests, manage active personnel, and track operational role assignments across your locations.
-            </p>
-          </div>
+          <h1 className="text-2xl font-semibold tracking-tight text-ink">
+            Organization &amp; Personnel
+          </h1>
         </div>
 
-        {/* Error notices if requests or personnel endpoints failed */}
+        {/* Section 1: Organization Details & Permissions */}
+        <section
+          className="rounded-md border border-line bg-surface p-5 md:p-6"
+          aria-labelledby="org-heading"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rule pb-3">
+            <h2 id="org-heading" className="text-base font-semibold text-ink">
+              Organization &amp; Permissions
+            </h2>
+          </div>
+
+          <div className="mt-4 space-y-6">
+            <OrganizationSettingsForm
+              initialName={orgName}
+              initialTimezone={orgTimezone}
+              roleLabel="Owner"
+              accessScope="All branches, personnel, and settings"
+            />
+
+            <OrganizationLogoCard
+              organizationName={orgName}
+              initialLogoUrl={orgLogoUrl}
+              embedded
+            />
+          </div>
+        </section>
+
         {!requestsResult.ok && <Notice>{requestsResult.message}</Notice>}
         {!personnelResult.ok && <Notice>{personnelResult.message}</Notice>}
         {!branchDirectoryResult.ok && <Notice>{branchDirectoryResult.message}</Notice>}
-        {/* Removed the goddamn statistics */}
-        {/* Section 1: Pending Join Requests */}
+
+        {/* Section 2: Pending Join Requests */}
         <section
           className="rounded-md border border-line bg-surface p-5 md:p-6"
           aria-labelledby="requests-heading"
         >
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rule pb-3">
-            <div>
-              <h2 id="requests-heading" className="text-base font-semibold text-ink">
-                Pending Join Requests
-              </h2>
-              <p className="mt-0.5 text-xs text-muted">
-                {pendingRequests.length > 0
-                  ? `${pendingRequests.length} pending ${pendingRequests.length === 1 ? "request" : "requests"
-                  } awaiting role approval`
-                  : "No pending requests awaiting approval"}
-              </p>
-            </div>
-            {pendingRequests.length > 0 && (
-              <span className="rounded-full border border-warning/30 bg-warning/10 px-2.5 py-0.5 text-xs font-medium text-warning">
-                Action required
-              </span>
-            )}
+            <h2 id="requests-heading" className="text-base font-semibold text-ink">
+              Pending Join Requests
+            </h2>
           </div>
 
           {pendingRequests.length === 0 ? (
             <p className="mt-4 text-xs text-faint">
-              All join requests have been processed. When prospective team members apply, their applications will appear here for review and role assignment.
+              No pending join requests.
             </p>
           ) : (
             <div className="mt-4 grid gap-3 md:grid-cols-2">
-              {pendingRequests.map(request => (
+              {pendingRequests.map((request) => (
                 <div
                   key={request.id}
                   className="flex flex-col justify-between rounded-md border border-line bg-raised/40 p-4 transition-colors hover:bg-raised/60"
                 >
                   <div>
-                    <div className="flex items-start justify-between gap-2">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
                       <h3 className="text-sm font-semibold text-ink">{request.full_name}</h3>
                       <span className="rounded border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
                         {request.state === "approval_pending"
@@ -115,17 +127,22 @@ export default async function PersonnelPage() {
                           : "Pending review"}
                       </span>
                     </div>
-                    <p className="mt-1 text-xs text-muted">
-                      Phone: <span className="text-ink">{request.phone}</span>
-                    </p>
-                    <p className="mt-0.5 text-xs text-faint">
-                      Requested:{" "}
-                      {new Date(request.requested_at).toLocaleDateString(undefined, {
-                        year: "numeric",
-                        month: "short",
-                        day: "numeric",
-                      })}
-                    </p>
+                    <dl className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
+                      <div>
+                        <dt className="text-muted">Phone</dt>
+                        <dd className="text-ink tabular-nums">{request.phone}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted">Requested</dt>
+                        <dd className="text-ink tabular-nums">
+                          {new Date(request.requested_at).toLocaleDateString(undefined, {
+                            year: "numeric",
+                            month: "short",
+                            day: "numeric",
+                          })}
+                        </dd>
+                      </div>
+                    </dl>
                   </div>
 
                   <DecisionForm
@@ -140,20 +157,15 @@ export default async function PersonnelPage() {
           )}
         </section>
 
-        {/* Section 2: Approved Organization Personnel Directory */}
+        {/* Section 3: Approved Organization Personnel Directory */}
         <section
           className="rounded-md border border-line bg-surface p-5 md:p-6"
           aria-labelledby="personnel-heading"
         >
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rule pb-3">
-            <div>
-              <h2 id="personnel-heading" className="text-base font-semibold text-ink">
-                Approved Personnel Directory
-              </h2>
-              <p className="mt-0.5 text-xs text-muted">
-                {personnel.length} approved team {personnel.length === 1 ? "member" : "members"} in {orgName}
-              </p>
-            </div>
+            <h2 id="personnel-heading" className="text-base font-semibold text-ink">
+              Approved Personnel Directory
+            </h2>
           </div>
 
           <PersonnelDirectoryTable
@@ -164,44 +176,42 @@ export default async function PersonnelPage() {
           />
         </section>
 
-        {/* Section 3: Decision History */}
+        {/* Section 4: Decision History */}
         {resolvedRequests.length > 0 && (
           <section
             className="rounded-md border border-line bg-surface p-5 md:p-6"
             aria-labelledby="history-heading"
           >
-            <div className="flex items-center justify-between border-b border-rule pb-3">
-              <div>
-                <h2 id="history-heading" className="text-sm font-semibold text-ink">
-                  Decision History
-                </h2>
-                <p className="mt-0.5 text-xs text-muted">
-                  {resolvedRequests.length} previously recorded join request decisions
-                </p>
-              </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rule pb-3">
+              <h2 id="history-heading" className="text-base font-semibold text-ink">
+                Decision History
+              </h2>
             </div>
 
-            <div className="mt-3 divide-y divide-rule text-xs">
-              {resolvedRequests.map(req => (
+            <div className="mt-4 divide-y divide-rule text-xs">
+              {resolvedRequests.map((req) => (
                 <div
                   key={req.id}
-                  className="flex flex-wrap items-center justify-between gap-2 py-2.5 first:pt-1 last:pb-1"
+                  className="grid grid-cols-1 gap-2 py-3 first:pt-1 last:pb-1 sm:grid-cols-3 sm:items-center"
                 >
-                  <div>
-                    <span className="font-semibold text-ink">{req.full_name}</span>
-                    <span className="ml-2 text-faint">· {req.phone}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
+                  <span className="font-semibold text-ink">{req.full_name}</span>
+                  <span className="text-muted tabular-nums">{req.phone}</span>
+                  <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                     {req.state === "approved" ? (
                       <span className="rounded border border-positive/30 bg-positive/10 px-2 py-0.5 text-xs font-medium text-positive">
-                        Approved · {req.decision_role?.replaceAll("_", " ")}
+                        Approved
                       </span>
                     ) : (
                       <span className="rounded border border-negative/30 bg-negative/10 px-2 py-0.5 text-xs font-medium text-negative">
                         Rejected
                       </span>
                     )}
-                    <span className="text-faint">
+                    {req.decision_role && (
+                      <span className="text-muted">
+                        {req.decision_role.replaceAll("_", " ")}
+                      </span>
+                    )}
+                    <span className="text-faint tabular-nums">
                       {new Date(req.requested_at).toLocaleDateString()}
                     </span>
                   </div>

@@ -29,7 +29,7 @@ export async function refreshRemoteMachineCommands(branchId: string, sourceId: s
 }
 
 export async function requestRemoteMachineCommand(branchId: string, sourceId: string,
-  requestId: string, action: "start" | "pause" | "resume" | "stop" | "set_settings",
+  requestId: string, action: "start" | "pause" | "resume" | "stop" | "set_settings" | "clear_fault",
   args: Record<string, unknown> = {}) {
   return issueRemoteMachineCommand(branchId, sourceId, requestId, action, args);
 }

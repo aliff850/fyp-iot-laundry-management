@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   experimental: {
     agentUpgrade: "security",
+    serverActions: {
+      bodySizeLimit: "7mb",
+    },
   },
   // Browser projects run with separate envs/caches alongside normal development.
   ...(process.env.SPINSENSE_E2E_VARIANT === "configured" || process.env.SPINSENSE_E2E_VARIANT === "unconfigured" ? {

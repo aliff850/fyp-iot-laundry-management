@@ -1,7 +1,18 @@
 import { createClient } from "@/lib/supabase/server";
 
 export type MembershipState = "incomplete" | "pending" | "approval_pending" | "rejected" | "active" | "approved_unassigned" | "deactivated";
-export type Membership = { state: MembershipState; organization: { id: string; name: string; logo_url?: string | null } | null; role: string | null };
+export type MembershipProfile = { full_name: string; phone: string };
+export type Membership = {
+  state: MembershipState;
+  organization: {
+    id: string;
+    name: string;
+    logo_url?: string | null;
+    business_timezone?: string;
+  } | null;
+  role: string | null;
+  profile?: MembershipProfile | null;
+};
 export type JoinRequest = { id: string; user_id: string; state: string; full_name: string; phone: string; requested_at: string; decision_role: string | null };
 export type WeekdayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type WeeklyHoursInterval = { open: string; close: string };
@@ -103,22 +114,84 @@ export async function businessRequest<T>(path: string, method = "GET", body?: ob
 const states = new Set<MembershipState>(["incomplete", "pending", "approval_pending", "rejected", "active", "approved_unassigned", "deactivated"]);
 const invalid = (): Result<never> => ({ ok: false, status: 503, message: "The business service returned an invalid response." });
 
-export async function getMembership(path = "/onboarding", method = "GET"): Promise<Result<Membership>> {
-  const result = await businessRequest<unknown>(path, method);
-  if (!result.ok) return result;
-  const row = result.value;
+function parseMembershipEnvelope(row: unknown): Membership | null {
   if (!row || typeof row !== "object" || !("state" in row) || !states.has(row.state as MembershipState) ||
-    !("role" in row) || (row.role !== null && typeof row.role !== "string") || !("organization" in row)) return invalid();
+    !("role" in row) || (row.role !== null && typeof row.role !== "string") || !("organization" in row)) return null;
   const organization = row.organization;
   if (organization !== null && (!organization || typeof organization !== "object" ||
     !("id" in organization) || typeof organization.id !== "string" ||
-    !("name" in organization) || typeof organization.name !== "string")) return invalid();
+    !("name" in organization) || typeof organization.name !== "string")) return null;
   const role = row.role;
   if ((row.state === "active" && !["owner", "branch_manager", "machine_maintenance", "lpg_maintenance"].includes(String(role))) ||
     (row.state === "approved_unassigned" && role !== null && !["branch_manager", "machine_maintenance", "lpg_maintenance"].includes(String(role))) ||
     (!["active", "approved_unassigned"].includes(String(row.state)) && role !== null) ||
-    (row.state !== "incomplete" && organization === null)) return invalid();
-  return { ok: true, value: { state: row.state as MembershipState, role: row.role as string | null, organization: organization as Membership["organization"] } };
+    (row.state !== "incomplete" && organization === null)) return null;
+
+  let profile: MembershipProfile | null | undefined;
+  if ("profile" in row) {
+    const rawProfile = row.profile;
+    if (rawProfile === null) {
+      profile = null;
+    } else if (
+      rawProfile &&
+      typeof rawProfile === "object" &&
+      "full_name" in rawProfile &&
+      typeof rawProfile.full_name === "string" &&
+      "phone" in rawProfile &&
+      typeof rawProfile.phone === "string"
+    ) {
+      profile = { full_name: rawProfile.full_name, phone: rawProfile.phone };
+    }
+  }
+
+  return {
+    state: row.state as MembershipState,
+    role: row.role as string | null,
+    organization: organization as Membership["organization"],
+    ...(profile !== undefined ? { profile } : {}),
+  };
+}
+
+export async function getMembership(path = "/onboarding", method = "GET"): Promise<Result<Membership>> {
+  const result = await businessRequest<unknown>(path, method);
+  if (!result.ok) return result;
+  const parsed = parseMembershipEnvelope(result.value);
+  return parsed ? { ok: true, value: parsed } : invalid();
+}
+
+export async function updateOwnProfile(input: {
+  full_name: string;
+  phone: string;
+}): Promise<Result<Membership>> {
+  const result = await businessRequest<unknown>("/me", "PATCH", input);
+  if (!result.ok) return result;
+  const parsed = parseMembershipEnvelope(result.value);
+  return parsed ? { ok: true, value: parsed } : invalid();
+}
+
+export async function updateOrganizationDetails(input: {
+  name: string;
+  business_timezone: string;
+}): Promise<Result<{ organization: NonNullable<Membership["organization"]> }>> {
+  const result = await businessRequest<unknown>("/organization", "PATCH", input);
+  if (!result.ok) return result;
+  const row = result.value;
+  if (!row || typeof row !== "object" || !("organization" in row)) return invalid();
+  const org = (row as { organization: unknown }).organization;
+  if (
+    !org ||
+    typeof org !== "object" ||
+    !("id" in org) ||
+    typeof org.id !== "string" ||
+    !("name" in org) ||
+    typeof org.name !== "string"
+  ) {
+    return invalid();
+  }
+  return {
+    ok: true,
+    value: { organization: org as NonNullable<Membership["organization"]> },
+  };
 }
 
 export async function getJoinRequests(): Promise<Result<JoinRequest[]>> {
@@ -214,7 +287,15 @@ export async function getBranchPersonnel(branchId: string): Promise<Result<Organ
   return { ok: true, value: personnel };
 }
 
+export type BranchImage = {
+  id: string;
+  image_url: string;
+  sort_order: number;
+  created_at: string | null;
+};
+
 export type BranchDetail = WorkspaceBranch & {
+  images?: BranchImage[];
   primary_manager?: {
     user_id: string;
     full_name: string;
@@ -347,6 +428,20 @@ export interface MachineItem {
   parameters: MachineParameters;
 }
 
+export type FaultDiagnosis = {
+  fault_code: string;
+  title: string;
+  source_status:
+    | "placeholder_washer_guide"
+    | "spinsense_safety_rule"
+    | "unverified_vendor_code";
+  disclaimer: string;
+  plain_explanation: string;
+  likely_causes: string[];
+  safety_precautions: string;
+  troubleshooting_steps: string[];
+};
+
 export type RemoteMachine = {
   source_id: string;
   type: "washer" | "dryer" | "washer_dryer";
@@ -359,9 +454,11 @@ export type RemoteMachine = {
   data: {
     remaining_seconds?: number;
     fault_code?: string | null;
+    fault_name?: string | null;
     settings?: Record<string, unknown>;
     programs?: Record<string, Record<string, unknown>>;
   } | null;
+  diagnosis?: FaultDiagnosis | null;
 };
 
 export type RemoteMachineCommand = {
@@ -394,7 +491,7 @@ export async function getRemoteMachineCommands(branchId: string, sourceId: strin
 }
 
 export async function issueRemoteMachineCommand(branchId: string, sourceId: string,
-  requestId: string, action: "start" | "pause" | "resume" | "stop" | "set_settings",
+  requestId: string, action: "start" | "pause" | "resume" | "stop" | "set_settings" | "clear_fault",
   args: Record<string, unknown> = {}): Promise<Result<{ command_id: string; status: string }>> {
   return businessRequest(`/branches/${branchId}/machine-commands/${encodeURIComponent(sourceId)}`,
     "POST", { request_id: requestId, action, arguments: args });
@@ -845,8 +942,34 @@ export interface CustomerReportHistoryItem {
   note: string;
 }
 
+export interface LinkedIncidentSummary {
+  id: string;
+  reference_code: string;
+  asset_name: string;
+  fault_code: string | null;
+  severity: "warning" | "critical";
+  edge_condition_state: "active" | "cleared";
+  workflow_state: "open" | "acknowledged" | "resolved";
+}
+
+export interface OpenBranchIncidentOption {
+  id: string;
+  reference_code: string;
+  source_id: string;
+  asset_name: string;
+  domain: "machine" | "lpg";
+  severity: "warning" | "critical";
+  fault_code: string | null;
+  fault_name: string | null;
+  edge_condition_state: "active" | "cleared";
+  workflow_state: "open" | "acknowledged" | "resolved";
+  summary: string;
+  opened_at: string | null;
+}
+
 export interface CustomerReportItem {
   id: string;
+  reference_code?: string | null;
   branch_id: string;
   asset_id: string;
   asset_name: string;
@@ -862,6 +985,8 @@ export interface CustomerReportItem {
   investigation_notes: string | null;
   assigned_specialist_role: "machine_maintenance" | "lpg_maintenance" | null;
   resolution_reason: string | null;
+  linked_incident_id?: string | null;
+  linked_incident?: LinkedIncidentSummary | null;
   history: CustomerReportHistoryItem[];
 }
 
@@ -876,6 +1001,7 @@ export interface CustomerReportsSummary {
 export interface CustomerReportsBranchData {
   reports: CustomerReportItem[];
   summary: CustomerReportsSummary;
+  open_branch_incidents?: OpenBranchIncidentOption[];
 }
 
 export async function getBranchCustomerReports(
@@ -893,7 +1019,10 @@ export async function investigateCustomerReport(
   branchId: string,
   reportId: string,
   notes: string,
-  assignedSpecialistRole?: "machine_maintenance" | "lpg_maintenance" | null
+  assignedSpecialistRole?: "machine_maintenance" | "lpg_maintenance" | null,
+  options?: {
+    linkedIncidentId?: string | null;
+  }
 ): Promise<Result<{ report: CustomerReportItem; summary: CustomerReportsSummary }>> {
   const result = await businessRequest<{
     report: CustomerReportItem;
@@ -901,6 +1030,7 @@ export async function investigateCustomerReport(
   }>(`/branches/${branchId}/customer-reports/${reportId}/investigate`, "POST", {
     notes,
     assigned_specialist_role: assignedSpecialistRole ?? null,
+    linked_incident_id: options?.linkedIncidentId ?? null,
   });
   if (!result.ok) return result;
   if (!result.value?.report || !result.value?.summary) return invalid();
@@ -1266,6 +1396,7 @@ export interface WorkspaceNotificationEvent {
   detail: string;
   source_id: string;
   device_label: string;
+  incident_id?: string | null;
   occurred_at: string;
   active: boolean;
 }
@@ -1337,6 +1468,61 @@ export async function removeOrganizationLogo(): Promise<Result<{ logo_url: null 
   return { ok: true, value: { logo_url: null } };
 }
 
+function validBranchImagesList(value: unknown): value is BranchImage[] {
+  if (!Array.isArray(value)) return false;
+  return value.every(
+    (img) =>
+      img &&
+      typeof img === "object" &&
+      typeof (img as Record<string, unknown>).id === "string" &&
+      typeof (img as Record<string, unknown>).image_url === "string" &&
+      typeof (img as Record<string, unknown>).sort_order === "number",
+  );
+}
+
+export async function uploadBranchImage(
+  branchId: string,
+  contentType: "image/png" | "image/jpeg" | "image/webp",
+  dataBase64: string,
+): Promise<Result<{ images: BranchImage[] }>> {
+  const result = await businessRequest<{ images: BranchImage[] }>(
+    `/branches/${encodeURIComponent(branchId)}/images`,
+    "POST",
+    { content_type: contentType, data_base64: dataBase64 },
+  );
+  if (!result.ok) return result;
+  if (!result.value || !validBranchImagesList(result.value.images)) return invalid();
+  return { ok: true, value: { images: result.value.images } };
+}
+
+export async function setBranchCoverImage(
+  branchId: string,
+  imageId: string,
+): Promise<Result<{ images: BranchImage[] }>> {
+  const result = await businessRequest<{ images: BranchImage[] }>(
+    `/branches/${encodeURIComponent(branchId)}/images/${encodeURIComponent(imageId)}/cover`,
+    "PATCH",
+    {},
+  );
+  if (!result.ok) return result;
+  if (!result.value || !validBranchImagesList(result.value.images)) return invalid();
+  return { ok: true, value: { images: result.value.images } };
+}
+
+export async function deleteBranchImage(
+  branchId: string,
+  imageId: string,
+): Promise<Result<{ images: BranchImage[] }>> {
+  const result = await businessRequest<{ images: BranchImage[] }>(
+    `/branches/${encodeURIComponent(branchId)}/images/${encodeURIComponent(imageId)}`,
+    "DELETE",
+    {},
+  );
+  if (!result.ok) return result;
+  if (!result.value || !validBranchImagesList(result.value.images)) return invalid();
+  return { ok: true, value: { images: result.value.images } };
+}
+
 export async function getPushPublicKey(): Promise<Result<PushPublicKeyResponse>> {
   const result = await businessRequest<PushPublicKeyResponse>("/push/public-key");
   if (!result.ok) return result;
@@ -1372,4 +1558,173 @@ export async function deletePushSubscription(endpoint: string): Promise<Result<{
   if (!result.ok) return result;
   if (!result.value || typeof result.value.revoked !== "boolean") return invalid();
   return { ok: true, value: result.value };
+}
+
+export type IncidentWorkflowState = "open" | "acknowledged" | "resolved";
+export type IncidentEdgeConditionState = "active" | "cleared";
+
+export type IncidentSummary = {
+  id: string;
+  reference_code: string;
+  branch_id: string;
+  branch_name: string;
+  device_id: string;
+  source_id: string;
+  asset_name: string;
+  domain: "machine" | "lpg";
+  condition_key: string;
+  severity: "warning" | "critical";
+  edge_condition_state: IncidentEdgeConditionState;
+  workflow_state: IncidentWorkflowState;
+  fault_code: string | null;
+  fault_name: string | null;
+  summary: string;
+  rule_version: string;
+  revision: number;
+  opened_at: string | null;
+  last_sample_at: string | null;
+  cleared_at: string | null;
+  acknowledged_at: string | null;
+  resolved_at: string | null;
+  resolution_note: string | null;
+  linked_reports_count: number;
+  open_tasks_count: number;
+  diagnosis: FaultDiagnosis | null;
+};
+
+export type IncidentEventItem = {
+  id: string;
+  event_type: string;
+  actor_type: "edge" | "operator" | "system";
+  actor_role: string | null;
+  actor_name: string | null;
+  summary: string;
+  metadata: Record<string, unknown>;
+  occurred_at: string | null;
+};
+
+export type MaintenanceTaskItem = {
+  id: string;
+  branch_id: string;
+  incident_id: string | null;
+  report_id: string | null;
+  domain: "machine" | "lpg";
+  title: string;
+  assigned_to_user_id: string;
+  assignee_name: string | null;
+  assignee_role: string | null;
+  assigned_by_user_id: string;
+  assigned_by_name: string | null;
+  status: "assigned" | "in_progress" | "completed";
+  service_notes: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
+};
+
+export type LinkedReportSummary = {
+  id: string;
+  reference_code: string;
+  category: string;
+  status: string;
+  description: string;
+  reporter_name: string | null;
+  contact_type: string | null;
+  contact_value: string | null;
+  created_at: string | null;
+};
+
+export type EligibleAssignee = {
+  user_id: string;
+  full_name: string;
+  role: string;
+};
+
+export type IncidentDetail = IncidentSummary & {
+  evidence_snapshot: Record<string, unknown>;
+  events: IncidentEventItem[];
+  tasks: MaintenanceTaskItem[];
+  linked_reports: LinkedReportSummary[];
+  eligible_assignees: EligibleAssignee[];
+};
+
+export async function getBranchIncidents(
+  branchId: string,
+  params?: { domain?: "machine" | "lpg"; workflowState?: IncidentWorkflowState },
+): Promise<Result<IncidentSummary[]>> {
+  const query = new URLSearchParams({ branch_id: branchId });
+  if (params?.domain) query.set("domain", params.domain);
+  if (params?.workflowState) query.set("workflow_state", params.workflowState);
+  const result = await businessRequest<{ incidents: IncidentSummary[] }>(`/incidents?${query.toString()}`);
+  if (!result.ok) return result;
+  if (!Array.isArray(result.value?.incidents)) return invalid();
+  return { ok: true, value: result.value.incidents };
+}
+
+export async function getIncidentDetail(incidentId: string): Promise<Result<IncidentDetail>> {
+  const result = await businessRequest<{ incident: IncidentDetail }>(`/incidents/${encodeURIComponent(incidentId)}`);
+  if (!result.ok) return result;
+  if (!result.value?.incident?.id) return invalid();
+  return { ok: true, value: result.value.incident };
+}
+
+export async function acknowledgeBranchIncident(
+  incidentId: string,
+  note?: string,
+): Promise<Result<IncidentSummary>> {
+  const result = await businessRequest<{ incident: IncidentSummary }>(
+    `/incidents/${encodeURIComponent(incidentId)}/acknowledge`,
+    "POST",
+    note ? { note } : {},
+  );
+  if (!result.ok) return result;
+  if (!result.value?.incident?.id) return invalid();
+  return { ok: true, value: result.value.incident };
+}
+
+export async function resolveBranchIncident(
+  incidentId: string,
+  resolutionNote: string,
+): Promise<Result<IncidentSummary>> {
+  const result = await businessRequest<{ incident: IncidentSummary }>(
+    `/incidents/${encodeURIComponent(incidentId)}/resolve`,
+    "POST",
+    { resolution_note: resolutionNote },
+  );
+  if (!result.ok) return result;
+  if (!result.value?.incident?.id) return invalid();
+  return { ok: true, value: result.value.incident };
+}
+
+export async function createIncidentTask(payload: {
+  branch_id: string;
+  incident_id?: string | null;
+  report_id?: string | null;
+  domain: "machine" | "lpg";
+  title: string;
+  assigned_to_user_id: string;
+  service_notes?: string | null;
+}): Promise<Result<MaintenanceTaskItem>> {
+  const result = await businessRequest<{ task: MaintenanceTaskItem }>(
+    "/maintenance-tasks",
+    "POST",
+    payload,
+  );
+  if (!result.ok) return result;
+  if (!result.value?.task?.id) return invalid();
+  return { ok: true, value: result.value.task };
+}
+
+export async function updateIncidentTask(
+  taskId: string,
+  payload: { status?: "assigned" | "in_progress" | "completed"; service_notes?: string | null },
+): Promise<Result<MaintenanceTaskItem>> {
+  const result = await businessRequest<{ task: MaintenanceTaskItem }>(
+    `/maintenance-tasks/${encodeURIComponent(taskId)}`,
+    "PATCH",
+    payload,
+  );
+  if (!result.ok) return result;
+  if (!result.value?.task?.id) return invalid();
+  return { ok: true, value: result.value.task };
 }

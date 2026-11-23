@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import sync_worker
 

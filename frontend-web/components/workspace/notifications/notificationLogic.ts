@@ -134,7 +134,12 @@ export function formatNotificationTimestamp(iso: string | null | undefined): str
   });
 }
 
-export function notificationHref(item: Pick<WorkspaceNotificationEvent, "branch_id" | "category">): string {
+export function notificationHref(
+  item: Pick<WorkspaceNotificationEvent, "branch_id" | "category" | "incident_id">,
+): string {
+  if (item.incident_id) {
+    return `/branches/${item.branch_id}/incidents/${item.incident_id}`;
+  }
   return item.category === "lpg"
     ? `/branches/${item.branch_id}/lpg`
     : `/branches/${item.branch_id}/machines`;

@@ -1,6 +1,7 @@
 """Exercise durable queue/result transitions in the isolated restored Pi database."""
 import json
 import os
+import sys
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,7 +9,8 @@ from types import SimpleNamespace
 import pymysql
 from pymysql.cursors import DictCursor
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 TEST_DB = "edge_iot_machine_test_20261112"
 
 

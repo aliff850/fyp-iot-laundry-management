@@ -29,7 +29,7 @@ void main() {
       );
       expect(
         HoursStatus.fromWire('hours_unknown').displayLabel,
-        'Hours unknown',
+        'Hours unavailable',
       );
       expect(
         HoursStatus.fromWire(null),

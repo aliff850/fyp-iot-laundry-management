@@ -1,7 +1,8 @@
 """Current-membership, organization-scoped branch directory and creation."""
 
+import os
 from typing import Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from psycopg.types.json import Jsonb
@@ -13,6 +14,7 @@ from customer_reports import (
     investigate_branch_report,
     list_branch_customer_reports,
     load_branch_report_counts,
+    load_open_branch_incidents_for_reports,
     resolve_branch_report,
 )
 
@@ -20,12 +22,29 @@ from onboarding import (
     PERSONNEL_ROLES,
     _admin_user,
     _assert_confirmed_active,
+    _configuration,
     _database,
     _role_metadata,
     _user,
 )
+from storage_images import (
+    decode_and_inspect_image,
+    delete_storage_object_best_effort,
+    upload_storage_object,
+)
 
 router = APIRouter()
+
+BRANCH_IMAGES_BUCKET = "branch-images"
+MAX_BRANCH_IMAGES = 10
+MAX_BRANCH_IMAGE_BYTES = 5_242_880  # 5 MB
+MIN_BRANCH_IMAGE_DIM = 32
+MAX_BRANCH_IMAGE_DIM = 4096
+
+
+class BranchImageUpload(BaseModel):
+    content_type: Literal["image/png", "image/jpeg", "image/webp"]
+    data_base64: str = Field(min_length=8, max_length=7_000_000)
 
 
 class BranchCreate(BaseModel):
@@ -260,6 +279,7 @@ def get_branch(branch_id: UUID, user=Depends(_user)):
             raise HTTPException(404, "Branch not found")
 
         b_data = _branch(row)
+        b_data["images"] = _fetch_branch_images(conn, branch_id, organization)
         b_data["primary_manager"] = {
             "user_id": str(row["primary_manager_user_id"]),
             "full_name": row["primary_manager_name"] or "Unknown",
@@ -464,6 +484,7 @@ def get_branch_overview(branch_id: UUID, user=Depends(_user)):
             and d.device_type in ('washer','dryer','washer_dryer')""",
             (branch_id, organization)).fetchall()
         from datetime import datetime, timedelta, timezone
+        from incidents import load_branch_active_incidents
         from lpg_operations import load_branch_safety_nodes, summarize_branch_lpg_overview
         now = datetime.now(timezone.utc)
         states = [m["state_payload"].get("state", "unknown") if m["state_payload"]
@@ -478,7 +499,7 @@ def get_branch_overview(branch_id: UUID, user=Depends(_user)):
 
         return {
             "branch": b_data,
-            "incidents": [],
+            "incidents": load_branch_active_incidents(conn, organization, branch_id),
             "personnel": {
                 "total_assigned": len(personnel_list),
                 "branch_managers": sum(1 for p in personnel_list if p["role"] == "branch_manager"),
@@ -509,8 +530,213 @@ def get_branch_overview(branch_id: UUID, user=Depends(_user)):
         }
 
 
+def _authorize_branch_editor(conn, user_id, branch_id: UUID, action_label: str = "update branch details"):
+    member = _membership(conn, user_id)
+    owner = member["state"] == "active" and member["role"] == "owner"
+    is_manager = member["state"] == "active" and member["role"] == "branch_manager"
+    if not (owner or is_manager):
+        raise HTTPException(403, f"Only owners and assigned branch managers may {action_label}")
+    organization = member["organization_id"]
+    if is_manager:
+        assigned = conn.execute(
+            """select 1 from public.branch_assignments
+               where branch_id=%s and user_id=%s and organization_id=%s
+               union
+               select 1 from public.branches
+               where id=%s and primary_manager_user_id=%s and organization_id=%s""",
+            (branch_id, user_id, organization, branch_id, user_id, organization),
+        ).fetchone()
+        if not assigned:
+            raise HTTPException(403, "You are not assigned to this branch")
+    branch = conn.execute(
+        "select id, organization_id from public.branches where id=%s and organization_id=%s",
+        (branch_id, organization),
+    ).fetchone()
+    if not branch:
+        raise HTTPException(404, "Branch not found")
+    return member, branch
+
+
+def _serialize_branch_images(rows) -> list[dict[str, Any]]:
+    serialized = []
+    for row in rows or []:
+        if not isinstance(row, dict) or "id" not in row or "image_url" not in row:
+            continue
+        serialized.append({
+            "id": str(row["id"]),
+            "image_url": row["image_url"],
+            "sort_order": int(row.get("sort_order", 0)),
+            "created_at": row.get("created_at"),
+        })
+    return serialized
+
+
+def _fetch_branch_images(conn, branch_id: UUID, organization_id: UUID) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """select id, image_url, sort_order, created_at
+           from public.branch_images
+           where branch_id=%s and organization_id=%s
+           order by sort_order asc, created_at asc, id asc""",
+        (branch_id, organization_id),
+    ).fetchall()
+    return _serialize_branch_images(rows)
+
+
+def _normalize_branch_image_order(conn, branch_id: UUID, organization_id: UUID) -> None:
+    rows = conn.execute(
+        """select id from public.branch_images
+           where branch_id=%s and organization_id=%s
+           order by sort_order asc, created_at asc, id asc
+           for update""",
+        (branch_id, organization_id),
+    ).fetchall()
+    for idx, row in enumerate(rows or []):
+        if isinstance(row, dict) and "id" in row:
+            conn.execute(
+                "update public.branch_images set sort_order=%s where id=%s and branch_id=%s",
+                (idx, row["id"], branch_id),
+            )
+
+
+@router.get("/branches/{branch_id}/images")
+def list_branch_images(branch_id: UUID, user=Depends(_user)):
+    with _database(read_only=True) as conn:
+        member, _ = _authorize_branch_editor(conn, user["id"], branch_id, "view branch image settings")
+        images = _fetch_branch_images(conn, branch_id, member["organization_id"])
+    return {"images": images}
+
+
+@router.post("/branches/{branch_id}/images", status_code=201)
+def upload_branch_image(branch_id: UUID, body: BranchImageUpload, user=Depends(_user)):
+    url, _, _ = _configuration()
+    secret = os.getenv("SUPABASE_SECRET_KEY", "")
+    if not secret:
+        raise HTTPException(503, "Storage administration is not configured")
+
+    raw_bytes, detected_mime, ext, digest = decode_and_inspect_image(
+        body.data_base64,
+        body.content_type,
+        max_bytes=MAX_BRANCH_IMAGE_BYTES,
+        min_dim=MIN_BRANCH_IMAGE_DIM,
+        max_dim=MAX_BRANCH_IMAGE_DIM,
+        max_size_label="5 MB",
+        subject_label="Branch image",
+    )
+
+    with _database(read_only=True) as conn:
+        member, _ = _authorize_branch_editor(conn, user["id"], branch_id, "upload branch images")
+        org_id = member["organization_id"]
+        existing = _fetch_branch_images(conn, branch_id, org_id)
+        if len(existing) >= MAX_BRANCH_IMAGES:
+            raise HTTPException(422, f"A branch can have at most {MAX_BRANCH_IMAGES} images")
+
+    object_path = f"{org_id}/{branch_id}/img-{uuid4().hex[:8]}-{digest}.{ext}"
+    public_image_url = upload_storage_object(
+        url,
+        secret,
+        BRANCH_IMAGES_BUCKET,
+        object_path,
+        raw_bytes,
+        detected_mime,
+        unavailable_detail="Branch image storage service is unavailable; retry",
+        failed_detail="Unable to store branch image; retry",
+    )
+
+    try:
+        with _database() as conn:
+            member, _ = _authorize_branch_editor(conn, user["id"], branch_id, "upload branch images")
+            if member["organization_id"] != org_id:
+                raise HTTPException(403, "Organization membership changed during upload")
+            locked_rows = conn.execute(
+                """select sort_order from public.branch_images
+                   where branch_id=%s and organization_id=%s
+                   for update""",
+                (branch_id, org_id),
+            ).fetchall()
+            valid_rows = [r for r in (locked_rows or []) if isinstance(r, dict)]
+            if len(valid_rows) >= MAX_BRANCH_IMAGES:
+                raise HTTPException(422, f"A branch can have at most {MAX_BRANCH_IMAGES} images")
+            next_order = (max(int(r.get("sort_order", 0)) for r in valid_rows) + 1) if valid_rows else 0
+            created = conn.execute(
+                """insert into public.branch_images
+                   (organization_id, branch_id, image_url, storage_path, sort_order)
+                   values (%s, %s, %s, %s, %s)
+                   returning id, image_url, sort_order, created_at""",
+                (org_id, branch_id, public_image_url, object_path, next_order),
+            ).fetchone()
+            images = _fetch_branch_images(conn, branch_id, org_id)
+    except Exception:
+        delete_storage_object_best_effort(url, secret, BRANCH_IMAGES_BUCKET, object_path)
+        raise
+
+    created_serialized = (
+        _serialize_branch_images([created])[0]
+        if isinstance(created, dict) and "id" in created
+        else {
+            "id": "",
+            "image_url": public_image_url,
+            "sort_order": next_order,
+            "created_at": None,
+        }
+    )
+    return {"image": created_serialized, "images": images}
+
+
+@router.patch("/branches/{branch_id}/images/{image_id}/cover")
+def set_branch_cover_image(branch_id: UUID, image_id: UUID, user=Depends(_user)):
+    with _database() as conn:
+        member, _ = _authorize_branch_editor(conn, user["id"], branch_id, "reorder branch images")
+        org_id = member["organization_id"]
+        rows = conn.execute(
+            """select id from public.branch_images
+               where branch_id=%s and organization_id=%s
+               order by sort_order asc, created_at asc, id asc
+               for update""",
+            (branch_id, org_id),
+        ).fetchall()
+        valid_ids = [r["id"] for r in (rows or []) if isinstance(r, dict) and "id" in r]
+        target_matches = [rid for rid in valid_ids if str(rid) == str(image_id)]
+        if not target_matches:
+            raise HTTPException(404, "Branch image not found")
+        reordered = target_matches + [rid for rid in valid_ids if str(rid) != str(image_id)]
+        for idx, rid in enumerate(reordered):
+            conn.execute(
+                "update public.branch_images set sort_order=%s where id=%s and branch_id=%s",
+                (idx, rid, branch_id),
+            )
+        images = _fetch_branch_images(conn, branch_id, org_id)
+    return {"images": images}
+
+
+@router.delete("/branches/{branch_id}/images/{image_id}")
+def delete_branch_image(branch_id: UUID, image_id: UUID, user=Depends(_user)):
+    url, _, _ = _configuration()
+    secret = os.getenv("SUPABASE_SECRET_KEY", "")
+
+    with _database() as conn:
+        member, _ = _authorize_branch_editor(conn, user["id"], branch_id, "delete branch images")
+        org_id = member["organization_id"]
+        deleted = conn.execute(
+            """delete from public.branch_images
+               where id=%s and branch_id=%s and organization_id=%s
+               returning storage_path""",
+            (image_id, branch_id, org_id),
+        ).fetchone()
+        if not deleted:
+            raise HTTPException(404, "Branch image not found")
+        _normalize_branch_image_order(conn, branch_id, org_id)
+        images = _fetch_branch_images(conn, branch_id, org_id)
+        deleted_path = deleted.get("storage_path") if isinstance(deleted, dict) else None
+
+    delete_storage_object_best_effort(url, secret, BRANCH_IMAGES_BUCKET, deleted_path)
+    return {"images": images}
+
+
 @router.delete("/branches/{branch_id}")
 def delete_branch(branch_id: UUID, user=Depends(_user)):
+    url, _, _ = _configuration()
+    secret = os.getenv("SUPABASE_SECRET_KEY", "")
+
     with _database() as conn:
         member = _membership(conn, user["id"])
         if member["state"] != "active" or member["role"] != "owner":
@@ -522,6 +748,10 @@ def delete_branch(branch_id: UUID, user=Depends(_user)):
         ).fetchone()
         if not branch:
             raise HTTPException(404, "Branch not found")
+        image_rows = conn.execute(
+            "select storage_path from public.branch_images where branch_id=%s and organization_id=%s",
+            (branch_id, organization),
+        ).fetchall()
         conn.execute(
             "delete from public.branch_assignments where branch_id=%s and organization_id=%s",
             (branch_id, organization),
@@ -530,6 +760,10 @@ def delete_branch(branch_id: UUID, user=Depends(_user)):
             "delete from public.branches where id=%s and organization_id=%s",
             (branch_id, organization),
         )
+
+    for img in image_rows or []:
+        if isinstance(img, dict) and img.get("storage_path"):
+            delete_storage_object_best_effort(url, secret, BRANCH_IMAGES_BUCKET, img["storage_path"])
     return {"success": True, "message": "Branch deleted", "id": str(branch_id)}
 
 
@@ -955,6 +1189,10 @@ def emergency_shutoff(branch_id: UUID, body: EmergencyShutoffRequest, user=Depen
 class CustomerReportInvestigateRequest(BaseModel):
     notes: str = Field(..., min_length=1, max_length=1000, description="Investigation findings or action plan")
     assigned_specialist_role: Literal["machine_maintenance", "lpg_maintenance"] | None = None
+    linked_incident_id: UUID | None = None
+    create_maintenance_task: bool = False
+    assigned_to_user_id: UUID | None = None
+    task_title: str | None = Field(default=None, max_length=160)
 
     @model_validator(mode="after")
     def validate_notes(self):
@@ -1014,6 +1252,9 @@ def get_branch_customer_reports(branch_id: UUID, status: str | None = None, user
         reports = list_branch_customer_reports(
             conn, member["organization_id"], branch_id, role=member["role"]
         )
+        open_incidents = load_open_branch_incidents_for_reports(
+            conn, member["organization_id"], branch_id, role=member["role"]
+        )
         summary = compute_reports_summary(reports)
         filtered = reports
         if status and status.lower() != "all":
@@ -1021,6 +1262,7 @@ def get_branch_customer_reports(branch_id: UUID, status: str | None = None, user
         return {
             "reports": filtered,
             "summary": summary,
+            "open_branch_incidents": open_incidents,
         }
 
 
@@ -1042,6 +1284,10 @@ def investigate_customer_report(
             assigned_specialist_role=body.assigned_specialist_role,
             actor_user_id=user["id"],
             actor_role=member["role"],
+            linked_incident_id=body.linked_incident_id,
+            create_maintenance_task=body.create_maintenance_task,
+            assigned_to_user_id=body.assigned_to_user_id,
+            task_title=body.task_title,
         )
         return {
             "success": True,

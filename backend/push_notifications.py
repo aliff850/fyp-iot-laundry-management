@@ -179,6 +179,12 @@ def _dispatch_alerts_for_device(
     sent_count = 0
 
     for alert in alerts:
+        incident_id = alert.get("incident_id")
+        alert_url = (
+            f"/branches/{branch_id}/incidents/{incident_id}"
+            if incident_id
+            else target_path
+        )
         payload_json = json.dumps(
             {
                 "title": f"{alert['title']} · {branch_name}",
@@ -188,8 +194,9 @@ def _dispatch_alerts_for_device(
                 "category": category,
                 "kind": alert["kind"],
                 "severity": alert["severity"],
+                "incident_id": str(incident_id) if incident_id else None,
                 "tag": f"spinsense:{category}:{branch_id}:{alert['source_id']}:{alert['kind']}",
-                "url": target_path,
+                "url": alert_url,
                 "occurred_at": alert["occurred_at"],
             },
             separators=(",", ":"),

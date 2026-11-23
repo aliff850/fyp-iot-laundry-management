@@ -1,7 +1,11 @@
 """Read-only Supabase migration 005 status without printing connection details."""
 
+from pathlib import Path
+import sys
+
 import psycopg
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from onboarding import _configuration
 
 

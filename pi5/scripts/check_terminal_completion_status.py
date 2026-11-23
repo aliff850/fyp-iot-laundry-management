@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def main():
-    stage = Path(__file__).resolve().parent
+    stage = Path(__file__).resolve().parents[1]
     gateway_root = stage.parent if stage.name.startswith("staging-") else stage
     sys.path.append(str(gateway_root))
     for line in (gateway_root / ".env").read_text().splitlines():

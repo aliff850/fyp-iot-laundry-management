@@ -103,11 +103,21 @@ export default async function BranchOverviewPage({ params }: BranchOverviewPageP
                   {overview.incidents.length === 1 ? "Active Incident" : "Active Incidents"} Requiring
                   Attention
                 </h2>
-                <div className="space-y-1">
-                  {overview.incidents.map(inc => (
-                    <p key={inc.id} className="text-xs text-muted">
-                      <span className="font-medium text-ink">{inc.title}:</span> {inc.description}
-                    </p>
+                <div className="space-y-2 pt-1">
+                  {overview.incidents.map((inc) => (
+                    <Link
+                      key={inc.id}
+                      href={`/branches/${branchId}/incidents/${inc.id}`}
+                      className="flex min-h-11 flex-col gap-1 rounded-md border border-negative/30 bg-surface/80 px-3 py-2 text-xs transition-colors hover:border-negative focus-visible:outline-2 focus-visible:outline-accent sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <span className="min-w-0 text-muted">
+                        <span className="font-semibold text-ink">{inc.title}:</span>{" "}
+                        {inc.description}
+                      </span>
+                      <span className="shrink-0 font-semibold text-accent">
+                        Inspect &rarr;
+                      </span>
+                    </Link>
                   ))}
                 </div>
               </div>

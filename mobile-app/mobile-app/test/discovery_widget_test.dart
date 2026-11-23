@@ -10,6 +10,7 @@ import 'package:mobile_app/screens/discovery_screen.dart';
 import 'package:mobile_app/services/location_service.dart';
 import 'package:mobile_app/services/public_api_service.dart';
 import 'package:mobile_app/theme/spinsense_theme.dart';
+import 'package:mobile_app/widgets/branch_banner_image.dart';
 
 class _FakeLocationService implements LocationService {
   _FakeLocationService(this.result);
@@ -428,5 +429,150 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('View list'), findsOneWidget);
+  });
+
+  testWidgets('stretches List/Map toggle and Filters + Near me pill rows full width at equal 40dp height on mobile', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final client = MockClient((req) async {
+      if (req.url.path == '/public/organizations') {
+        return http.Response('{"organizations": []}', 200);
+      }
+      return http.Response('{"branches": [], "next_cursor": null}', 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: SpinSenseTheme.darkTheme,
+        home: DiscoveryScreen(
+          apiService: PublicApiService(baseUrl: 'https://x.test', client: client),
+          tileProvider: _BlankMemoryTileProvider(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final toggleFinder = find.byType(SegmentedButton<Object?>).evaluate().isNotEmpty
+        ? find.byType(SegmentedButton<Object?>)
+        : find.byWidgetPredicate((w) => w.runtimeType.toString().startsWith('SegmentedButton<'));
+    final filtersBtn = find.ancestor(
+      of: find.text('Filters'),
+      matching: find.byType(OutlinedButton),
+    );
+    final nearMeBtn = find.ancestor(
+      of: find.text('Near me'),
+      matching: find.byType(OutlinedButton),
+    );
+
+    final toggleRect = tester.getRect(toggleFinder);
+    final filtersRect = tester.getRect(filtersBtn);
+    final nearMeRect = tester.getRect(nearMeBtn);
+
+    final filtersWidget = tester.widget<OutlinedButton>(filtersBtn);
+    final nearMeWidget = tester.widget<OutlinedButton>(nearMeBtn);
+    expect(filtersWidget.style?.shape?.resolve({}), isA<StadiumBorder>());
+    expect(nearMeWidget.style?.shape?.resolve({}), isA<StadiumBorder>());
+
+    // Full width inside 16px horizontal padding (390 - 32 = 358px) at slimmer 40dp height
+    expect(toggleRect.width, closeTo(358.0, 1.0));
+    expect(toggleRect.height, closeTo(40.0, 1.0));
+
+    // Filters & Near me sit on one row directly below toggle, matching 40dp height & filling full width
+    expect(filtersRect.top, greaterThan(toggleRect.bottom - 1.0));
+    expect(filtersRect.top, closeTo(nearMeRect.top, 0.5));
+    expect(filtersRect.height, closeTo(40.0, 1.0));
+    expect(nearMeRect.height, closeTo(40.0, 1.0));
+    expect(filtersRect.width, closeTo(nearMeRect.width, 1.0));
+    expect(nearMeRect.left - filtersRect.right, closeTo(8.0, 0.5));
+    expect(nearMeRect.right - filtersRect.left, closeTo(358.0, 1.0));
+  });
+
+  testWidgets('renders branch cover banner on List cards and selected Map pin preview card', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final client = MockClient((req) async {
+      if (req.url.path == '/public/organizations') {
+        return http.Response(
+          jsonEncode({
+            'organizations': [
+              {'id': 'org-1', 'name': 'SpinCo'},
+            ],
+          }),
+          200,
+        );
+      }
+      return http.Response(
+        jsonEncode({
+          'branches': [
+            {
+              'branch_id': 'b-cover',
+              'name': 'Test Branch 3',
+              'organization_id': 'org-1',
+              'organization_name': 'SpinCo',
+              'cover_image_url': 'https://img.test/cover.jpg',
+              'city': 'Shah Alam',
+              'region': 'Selangor',
+              'timezone': 'Asia/Kuala_Lumpur',
+              'latitude': 3.0738,
+              'longitude': 101.4910,
+              'service_status': 'open',
+              'hours_status': 'open_regular_hours',
+              'availability': {
+                'washers_available': 2,
+                'washers_total': 2,
+                'dryers_available': 1,
+                'dryers_total': 1,
+                'washer_dryers_available': 0,
+                'washer_dryers_total': 0,
+                'total_available': 3,
+                'total_machines': 3,
+              },
+            },
+          ],
+          'next_cursor': null,
+        }),
+        200,
+      );
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: SpinSenseTheme.darkTheme,
+        home: DiscoveryScreen(
+          apiService: PublicApiService(baseUrl: 'https://x.test', client: client),
+          tileProvider: _BlankMemoryTileProvider(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // List card shows cover banner above branch title
+    final listBannerFinder = find.byType(BranchBannerImage);
+    expect(listBannerFinder, findsOneWidget);
+    expect(
+      tester.getRect(listBannerFinder).bottom,
+      lessThanOrEqualTo(tester.getRect(find.text('Test Branch 3')).top),
+    );
+
+    // Tap "Locate on map" / focus marker on map -> switches to Map tab with selected pin preview card
+    await tester.tap(find.byTooltip('Focus marker on map'));
+    await tester.pumpAndSettle();
+
+    final mapBannerFinder = find.byType(BranchBannerImage);
+    expect(mapBannerFinder, findsOneWidget);
+    expect(find.text('View branch'), findsOneWidget);
+    expect(
+      tester.getRect(mapBannerFinder).bottom,
+      lessThanOrEqualTo(tester.getRect(find.text('Test Branch 3')).top),
+    );
+    expect(tester.takeException(), isNull);
   });
 }

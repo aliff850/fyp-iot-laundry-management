@@ -1,0 +1,10 @@
+[project]
+name = "spinsense-pi5-gateway"
+version = "0.1.0"
+description = "SpinSense Raspberry Pi 5 edge gateway, ingestion, sync, and local dashboard"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", ".."]
+addopts = "-ra"

@@ -1,14 +1,16 @@
 """Apply reviewed additive migration 005 after a rollback-only rehearsal."""
 
 from pathlib import Path
+import sys
 
 import psycopg
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from onboarding import _configuration
 
 
 def main():
-    migration = Path(__file__).resolve().parent / "migrations" / "005_machine_remote_commands.sql"
+    migration = Path(__file__).resolve().parents[1] / "migrations" / "005_machine_remote_commands.sql"
     sql = migration.read_text().replace("begin;", "", 1).rsplit("commit;", 1)[0]
     _, _, dsn = _configuration()
     with psycopg.connect(dsn, connect_timeout=5) as conn:

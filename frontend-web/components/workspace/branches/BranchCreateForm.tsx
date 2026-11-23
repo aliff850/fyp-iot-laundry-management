@@ -1,11 +1,16 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Clock } from "lucide-react";
+import { uploadBranchImageAction } from "@/app/branches/[branchId]/details/actions";
 import { createWorkspaceBranch } from "@/app/branches/new/actions";
 import { Notice } from "@/components/auth/AuthForm";
+import {
+  BranchImagesManager,
+  type DraftBranchImage,
+} from "@/components/workspace/branches/BranchImagesManager";
 import { BranchLocationPicker } from "@/components/workspace/branches/BranchLocationPicker";
 import { inputClass, primaryButton, secondaryButton, textLink } from "@/lib/auth/styles";
 import type { ManagerOption } from "@/lib/auth/business";
@@ -31,6 +36,97 @@ export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
     primary_manager_user_id: managers.find(m => m.role === "owner")?.user_id ?? managers[0]?.user_id ?? "",
   });
   const [state, action, pending] = useActionState(createWorkspaceBranch, {});
+  const [draftImages, setDraftImages] = useState<DraftBranchImage[]>([]);
+  const draftImagesRef = useRef<DraftBranchImage[]>([]);
+  const handledBranchIdRef = useRef<string | null>(null);
+  const [photoUploadState, setPhotoUploadState] = useState<{
+    uploading: boolean;
+    statusText: string;
+    error: string | null;
+    failedBranchId: string | null;
+  }>({ uploading: false, statusText: "", error: null, failedBranchId: null });
+
+  useEffect(() => {
+    draftImagesRef.current = draftImages;
+  }, [draftImages]);
+
+  useEffect(() => {
+    return () => {
+      for (const item of draftImagesRef.current) {
+        URL.revokeObjectURL(item.previewUrl);
+      }
+    };
+  }, []);
+
+  const handleAddDraftFiles = useCallback((files: File[]) => {
+    setDraftImages((prev) => [
+      ...prev,
+      ...files.map((file) => ({
+        id: crypto.randomUUID(),
+        file,
+        previewUrl: URL.createObjectURL(file),
+      })),
+    ]);
+  }, []);
+
+  const handleSetDraftCover = useCallback((id: string) => {
+    setDraftImages((prev) => {
+      const target = prev.find((item) => item.id === id);
+      if (!target) return prev;
+      return [target, ...prev.filter((item) => item.id !== id)];
+    });
+  }, []);
+
+  const handleRemoveDraft = useCallback((id: string) => {
+    setDraftImages((prev) => {
+      const target = prev.find((item) => item.id === id);
+      if (target) {
+        URL.revokeObjectURL(target.previewUrl);
+      }
+      return prev.filter((item) => item.id !== id);
+    });
+  }, []);
+
+  const uploadPendingImages = useCallback(
+    async (branchId: string, queue: DraftBranchImage[]) => {
+      setPhotoUploadState({
+        uploading: true,
+        statusText: `Uploading photo 1 of ${queue.length}…`,
+        error: null,
+        failedBranchId: null,
+      });
+
+      for (let i = 0; i < queue.length; i += 1) {
+        const item = queue[i];
+        setPhotoUploadState({
+          uploading: true,
+          statusText: `Uploading photo ${i + 1} of ${queue.length}…`,
+          error: null,
+          failedBranchId: null,
+        });
+        const formData = new FormData();
+        formData.set("image", item.file);
+        const res = await uploadBranchImageAction(branchId, formData);
+        if (!res.success) {
+          const remaining = queue.slice(i);
+          setDraftImages(remaining);
+          setPhotoUploadState({
+            uploading: false,
+            statusText: "",
+            error: res.message || `Failed to upload ${item.file.name}.`,
+            failedBranchId: branchId,
+          });
+          return;
+        }
+        URL.revokeObjectURL(item.previewUrl);
+      }
+
+      setDraftImages([]);
+      setPhotoUploadState({ uploading: false, statusText: "", error: null, failedBranchId: null });
+      router.push(`/branches/${branchId}/hardware-setup`);
+    },
+    [router],
+  );
 
   const handleToggle24Hours = (checked: boolean) => {
     setIs24Hours(checked);
@@ -50,11 +146,18 @@ export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
 
   useEffect(() => {
     if (state.success && state.branchId) {
-      router.push(`/branches/${state.branchId}/hardware-setup`);
+      if (handledBranchIdRef.current === state.branchId) return;
+      handledBranchIdRef.current = state.branchId;
+      const pendingPhotos = draftImagesRef.current;
+      if (pendingPhotos.length === 0) {
+        router.push(`/branches/${state.branchId}/hardware-setup`);
+        return;
+      }
+      void uploadPendingImages(state.branchId, pendingPhotos);
     } else if (state.success) {
       router.push("/branches");
     }
-  }, [state.success, state.branchId, router]);
+  }, [state.success, state.branchId, router, uploadPendingImages]);
 
   const field = (
     name: keyof typeof values,
@@ -194,6 +297,15 @@ export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
               <input type="hidden" name="latitude" value={values.latitude} />
               <input type="hidden" name="longitude" value={values.longitude} />
             </div>
+
+            <BranchImagesManager
+              mode="draft"
+              draftImages={draftImages}
+              onAddFiles={handleAddDraftFiles}
+              onSetCover={handleSetDraftCover}
+              onRemove={handleRemoveDraft}
+              disabled={pending || photoUploadState.uploading}
+            />
           </div>
         )}
 
@@ -272,6 +384,14 @@ export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
                   {managers.find(m => m.user_id === values.primary_manager_user_id)?.full_name || "Unassigned"}
                 </dd>
               </div>
+              <div className="sm:col-span-2 border-t border-rule pt-2.5">
+                <dt className="text-xs text-muted">Branch photos</dt>
+                <dd className="mt-0.5 font-semibold text-ink tabular-nums">
+                  {draftImages.length > 0
+                    ? `${draftImages.length} photo${draftImages.length === 1 ? "" : "s"} ready to upload (optional)`
+                    : "None (optional)"}
+                </dd>
+              </div>
             </dl>
             <p className="text-xs text-muted">
               The branch begins closed to customers. Publishing and device setup follow later.
@@ -287,6 +407,38 @@ export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
 
       {validationMessage && <Notice kind="error">{validationMessage}</Notice>}
       {state.message && <Notice kind={state.success ? "success" : "error"}>{state.message}</Notice>}
+      {photoUploadState.uploading && photoUploadState.statusText ? (
+        <Notice kind="info">{photoUploadState.statusText}</Notice>
+      ) : null}
+      {photoUploadState.error && photoUploadState.failedBranchId ? (
+        <div className="space-y-3 rounded-md border border-negative/50 bg-negative/10 p-4 text-xs text-negative">
+          <p role="alert">Branch created, but photo upload failed: {photoUploadState.error}</p>
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+            <button
+              type="button"
+              disabled={draftImages.length === 0 || photoUploadState.uploading}
+              onClick={() =>
+                void uploadPendingImages(photoUploadState.failedBranchId!, draftImages)
+              }
+              className="inline-flex min-h-11 items-center justify-center rounded-md border border-ink bg-ink px-3.5 text-xs font-semibold text-surface transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50"
+            >
+              Retry failed uploads
+            </button>
+            <Link
+              href={`/branches/${photoUploadState.failedBranchId}/details`}
+              className={secondaryButton}
+            >
+              Manage photos in Branch Details
+            </Link>
+            <Link
+              href={`/branches/${photoUploadState.failedBranchId}/hardware-setup`}
+              className={textLink}
+            >
+              Continue to hardware setup
+            </Link>
+          </div>
+        </div>
+      ) : null}
 
       <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between pt-2">
         <Link href="/branches" className={textLink}>
@@ -337,8 +489,16 @@ export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
               Continue
             </button>
           ) : (
-            <button type="submit" disabled={pending || !requestId} className={primaryButton}>
-              {pending ? "Creating…" : "Create branch"}
+            <button
+              type="submit"
+              disabled={pending || !requestId || photoUploadState.uploading || Boolean(state.branchId)}
+              className={primaryButton}
+            >
+              {pending
+                ? "Creating…"
+                : photoUploadState.uploading
+                  ? "Uploading photos…"
+                  : "Create branch"}
             </button>
           )}
         </div>

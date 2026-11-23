@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 ENV = ROOT / ".env"
 BACKUP = Path("/home/aliff850/edge_backups/machine-controls-20261112/.env.pre-controls")
 

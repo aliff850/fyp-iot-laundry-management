@@ -6,6 +6,7 @@ import '../config/app_config.dart';
 import '../models/public_models.dart';
 import '../services/location_service.dart';
 import '../theme/spinsense_theme.dart';
+import 'branch_banner_image.dart';
 import 'organization_logo_badge.dart';
 import 'status_badge.dart';
 
@@ -376,70 +377,83 @@ class _BranchMapPaneState extends State<BranchMapPane> {
               child: SafeArea(
                 top: false,
                 child: Card(
+                  clipBehavior: Clip.antiAlias,
                   color: SpinSenseColors.surface,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(8),
                     side: const BorderSide(color: SpinSenseColors.accent, width: 1.5),
                   ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (selected.hasCoverImage)
+                        BranchBannerImage(
+                          imageUrl: selected.coverImageUrl!,
+                          height: 96,
+                          semanticLabel: '${selected.name} photo',
+                        ),
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            OrganizationLogoBadge(
-                              organizationName: selected.organizationName,
-                              logoUrl: selected.organizationLogoUrl,
-                              size: 36,
-                              highlighted: true,
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    selected.name,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(context).textTheme.titleMedium,
+                            Row(
+                              children: [
+                                OrganizationLogoBadge(
+                                  organizationName: selected.organizationName,
+                                  logoUrl: selected.organizationLogoUrl,
+                                  size: 36,
+                                  highlighted: true,
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        selected.name,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: Theme.of(context).textTheme.titleMedium,
+                                      ),
+                                      Text(
+                                        selected.organizationName,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: Theme.of(context).textTheme.bodySmall,
+                                      ),
+                                    ],
                                   ),
-                                  Text(
-                                    selected.organizationName,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(context).textTheme.bodySmall,
-                                  ),
-                                ],
-                              ),
+                                ),
+                                const SizedBox(width: 8),
+                                ElevatedButton(
+                                  onPressed: () => widget.onOpenBranch(selected),
+                                  child: const Text('View branch'),
+                                ),
+                              ],
                             ),
-                            const SizedBox(width: 8),
-                            ElevatedButton(
-                              onPressed: () => widget.onOpenBranch(selected),
-                              child: const Text('View branch'),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 6,
+                              children: [
+                                StatusBadge.fromHoursStatus(selected.hoursStatus),
+                                StatusBadge(
+                                  label:
+                                      '${selected.availability.totalAvailable}/${selected.availability.totalMachines} free',
+                                  icon: Icons.local_laundry_service_outlined,
+                                  foreground: selected.availability.totalAvailable > 0
+                                      ? SpinSenseColors.positive
+                                      : SpinSenseColors.muted,
+                                ),
+                              ],
                             ),
                           ],
                         ),
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 6,
-                          children: [
-                            StatusBadge.fromHoursStatus(selected.hoursStatus),
-                            StatusBadge(
-                              label:
-                                  '${selected.availability.totalAvailable}/${selected.availability.totalMachines} free',
-                              icon: Icons.local_laundry_service_outlined,
-                              foreground: selected.availability.totalAvailable > 0
-                                  ? SpinSenseColors.positive
-                                  : SpinSenseColors.muted,
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
               ),

@@ -190,7 +190,7 @@ def test_admin_key_is_never_sent_as_bearer(monkeypatch):
 
 
 def test_prepared_migration_declares_denied_browser_access():
-    sql = (Path(__file__).parent / "migrations" / "001_onboarding.sql").read_text(encoding="utf-8")
+    sql = (Path(__file__).resolve().parents[1] / "migrations" / "001_onboarding.sql").read_text(encoding="utf-8")
     for table in ("organizations", "profiles", "memberships", "join_requests", "join_request_decisions"):
         assert f"alter table public.{table} enable row level security" in sql
     assert "public.join_request_decisions from anon, authenticated" in sql
@@ -312,5 +312,86 @@ def test_database_failure_reports_safe_category_without_connection_string(monkey
     assert error.value.detail == "Onboarding database is unavailable"
     assert "phase=connect category=timeout" in caplog.text
     assert secret not in caplog.text
+
+
+def test_update_own_profile_updates_profiles_without_changing_role_or_intent(monkeypatch):
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.side_effect = [
+        {"state": "active", "active": True, "organization_state": "active"},
+        {
+            "organization_id": ORG_ID,
+            "organization_name": "SpinCo",
+            "organization_state": "active",
+            "business_timezone": "Asia/Kuala_Lumpur",
+            "state": "active",
+            "role": "branch_manager",
+            "active": True,
+            "full_name": "Amina Updated",
+            "phone": "+60129998888",
+        },
+    ]
+
+    @contextmanager
+    def database(**_kwargs):
+        yield conn
+
+    monkeypatch.setattr(onboarding, "_database", database)
+    payload = onboarding.ProfileUpdate(full_name="  Amina Updated  ", phone="+60129998888")
+    result = onboarding.update_own_profile(payload, user())
+
+    assert result["profile"] == {"full_name": "Amina Updated", "phone": "+60129998888"}
+    assert result["role"] == "branch_manager"
+    assert result["organization"]["business_timezone"] == "Asia/Kuala_Lumpur"
+    update_call = conn.execute.call_args_list[1]
+    assert "update public.profiles set full_name = %s, phone = %s" in update_call.args[0]
+    assert update_call.args[1] == ("Amina Updated", "+60129998888", USER_ID)
+
+    # Inactive membership or closed organization is denied with 403
+    conn.execute.return_value.fetchone.side_effect = [
+        {"state": "deactivated", "active": False, "organization_state": "active"},
+    ]
+    with pytest.raises(HTTPException) as exc:
+        onboarding.update_own_profile(payload, user())
+    assert exc.value.status_code == 403
+
+    with pytest.raises(ValueError):
+        onboarding.ProfileUpdate(full_name=" ", phone="+60129998888")
+    with pytest.raises(ValueError):
+        onboarding.ProfileUpdate(full_name="Amina", phone="bad!")
+
+
+def test_update_organization_owner_only_and_timezone_validated(monkeypatch):
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.side_effect = [
+        {"organization_id": ORG_ID},  # _owner_organization
+        {
+            "id": ORG_ID,
+            "name": "SpinCo Central",
+            "business_timezone": "Asia/Singapore",
+            "logo_url": "https://cdn.test/logo.png",
+        },
+    ]
+
+    @contextmanager
+    def database(**_kwargs):
+        yield conn
+
+    monkeypatch.setattr(onboarding, "_database", database)
+    payload = onboarding.OrganizationUpdate(
+        name="  SpinCo Central  ",
+        business_timezone="Asia/Singapore",
+    )
+    res = onboarding.update_organization(payload, user())
+    assert res["organization"] == {
+        "id": str(ORG_ID),
+        "name": "SpinCo Central",
+        "business_timezone": "Asia/Singapore",
+        "logo_url": "https://cdn.test/logo.png",
+    }
+
+    with pytest.raises(ValueError):
+        onboarding.OrganizationUpdate(name="SpinCo", business_timezone="Mars/Phobos")
+    with pytest.raises(ValueError):
+        onboarding.OrganizationUpdate(name="   ", business_timezone="Asia/Kuala_Lumpur")
 
 

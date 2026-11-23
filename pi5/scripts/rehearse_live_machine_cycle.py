@@ -2,6 +2,7 @@
 import json
 import os
 import sqlite3
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -9,7 +10,8 @@ from pathlib import Path
 import pymysql
 from pymysql.cursors import DictCursor
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 values = {}
 for line in (ROOT / ".env").read_text().splitlines():
     if "=" in line and not line.lstrip().startswith("#"):

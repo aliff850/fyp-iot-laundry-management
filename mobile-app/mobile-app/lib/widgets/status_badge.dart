@@ -47,7 +47,7 @@ class StatusBadge extends StatelessWidget {
       case PublicMachineAvailabilityStatus.unknown:
         return StatusBadge(
           label: status.displayLabel,
-          icon: Icons.help_outline_rounded,
+          icon: Icons.cloud_off_outlined,
           foreground: SpinSenseColors.muted,
         );
     }

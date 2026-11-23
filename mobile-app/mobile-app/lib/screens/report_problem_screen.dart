@@ -15,7 +15,6 @@ class ReportProblemScreen extends StatefulWidget {
     required this.organizationName,
     required this.machineId,
     required this.machineLabel,
-    this.sourceKind,
   });
 
   final PublicApiService apiService;
@@ -24,7 +23,6 @@ class ReportProblemScreen extends StatefulWidget {
   final String organizationName;
   final String machineId;
   final String machineLabel;
-  final String? sourceKind;
 
   @override
   State<ReportProblemScreen> createState() => _ReportProblemScreenState();
@@ -185,7 +183,6 @@ class _ReportProblemScreenState extends State<ReportProblemScreen> {
                         organizationName: widget.organizationName,
                         branchName: widget.branchName,
                         machineLabel: widget.machineLabel,
-                        sourceKind: widget.sourceKind,
                       ),
                       const SizedBox(height: 16),
                       if (_submitError != null) ...[
@@ -405,13 +402,11 @@ class _LockedAssetCard extends StatelessWidget {
     required this.organizationName,
     required this.branchName,
     required this.machineLabel,
-    this.sourceKind,
   });
 
   final String organizationName;
   final String branchName;
   final String machineLabel;
-  final String? sourceKind;
 
   @override
   Widget build(BuildContext context) {
@@ -436,17 +431,15 @@ class _LockedAssetCard extends StatelessWidget {
               organizationName,
               style: const TextStyle(color: SpinSenseColors.muted, fontSize: 12),
             ),
-            if (sourceKind != null && sourceKind!.toLowerCase() == 'simulated')
-              const Padding(
-                padding: EdgeInsets.only(top: 6),
-                child: Text(
-                  'Reported against a simulated demo machine.',
-                  style: TextStyle(
-                    color: SpinSenseColors.warning,
-                    fontSize: 12,
-                  ),
-                ),
+            const SizedBox(height: 10),
+            const Text(
+              'Use this form for QR payment issues, poor wash/dry results, stuck doors, spills, or refund assistance. Leave optional contact details if you would like store staff to follow up.',
+              style: TextStyle(
+                color: SpinSenseColors.muted,
+                fontSize: 12,
+                height: 1.4,
               ),
+            ),
           ],
         ),
       ),

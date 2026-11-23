@@ -1,7 +1,7 @@
 """Check Pi machine-service configuration without printing credential values."""
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def read_env(path):

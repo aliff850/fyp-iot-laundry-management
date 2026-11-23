@@ -5,7 +5,7 @@ from pathlib import Path
 
 import paho.mqtt.client as mqtt
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def read_env(path):

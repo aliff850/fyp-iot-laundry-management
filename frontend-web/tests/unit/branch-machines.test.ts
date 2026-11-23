@@ -97,4 +97,61 @@ describe("live branch machine UI", () => {
     expect(html).toContain("No approved machines are registered for this branch.");
     expect(html).not.toContain("Demo Washer 01");
   });
+
+  it("renders explainable fault diagnosis and enables CLEAR FAULT only for operators", () => {
+    const faultedWasher: RemoteMachine = {
+      ...washer,
+      state: "error",
+      data: {
+        ...washer.data,
+        fault_code: "E01",
+        fault_name: "Water Inlet Failure",
+      },
+      diagnosis: {
+        fault_code: "E01",
+        title: "Water Inlet Failure",
+        source_status: "placeholder_washer_guide",
+        disclaimer: "Placeholder troubleshooting guide pending vendor manual.",
+        plain_explanation: "The washer did not detect expected fill within intake window.",
+        likely_causes: ["Wall shutoff valve closed"],
+        safety_precautions: "Verify floor dryness around outlets.",
+        troubleshooting_steps: ["Confirm water supply valve is fully open."],
+      },
+    };
+
+    const ownerHtml = renderToString(React.createElement(MachineDetailModal, {
+      machine: faultedWasher,
+      branchId: "branch-1",
+      branchOpen: true,
+      role: "owner",
+      onClose: () => {},
+    }));
+    expect(ownerHtml).toContain("Water Inlet Failure");
+    expect(ownerHtml).toContain("Placeholder guide");
+    expect(ownerHtml).toContain("Verify floor dryness around outlets.");
+    expect(ownerHtml).toContain("Confirm water supply valve is fully open.");
+    expect(ownerHtml).toContain("CLEAR FAULT");
+    const clearFaultBtn = ownerHtml.match(/<button[^>]*>CLEAR FAULT<\/button>/)?.[0] ?? "";
+    expect(clearFaultBtn).toContain("type=\"button\"");
+    expect(clearFaultBtn).not.toMatch(/disabled="/);
+
+    const specialistHtml = renderToString(React.createElement(MachineDetailModal, {
+      machine: {
+        ...faultedWasher,
+        diagnosis: {
+          ...faultedWasher.diagnosis!,
+          fault_code: "E14",
+          title: "Unverified vendor code (E14)",
+          source_status: "unverified_vendor_code",
+          disclaimer: "Unverified vendor fault code — no verified manufacturer documentation is loaded.",
+        },
+      },
+      branchId: "branch-1",
+      branchOpen: true,
+      role: "machine_maintenance",
+      onClose: () => {},
+    }));
+    expect(specialistHtml).toContain("Unverified vendor code (E14)");
+    expect(specialistHtml).not.toContain("CLEAR FAULT");
+  });
 });

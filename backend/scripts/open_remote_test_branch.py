@@ -1,5 +1,9 @@
 """Open only the explicitly selected branch for one authorized command test."""
 
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from onboarding import _database
 
 

@@ -1,15 +1,19 @@
 """Check unpaid checkout cancellation against the isolated Pi rehearsal database."""
 import os
+from pathlib import Path
+import sys
 import uuid
 
 import pymysql
 from pymysql.cursors import DictCursor
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 import demo_checkout
 
 
 def main():
-    with open(".env", encoding="utf-8") as config:
+    with (ROOT / ".env").open(encoding="utf-8") as config:
         for line in config:
             if line.startswith("SPINSENSE_DB_") and "=" in line:
                 key, value = line.strip().split("=", 1)

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/public_models.dart';
 import '../services/location_service.dart';
 import '../theme/spinsense_theme.dart';
+import 'branch_banner_image.dart';
 import 'organization_logo_badge.dart';
 import 'status_badge.dart';
 
@@ -29,6 +30,7 @@ class BranchSummaryCard extends StatelessWidget {
     final cityLabel = branch.cityRegionLabel;
 
     return Card(
+      clipBehavior: Clip.antiAlias,
       color: selected ? SpinSenseColors.navySelected : SpinSenseColors.surface,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(8),
@@ -40,11 +42,21 @@ class BranchSummaryCard extends StatelessWidget {
       child: InkWell(
         onTap: onOpenDetail,
         borderRadius: BorderRadius.circular(8),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (branch.hasCoverImage)
+              BranchBannerImage(
+                imageUrl: branch.coverImageUrl!,
+                height: 136,
+                semanticLabel: '${branch.name} photo',
+              ),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -164,8 +176,10 @@ class BranchSummaryCard extends StatelessWidget {
                   );
                 },
               ),
-            ],
-          ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );

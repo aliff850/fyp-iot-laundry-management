@@ -164,6 +164,7 @@ def _build_machine_summaries_and_events(
                 "detail": detail,
                 "source_id": source_id,
                 "device_label": label,
+                "incident_id": str(row["active_incident_id"]) if row.get("active_incident_id") else None,
                 "occurred_at": sample_at_iso,
                 "active": True,
             })
@@ -253,6 +254,8 @@ def _build_lpg_summaries_and_events(
                 "active": True,
             })
 
+        active_inc_id = str(row["active_incident_id"]) if row.get("active_incident_id") else None
+
         if fresh and not is_maint and isinstance(pct, (int, float)) and math.isfinite(pct):
             if pct < 5:
                 events.append({
@@ -266,6 +269,7 @@ def _build_lpg_summaries_and_events(
                     "detail": f"{label} at {pct:.1f}% remaining",
                     "source_id": source_id,
                     "device_label": label,
+                    "incident_id": active_inc_id,
                     "occurred_at": sample_at_iso,
                     "active": True,
                 })
@@ -281,6 +285,7 @@ def _build_lpg_summaries_and_events(
                     "detail": f"{label} at {pct:.1f}% remaining",
                     "source_id": source_id,
                     "device_label": label,
+                    "incident_id": active_inc_id,
                     "occurred_at": sample_at_iso,
                     "active": True,
                 })
@@ -300,6 +305,7 @@ def _build_lpg_summaries_and_events(
                     "detail": f"{label} estimated {est_ppm:.0f} ppm (MQ-6)",
                     "source_id": source_id,
                     "device_label": label,
+                    "incident_id": active_inc_id,
                     "occurred_at": sample_at_iso,
                     "active": True,
                 })
@@ -315,6 +321,7 @@ def _build_lpg_summaries_and_events(
                     "detail": f"{label} estimated {est_ppm:.0f} ppm (MQ-6)",
                     "source_id": source_id,
                     "device_label": label,
+                    "incident_id": active_inc_id,
                     "occurred_at": sample_at_iso,
                     "active": True,
                 })
@@ -412,9 +419,17 @@ def get_notifications(
         if "machine" in allowed_categories:
             machine_rows = conn.execute(
                 """select d.id, d.branch_id, d.source_id, d.device_type, d.source_kind, d.label, d.status,
-                          m.state_payload, m.cloud_seen_at, m.gateway_seen_at
+                          m.state_payload, m.cloud_seen_at, m.gateway_seen_at,
+                          inc.id as active_incident_id
                    from public.devices d
                    left join public.machine_latest m on m.device_id = d.id
+                   left join lateral (
+                       select id from public.incidents inc
+                       where inc.device_id = d.id
+                         and (inc.edge_condition_state = 'active' or inc.workflow_state <> 'resolved')
+                       order by inc.opened_at desc
+                       limit 1
+                   ) inc on true
                    where d.organization_id = %s
                      and d.branch_id = any(%s)
                      and d.status = 'active'
@@ -445,7 +460,8 @@ def get_notifications(
             lpg_rows = conn.execute(
                 """select d.id, d.branch_id, d.source_id, d.source_kind, d.label, d.capacity_kg, d.status,
                           o.record_id, o.gateway_receipt_at, o.source_recorded_at,
-                          o.cloud_received_at, o.payload, o.quality
+                          o.cloud_received_at, o.payload, o.quality,
+                          inc.id as active_incident_id
                    from public.devices d
                    left join lateral (
                        select record_id, gateway_receipt_at, source_recorded_at,
@@ -465,6 +481,13 @@ def get_notifications(
                            o.id desc
                        limit 1
                    ) o on true
+                   left join lateral (
+                       select id from public.incidents inc
+                       where inc.device_id = d.id
+                         and (inc.edge_condition_state = 'active' or inc.workflow_state <> 'resolved')
+                       order by inc.opened_at desc
+                       limit 1
+                   ) inc on true
                    where d.organization_id = %s
                      and d.branch_id = any(%s)
                      and d.status in ('active', 'maintenance')

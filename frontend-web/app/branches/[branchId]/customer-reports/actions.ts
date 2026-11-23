@@ -19,7 +19,8 @@ export async function executeInvestigateReport(
   branchId: string,
   reportId: string,
   notes: string,
-  assignedSpecialistRole?: "machine_maintenance" | "lpg_maintenance" | null
+  assignedSpecialistRole?: "machine_maintenance" | "lpg_maintenance" | null,
+  linkedIncidentId?: string | null
 ): Promise<CustomerReportActionResponse> {
   const trimmed = notes.trim();
   if (!trimmed) {
@@ -33,7 +34,8 @@ export async function executeInvestigateReport(
     branchId,
     reportId,
     trimmed,
-    assignedSpecialistRole ?? null
+    assignedSpecialistRole ?? null,
+    { linkedIncidentId: linkedIncidentId ?? null }
   );
 
   if (!result.ok) {
@@ -45,6 +47,9 @@ export async function executeInvestigateReport(
 
   revalidatePath(`/branches/${branchId}/customer-reports`);
   revalidatePath(`/branches/${branchId}/overview`);
+  if (linkedIncidentId) {
+    revalidatePath(`/branches/${branchId}/incidents/${linkedIncidentId}`);
+  }
 
   return {
     success: true,

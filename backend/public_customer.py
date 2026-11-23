@@ -7,9 +7,9 @@ import json
 import math
 import os
 import re
-import struct
 from typing import Any, Literal
-from uuid import UUID, uuid4
+from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -18,6 +18,12 @@ from pydantic import BaseModel, Field, model_validator
 from branch_schedules import compute_open_now
 from branches import _membership
 from onboarding import PHONE, _configuration, _database, _user
+from storage_images import (
+    ALLOWED_IMAGE_TYPES,
+    delete_storage_object_best_effort,
+    inspect_image_bytes as _shared_inspect_image_bytes,
+    upload_storage_object,
+)
 
 router = APIRouter()
 
@@ -25,15 +31,13 @@ LOGO_BUCKET = "organization-logos"
 MAX_LOGO_BYTES = 1_048_576  # 1 MB
 MIN_LOGO_DIM = 32
 MAX_LOGO_DIM = 2048
-ALLOWED_LOGO_TYPES: dict[str, str] = {
-    "image/png": "png",
-    "image/jpeg": "jpg",
-    "image/webp": "webp",
-}
+ALLOWED_LOGO_TYPES: dict[str, str] = ALLOWED_IMAGE_TYPES
 
 EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,120}\.[^@\s]{2,24}$")
 
 FRESH_MACHINE_WINDOW_SECONDS = 45
+PEAK_DEMAND_WINDOW_DAYS = 90
+WEEKDAY_KEYS: tuple[str, ...] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 REPORT_RATE_LIMIT_MAX = 5
 REPORT_RATE_LIMIT_WINDOW_SECONDS = 900  # 15 minutes
 
@@ -93,60 +97,15 @@ class PublicReportCreate(BaseModel):
 
 def inspect_image_bytes(raw: bytes, declared_mime: str) -> tuple[Literal["image/png", "image/jpeg", "image/webp"], int, int]:
     """Verify magic bytes, dimensions, and size without trusting filename/client mime claims."""
-    if not raw or len(raw) > MAX_LOGO_BYTES:
-        raise ValueError("Logo image must be between 1 byte and 1 MB")
-
-    detected: Literal["image/png", "image/jpeg", "image/webp"] | None = None
-    width = 0
-    height = 0
-
-    if raw.startswith(b"\x89PNG\r\n\x1a\n") and len(raw) >= 24:
-        detected = "image/png"
-        width, height = struct.unpack(">II", raw[16:24])
-    elif raw.startswith(b"RIFF") and len(raw) >= 30 and raw[8:12] == b"WEBP":
-        detected = "image/webp"
-        chunk = raw[12:16]
-        if chunk == b"VP8X" and len(raw) >= 30:
-            width = 1 + int.from_bytes(raw[24:27], "little")
-            height = 1 + int.from_bytes(raw[27:30], "little")
-        elif chunk == b"VP8L" and len(raw) >= 25:
-            bits = int.from_bytes(raw[21:25], "little")
-            width = (bits & 0x3FFF) + 1
-            height = ((bits >> 14) & 0x3FFF) + 1
-        elif chunk == b"VP8 " and len(raw) >= 30:
-            width = int.from_bytes(raw[26:28], "little") & 0x3FFF
-            height = int.from_bytes(raw[28:30], "little") & 0x3FFF
-    elif raw.startswith(b"\xff\xd8"):
-        detected = "image/jpeg"
-        idx = 2
-        while idx + 4 < len(raw):
-            if raw[idx] != 0xFF:
-                idx += 1
-                continue
-            while idx < len(raw) and raw[idx] == 0xFF:
-                idx += 1
-            if idx >= len(raw):
-                break
-            marker = raw[idx]
-            idx += 1
-            if marker in (0xD8, 0xD9) or (0xD0 <= marker <= 0xD7) or marker == 0x01:
-                continue
-            if idx + 2 > len(raw):
-                break
-            seg_len = int.from_bytes(raw[idx:idx + 2], "big")
-            if seg_len < 2 or idx + seg_len > len(raw):
-                break
-            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
-                if seg_len >= 7:
-                    height, width = struct.unpack(">HH", raw[idx + 3:idx + 7])
-                break
-            idx += seg_len
-
-    if not detected or detected != declared_mime:
-        raise ValueError("Image content does not match an allowed PNG, JPEG, or WebP format")
-    if not (MIN_LOGO_DIM <= width <= MAX_LOGO_DIM and MIN_LOGO_DIM <= height <= MAX_LOGO_DIM):
-        raise ValueError(f"Image dimensions must be between {MIN_LOGO_DIM}px and {MAX_LOGO_DIM}px")
-    return detected, width, height
+    return _shared_inspect_image_bytes(
+        raw,
+        declared_mime,
+        max_bytes=MAX_LOGO_BYTES,
+        min_dim=MIN_LOGO_DIM,
+        max_dim=MAX_LOGO_DIM,
+        max_size_label="1 MB",
+        subject_label="Logo image",
+    )
 
 
 def _utc_iso(value: Any) -> str | None:
@@ -348,27 +307,17 @@ def upload_organization_logo(body: OrganizationLogoUpload, user=Depends(_user)):
         previous_path = current_org["logo_path"] if current_org else None
 
     object_path = f"{org_id}/logo-{digest}.{ext}"
-    upload_url = f"{url}/storage/v1/object/{LOGO_BUCKET}/{object_path}"
-
-    try:
-        resp = httpx.post(
-            upload_url,
-            content=raw_bytes,
-            headers={
-                "apikey": secret,
-                "Authorization": f"Bearer {secret}",
-                "Content-Type": detected_mime,
-                "x-upsert": "true",
-            },
-            timeout=10,
-        )
-    except httpx.RequestError as exc:
-        raise HTTPException(503, "Logo storage service is unavailable; retry") from exc
-
-    if resp.status_code not in (200, 201):
-        raise HTTPException(503, "Unable to store organization logo; retry")
-
-    public_logo_url = f"{url}/storage/v1/object/public/{LOGO_BUCKET}/{object_path}"
+    public_logo_url = upload_storage_object(
+        url,
+        secret,
+        LOGO_BUCKET,
+        object_path,
+        raw_bytes,
+        detected_mime,
+        unavailable_detail="Logo storage service is unavailable; retry",
+        failed_detail="Unable to store organization logo; retry",
+        http_client=httpx,
+    )
 
     with _database() as conn:
         member = _membership(conn, user["id"])
@@ -380,14 +329,7 @@ def upload_organization_logo(body: OrganizationLogoUpload, user=Depends(_user)):
         )
 
     if previous_path and previous_path != object_path:
-        try:
-            httpx.delete(
-                f"{url}/storage/v1/object/{LOGO_BUCKET}/{previous_path}",
-                headers={"apikey": secret, "Authorization": f"Bearer {secret}"},
-                timeout=5,
-            )
-        except Exception:
-            pass
+        delete_storage_object_best_effort(url, secret, LOGO_BUCKET, previous_path, http_client=httpx)
 
     return {"logo_url": public_logo_url}
 
@@ -412,15 +354,7 @@ def delete_organization_logo(user=Depends(_user)):
             (org_id,),
         )
 
-    if previous_path and secret:
-        try:
-            httpx.delete(
-                f"{url}/storage/v1/object/{LOGO_BUCKET}/{previous_path}",
-                headers={"apikey": secret, "Authorization": f"Bearer {secret}"},
-                timeout=5,
-            )
-        except Exception:
-            pass
+    delete_storage_object_best_effort(url, secret, LOGO_BUCKET, previous_path, http_client=httpx)
 
     return {"logo_url": None}
 
@@ -473,6 +407,7 @@ def list_public_branches(
 
         branch_ids = [r["id"] for r in branch_rows]
         machines_by_branch: dict[UUID, list[dict[str, Any]]] = {bid: [] for bid in branch_ids}
+        cover_by_branch: dict[UUID, str] = {}
         if branch_ids:
             device_rows = conn.execute(
                 """select d.id, d.branch_id, d.source_id, d.device_type, d.source_kind,
@@ -499,6 +434,16 @@ def list_public_branches(
                         now_utc=now_utc,
                     )
                 )
+            cover_rows = conn.execute(
+                """select distinct on (branch_id) branch_id, image_url
+                   from public.branch_images
+                   where branch_id = any(%s)
+                   order by branch_id, sort_order asc, created_at asc, id asc""",
+                (branch_ids,),
+            ).fetchall()
+            for img in cover_rows or []:
+                if isinstance(img, dict) and img.get("branch_id") and img.get("image_url"):
+                    cover_by_branch[img["branch_id"]] = img["image_url"]
 
     items: list[dict[str, Any]] = []
     for b in branch_rows:
@@ -527,6 +472,7 @@ def list_public_branches(
             b["business_timezone"],
             b["service_status"],
             now_utc=now_utc,
+            opening_hours=b["opening_hours"],
         )
         if open_now is True and effective_open is not True:
             continue
@@ -543,6 +489,7 @@ def list_public_branches(
             "organization_id": str(b["organization_id"]),
             "organization_name": b["organization_name"],
             "organization_logo_url": b["organization_logo_url"],
+            "cover_image_url": cover_by_branch.get(bid),
             "address": b["address"],
             "city": b["city"],
             "region": b["region"],
@@ -611,6 +558,29 @@ def get_public_branch_availability(branch_id: UUID):
             (branch_id, branch["organization_id"]),
         ).fetchall()
 
+        image_rows = conn.execute(
+            """select id, image_url
+               from public.branch_images
+               where branch_id = %s
+                 and organization_id = %s
+               order by sort_order asc, created_at asc, id asc""",
+            (branch_id, branch["organization_id"]),
+        ).fetchall()
+
+        cutoff_utc = now_utc - timedelta(days=PEAK_DEMAND_WINDOW_DAYS)
+        cycle_rows = conn.execute(
+            """select c.started_at, c.finished_at
+               from public.machine_cycles c
+               join public.devices d on d.id = c.device_id
+               where c.branch_id = %s
+                 and c.organization_id = %s
+                 and d.status in ('active', 'maintenance')
+                 and d.device_type in ('washer', 'dryer', 'washer_dryer')
+                 and (c.finished_at >= %s or c.started_at >= %s)""",
+            (branch_id, branch["organization_id"], cutoff_utc, cutoff_utc),
+        ).fetchall()
+
+    branch_tz = branch["business_timezone"] or "Asia/Kuala_Lumpur"
     projected_machines = [
         project_public_machine(
             dict(dev),
@@ -622,8 +592,14 @@ def get_public_branch_availability(branch_id: UUID):
     ]
     effective_open, regular_open, hours_status = compute_open_now(
         branch["weekly_hours"],
-        branch["business_timezone"],
+        branch_tz,
         branch["service_status"],
+        now_utc=now_utc,
+        opening_hours=branch["opening_hours"],
+    )
+    peak_hours = compute_public_peak_demand_hours(
+        cycle_rows,
+        timezone_name=branch_tz,
         now_utc=now_utc,
     )
 
@@ -641,17 +617,165 @@ def get_public_branch_availability(branch_id: UUID):
             "contact_phone": branch["contact_phone"],
             "opening_hours": branch["opening_hours"],
             "weekly_hours": branch["weekly_hours"],
-            "timezone": branch["business_timezone"] or "Asia/Kuala_Lumpur",
+            "timezone": branch_tz,
             "latitude": branch["latitude"],
             "longitude": branch["longitude"],
             "service_status": branch["service_status"],
             "open_now": effective_open,
             "regular_open_now": regular_open,
             "hours_status": hours_status,
+            "images": [
+                {"id": str(img["id"]), "image_url": img["image_url"]}
+                for img in image_rows
+                if isinstance(img, dict) and img.get("id") and img.get("image_url")
+            ],
         },
         "summary": summarize_machine_counts(projected_machines),
         "machines": projected_machines,
+        "peak_hours": peak_hours,
         "as_of": _utc_iso(now_utc),
+    }
+
+
+def _to_utc_aware(value: Any) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _build_peak_bucket(avgs: list[float], denom: float) -> dict[str, Any]:
+    if denom <= 0.0 or max(avgs, default=0.0) <= 0.0:
+        return {
+            "has_data": False,
+            "peak_hour": None,
+            "peak_hour_label": None,
+            "hours": [
+                {
+                    "hour": hour,
+                    "hour_label": f"{hour:02d}:00",
+                    "busy_pct": 0,
+                    "level": "none",
+                }
+                for hour in range(24)
+            ],
+        }
+
+    hours_out: list[dict[str, Any]] = []
+    for hour in range(24):
+        raw_val = avgs[hour]
+        if raw_val <= 0.0:
+            pct = 0
+            level = "none"
+        else:
+            pct = max(1, min(100, round((raw_val / denom) * 100.0)))
+            if pct >= 70:
+                level = "busy"
+            elif pct >= 35:
+                level = "moderate"
+            else:
+                level = "quiet"
+        hours_out.append({
+            "hour": hour,
+            "hour_label": f"{hour:02d}:00",
+            "busy_pct": pct,
+            "level": level,
+        })
+
+    peak_hour = max(range(24), key=lambda h: avgs[h])
+    return {
+        "has_data": True,
+        "peak_hour": peak_hour,
+        "peak_hour_label": f"{peak_hour:02d}:00",
+        "hours": hours_out,
+    }
+
+
+def compute_public_peak_demand_hours(
+    cycle_rows: list[dict[str, Any]],
+    timezone_name: str | None = "Asia/Kuala_Lumpur",
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    """Compute Google-style normalized (0-100%) hourly busyness by weekday & overall without exposing raw sales."""
+    effective_now = _to_utc_aware(now_utc) or datetime.now(timezone.utc)
+    tz_label = (timezone_name or "Asia/Kuala_Lumpur").strip() or "Asia/Kuala_Lumpur"
+    try:
+        zone = ZoneInfo(tz_label)
+    except ZoneInfoNotFoundError:
+        tz_label = "Asia/Kuala_Lumpur"
+        zone = ZoneInfo(tz_label)
+
+    window_start_utc = effective_now - timedelta(days=PEAK_DEMAND_WINDOW_DAYS)
+    weekday_minutes: dict[str, list[float]] = {day: [0.0] * 24 for day in WEEKDAY_KEYS}
+    overall_minutes: list[float] = [0.0] * 24
+    weekday_dates: dict[str, set[Any]] = {day: set() for day in WEEKDAY_KEYS}
+    all_dates: set[Any] = set()
+
+    for row in cycle_rows or []:
+        if not isinstance(row, dict):
+            continue
+        started_utc = _to_utc_aware(row.get("started_at"))
+        finished_utc = _to_utc_aware(row.get("finished_at"))
+        if started_utc is None or finished_utc is None or finished_utc <= started_utc:
+            continue
+
+        clamped_end = min(finished_utc, started_utc + timedelta(hours=6))
+        clipped_start = max(started_utc, window_start_utc)
+        if clipped_start >= clamped_end:
+            continue
+
+        cur_local = clipped_start.astimezone(zone)
+        end_local = clamped_end.astimezone(zone)
+        while cur_local < end_local:
+            next_hour = cur_local.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            seg_end = min(end_local, next_hour)
+            minutes = (seg_end - cur_local).total_seconds() / 60.0
+            if minutes > 0.0:
+                day_key = WEEKDAY_KEYS[cur_local.weekday()]
+                hour_idx = cur_local.hour
+                date_key = cur_local.date()
+                weekday_minutes[day_key][hour_idx] += minutes
+                overall_minutes[hour_idx] += minutes
+                weekday_dates[day_key].add(date_key)
+                all_dates.add(date_key)
+            cur_local = seg_end
+
+    overall_days = len(all_dates)
+    overall_avgs = [
+        (overall_minutes[h] / overall_days) if overall_days > 0 else 0.0
+        for h in range(24)
+    ]
+    overall_peak = max(overall_avgs, default=0.0)
+
+    weekday_avgs: dict[str, list[float]] = {}
+    for day in WEEKDAY_KEYS:
+        d_count = len(weekday_dates[day])
+        weekday_avgs[day] = [
+            (weekday_minutes[day][h] / d_count) if d_count > 0 else 0.0
+            for h in range(24)
+        ]
+
+    global_weekday_peak = max(
+        (max(weekday_avgs[day], default=0.0) for day in WEEKDAY_KEYS),
+        default=0.0,
+    )
+
+    buckets: dict[str, Any] = {
+        "overall": _build_peak_bucket(overall_avgs, overall_peak),
+    }
+    for day in WEEKDAY_KEYS:
+        buckets[day] = _build_peak_bucket(weekday_avgs[day], global_weekday_peak)
+
+    today_key = WEEKDAY_KEYS[effective_now.astimezone(zone).weekday()]
+    default_bucket = today_key if buckets[today_key]["has_data"] else "overall"
+
+    return {
+        "has_data": buckets["overall"]["has_data"],
+        "window_days": PEAK_DEMAND_WINDOW_DAYS,
+        "timezone": tz_label,
+        "default_bucket": default_bucket,
+        "buckets": buckets,
     }
 
 

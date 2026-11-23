@@ -383,25 +383,37 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                       ? null
                       : SegmentedButton<_MobilePane>(
                           showSelectedIcon: false,
-                          style: ButtonStyle(
-                            minimumSize: const WidgetStatePropertyAll(Size(64, 48)),
-                            backgroundColor: WidgetStateProperty.resolveWith((states) {
-                              if (states.contains(WidgetState.selected)) {
-                                return SpinSenseColors.navySelected;
-                              }
-                              return SpinSenseColors.surface;
-                            }),
+                          expandedInsets: EdgeInsets.zero,
+                          style: SegmentedButton.styleFrom(
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            shape: const StadiumBorder(),
+                            side: const BorderSide(
+                              color: SpinSenseColors.control,
+                              width: 1,
+                            ),
+                            backgroundColor: SpinSenseColors.surface,
+                            selectedBackgroundColor: SpinSenseColors.navySelected,
+                            foregroundColor: SpinSenseColors.muted,
+                            selectedForegroundColor: SpinSenseColors.ink,
                           ),
                           segments: const [
                             ButtonSegment<_MobilePane>(
                               value: _MobilePane.list,
                               icon: Icon(Icons.list_alt_rounded, size: 18),
-                              label: Text('List'),
+                              label: Text(
+                                'List',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
                             ButtonSegment<_MobilePane>(
                               value: _MobilePane.map,
                               icon: Icon(Icons.map_outlined, size: 18),
-                              label: Text('Map'),
+                              label: Text(
+                                'Map',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
                           ],
                           selected: {_mobilePane},
@@ -711,56 +723,87 @@ class _SearchAndFilterBar extends StatelessWidget {
                   : null,
             ),
           ),
+          if (trailingToggle != null) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: trailingToggle!,
+            ),
+          ],
           const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            crossAxisAlignment: WrapCrossAlignment.center,
+          Row(
             children: [
-              ?trailingToggle,
-              OutlinedButton.icon(
-                onPressed: onOpenFilters,
-                icon: const Icon(Icons.tune_rounded, size: 18),
-                label: Text(activeCount > 0 ? 'Filters ($activeCount)' : 'Filters'),
+              Expanded(
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    fixedSize: const Size.fromHeight(40),
+                    minimumSize: const Size(0, 40),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    shape: const StadiumBorder(),
+                  ),
+                  onPressed: onOpenFilters,
+                  icon: const Icon(Icons.tune_rounded, size: 18),
+                  label: Text(
+                    activeCount > 0 ? 'Filters ($activeCount)' : 'Filters',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               ),
-              OutlinedButton.icon(
-                onPressed: nearMeLocating
-                    ? null
-                    : (nearMeActive ? onClearNearMe : onTapNearMe),
-                icon: nearMeLocating
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: SpinSenseColors.accent,
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    fixedSize: const Size.fromHeight(40),
+                    minimumSize: const Size(0, 40),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    shape: const StadiumBorder(),
+                  ),
+                  onPressed: nearMeLocating
+                      ? null
+                      : (nearMeActive ? onClearNearMe : onTapNearMe),
+                  icon: nearMeLocating
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: SpinSenseColors.accent,
+                          ),
+                        )
+                      : Icon(
+                          nearMeActive
+                              ? Icons.close_rounded
+                              : Icons.near_me_outlined,
+                          size: 18,
+                          color: nearMeActive
+                              ? SpinSenseColors.positive
+                              : SpinSenseColors.ink,
                         ),
-                      )
-                    : Icon(
-                        nearMeActive
-                            ? Icons.close_rounded
-                            : Icons.near_me_outlined,
-                        size: 18,
-                        color: nearMeActive
-                            ? SpinSenseColors.positive
-                            : SpinSenseColors.ink,
-                      ),
-                label: Text(
-                  nearMeActive
-                      ? (nearMeAllPagesLoaded
-                          ? 'Nearest sort'
-                          : 'Nearest (partial)')
-                      : 'Near me',
+                  label: Text(
+                    nearMeActive
+                        ? (nearMeAllPagesLoaded
+                            ? 'Nearest sort'
+                            : 'Nearest (partial)')
+                        : 'Near me',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ),
-              if (hasAnyResettable)
-                TextButton.icon(
-                  onPressed: onClearAll,
-                  icon: const Icon(Icons.filter_alt_off_outlined, size: 16),
-                  label: const Text('Clear filters'),
-                ),
             ],
           ),
+          if (hasAnyResettable) ...[
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: onClearAll,
+                icon: const Icon(Icons.filter_alt_off_outlined, size: 16),
+                label: const Text('Clear filters'),
+              ),
+            ),
+          ],
         ],
       ),
     );

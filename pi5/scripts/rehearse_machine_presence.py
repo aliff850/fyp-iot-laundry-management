@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pymysql
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 BACKUP = Path("/home/aliff850/edge_backups/esp32-machine-cutover-20261113/edge_iot-before-presence.sql")
 TEST_DB = "edge_iot_demo_test_20261113"
 

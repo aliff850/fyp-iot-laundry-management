@@ -126,3 +126,120 @@ def test_evaluate_swap_stability_requires_three_consecutive_fresh_valid_samples(
     res_stale = lpg_interpreter.evaluate_swap_stability(stale_samples, tolerance_kg=0.25, now=now)
     assert res_stale["stable"] is False
     assert res_stale["sample_count"] == 2
+
+
+def test_hysteresis_lpg_fuel_three_sample_entry_escalation_recovery_and_restart():
+    tracker = lpg_interpreter.HysteresisStateTracker()
+    base = datetime(2026, 11, 20, 10, 0, 0, tzinfo=timezone.utc)
+    st = lpg_interpreter.ConditionTrackerState("gw-1", "lpg_1", "lpg_fuel")
+
+    # 2 low readings + 1 invalid reading -> pending counter resets, no incident opened
+    st, tr = tracker.evaluate_lpg_fuel(st, lpg_percent=12.0, weight_valid=True, maintenance_mode=False, sample_identity="b1:1", sample_at=base)
+    assert tr is None and st.pending_count == 1
+    st, tr = tracker.evaluate_lpg_fuel(st, lpg_percent=11.0, weight_valid=True, maintenance_mode=False, sample_identity="b1:2", sample_at=base + timedelta(seconds=5))
+    assert tr is None and st.pending_count == 2
+    st, tr = tracker.evaluate_lpg_fuel(st, lpg_percent=10.0, weight_valid=False, maintenance_mode=False, sample_identity="b1:3", sample_at=base + timedelta(seconds=10))
+    assert tr is None and st.pending_count == 0 and st.active_episode_id is None
+
+    # Replay duplicate identity -> ignored
+    st, tr = tracker.evaluate_lpg_fuel(st, lpg_percent=10.0, weight_valid=True, maintenance_mode=False, sample_identity="b1:3", sample_at=base + timedelta(seconds=12))
+    assert tr is None and st.pending_count == 0
+
+    # 3 consecutive valid low readings open warning episode
+    for idx, seq in enumerate((4, 5, 6)):
+        st, tr = tracker.evaluate_lpg_fuel(
+            st,
+            lpg_percent=11.5 - idx,
+            weight_valid=True,
+            maintenance_mode=False,
+            sample_identity=f"b1:{seq}",
+            sample_at=base + timedelta(seconds=15 + idx * 5),
+        )
+    assert tr is not None
+    assert tr["transition_type"] == "opened"
+    assert tr["severity"] == "warning"
+    assert tr["fault_code"] == "LPG_LOW"
+    episode_id = tr["episode_id"]
+
+    # Simulate Pi restart roundtrip via ConditionTrackerState.from_row
+    st = lpg_interpreter.ConditionTrackerState.from_row(st.__dict__)
+    assert st.active_episode_id == episode_id
+
+    # Invalid reading while active does NOT clear active episode
+    st, tr = tracker.evaluate_lpg_fuel(st, lpg_percent=99.0, weight_valid=False, maintenance_mode=False, sample_identity="b2:1", sample_at=base + timedelta(seconds=40))
+    assert tr is None and st.active_episode_id == episode_id
+
+    # 3 readings < 5% escalate the SAME episode
+    for idx, seq in enumerate((2, 3, 4)):
+        st, tr = tracker.evaluate_lpg_fuel(st, lpg_percent=3.0, weight_valid=True, maintenance_mode=False, sample_identity=f"b2:{seq}", sample_at=base + timedelta(seconds=45 + idx * 5))
+    assert tr is not None
+    assert tr["transition_type"] == "escalated"
+    assert tr["episode_id"] == episode_id
+    assert tr["severity"] == "critical"
+    assert tr["fault_code"] == "LPG_CRITICAL"
+
+    # Maintenance mode suppresses fuel evaluation while leaving active state untouched
+    st_maint, tr_maint = tracker.evaluate_lpg_fuel(st, lpg_percent=90.0, weight_valid=True, maintenance_mode=True, sample_identity="b2:5", sample_at=base + timedelta(seconds=65))
+    assert tr_maint is None and st_maint.active_episode_id == episode_id
+
+    # Out-of-order older timestamp rejected
+    st_old, tr_old = tracker.evaluate_lpg_fuel(st, lpg_percent=90.0, weight_valid=True, maintenance_mode=False, sample_identity="b0:1", sample_at=base)
+    assert tr_old is None and st_old.active_episode_id == episode_id
+
+    # 3 consecutive valid readings >= 17% clear the episode
+    for idx, seq in enumerate((6, 7, 8)):
+        st, tr = tracker.evaluate_lpg_fuel(st, lpg_percent=85.0, weight_valid=True, maintenance_mode=False, sample_identity=f"b2:{seq}", sample_at=base + timedelta(seconds=70 + idx * 5))
+    assert tr is not None
+    assert tr["transition_type"] == "cleared"
+    assert tr["episode_id"] == episode_id
+    assert st.active_episode_id is None
+
+
+def test_hysteresis_gas_temp_and_machine_episodes():
+    tracker = lpg_interpreter.HysteresisStateTracker()
+    base = datetime(2026, 11, 20, 11, 0, 0, tzinfo=timezone.utc)
+    cfg = {"gas_warn_ppm": 20.0, "gas_crit_ppm": 80.0}
+
+    gas_st = lpg_interpreter.ConditionTrackerState("gw-1", "lpg_1", "gas_concentration")
+    for idx in range(3):
+        gas_st, g_tr = tracker.evaluate_gas_concentration(
+            gas_st,
+            gas_info={"gas_condition": "warning", "estimated_ppm": 30.0},
+            node_config=cfg,
+            sample_identity=f"g:{idx}",
+            sample_at=base + timedelta(seconds=idx * 5),
+        )
+    assert g_tr is not None and g_tr["transition_type"] == "opened" and g_tr["fault_code"] == "GAS_WARNING"
+
+    # Unconfigured / out_of_range does NOT clear active gas alert
+    gas_st, g_inv = tracker.evaluate_gas_concentration(
+        gas_st,
+        gas_info={"gas_condition": "unconfigured", "estimated_ppm": None},
+        node_config=cfg,
+        sample_identity="g:3",
+        sample_at=base + timedelta(seconds=20),
+    )
+    assert g_inv is None and gas_st.active_episode_id is not None
+
+    # Temp hysteresis (>45 enter, <43 recover)
+    temp_st = lpg_interpreter.ConditionTrackerState("gw-1", "lpg_1", "high_temperature")
+    for idx in range(3):
+        temp_st, t_tr = tracker.evaluate_high_temperature(temp_st, temperature_c=46.2, sample_identity=f"t:{idx}", sample_at=base + timedelta(seconds=idx * 5))
+    assert t_tr is not None and t_tr["transition_type"] == "opened" and t_tr["fault_code"] == "HIGH_TEMPERATURE"
+
+    # 44.0 C stays inside deadband without clearing
+    for idx in range(3, 6):
+        temp_st, t_mid = tracker.evaluate_high_temperature(temp_st, temperature_c=44.0, sample_identity=f"t:{idx}", sample_at=base + timedelta(seconds=idx * 5))
+        assert t_mid is None
+    assert temp_st.active_episode_id is not None
+
+    for idx in range(6, 9):
+        temp_st, t_clr = tracker.evaluate_high_temperature(temp_st, temperature_c=42.1, sample_identity=f"t:{idx}", sample_at=base + timedelta(seconds=idx * 5))
+    assert t_clr is not None and t_clr["transition_type"] == "cleared" and temp_st.active_episode_id is None
+
+    # Machine fault episode open -> update -> clear
+    m_st = lpg_interpreter.ConditionTrackerState("gw-1", "washer_1", "machine_fault")
+    m_st, m_open = tracker.evaluate_machine_fault(m_st, machine_state="error", fault_code="E01", fault_name="Water Inlet Failure", sample_identity="m:1", sample_at=base)
+    assert m_open is not None and m_open["transition_type"] == "opened" and m_open["fault_code"] == "E01"
+    m_st, m_clr = tracker.evaluate_machine_fault(m_st, machine_state="idle", fault_code=None, fault_name=None, sample_identity="m:2", sample_at=base + timedelta(seconds=10))
+    assert m_clr is not None and m_clr["transition_type"] == "cleared" and m_clr["episode_id"] == m_open["episode_id"]

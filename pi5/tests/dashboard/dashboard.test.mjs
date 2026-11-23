@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import vm from 'node:vm';
 
-const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+const html = readFileSync(new URL('../../dashboard/index.html', import.meta.url), 'utf8');
 const source = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(m => m[1]).join('\n');
 
 // No browser or third-party packages are needed for transport/state regression checks.

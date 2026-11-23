@@ -43,17 +43,6 @@ class PublicMachineSheetBody extends StatelessWidget {
     }
   }
 
-  String _formatDateTime(DateTime? dt) {
-    if (dt == null) return 'No valid observation recorded';
-    final local = dt.toLocal();
-    final y = local.year.toString().padLeft(4, '0');
-    final m = local.month.toString().padLeft(2, '0');
-    final d = local.day.toString().padLeft(2, '0');
-    final hh = local.hour.toString().padLeft(2, '0');
-    final mm = local.minute.toString().padLeft(2, '0');
-    return '$y-$m-$d $hh:$mm';
-  }
-
   @override
   Widget build(BuildContext context) {
     final countdown = machine.formattedCountdownEstimate;
@@ -105,15 +94,6 @@ class PublicMachineSheetBody extends StatelessWidget {
                   icon: Icons.sync_alt_rounded,
                   foreground: SpinSenseColors.ink,
                 ),
-              StatusBadge(
-                label: machine.sourceDisplayLabel,
-                icon: machine.isSimulated
-                    ? Icons.science_outlined
-                    : Icons.sensors_outlined,
-                foreground: machine.isSimulated
-                    ? SpinSenseColors.warning
-                    : SpinSenseColors.muted,
-              ),
             ],
           ),
           if (countdown != null) ...[
@@ -165,16 +145,6 @@ class PublicMachineSheetBody extends StatelessWidget {
           _DetailRow(
             label: 'Price',
             value: machine.formattedHeadlinePrice ?? 'Price unavailable',
-          ),
-          const SizedBox(height: 8),
-          _DetailRow(
-            label: 'Freshness',
-            value: machine.freshness,
-          ),
-          const SizedBox(height: 8),
-          _DetailRow(
-            label: 'Last update',
-            value: _formatDateTime(machine.observedAt),
           ),
           if (machine.programs.isNotEmpty) ...[
             const SizedBox(height: 16),

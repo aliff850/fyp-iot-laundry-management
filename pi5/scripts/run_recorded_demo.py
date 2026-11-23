@@ -10,7 +10,7 @@ from pathlib import Path
 import pymysql
 from pymysql.cursors import DictCursor
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 GATEWAY_ROOT = ROOT.parent if ROOT.name.startswith("staging-") else ROOT
 sys.path.insert(0, str(GATEWAY_ROOT))
 import gateway_config  # noqa: E402

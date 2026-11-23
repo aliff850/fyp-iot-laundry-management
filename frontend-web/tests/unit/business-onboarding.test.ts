@@ -2,7 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const createClient = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/supabase/server", () => ({ createClient }));
-import { businessRequest, getJoinRequests, getMembership } from "@/lib/auth/business";
+import {
+  businessRequest,
+  getJoinRequests,
+  getMembership,
+  updateOrganizationDetails,
+  updateOwnProfile,
+} from "@/lib/auth/business";
 
 beforeEach(() => {
   vi.stubEnv("NEXT_PUBLIC_API_URL", "http://localhost:8000");
@@ -167,5 +173,70 @@ describe("FastAPI onboarding boundary", () => {
       status: 503,
       message: "Business setup is temporarily unavailable. Please retry.",
     });
+  });
+
+  it("updates own profile via PATCH /me and returns parsed profile", async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      Response.json({
+        state: "active",
+        role: "owner",
+        organization: {
+          id: "00000000-0000-0000-0000-000000000001",
+          name: "Test Org",
+          business_timezone: "Asia/Kuala_Lumpur",
+        },
+        profile: { full_name: "Amina Updated", phone: "+60129998888" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+
+    const result = await updateOwnProfile({
+      full_name: "Amina Updated",
+      phone: "+60129998888",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        profile: { full_name: "Amina Updated", phone: "+60129998888" },
+      },
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "http://localhost:8000/me",
+      expect.objectContaining({ method: "PATCH" }),
+    );
+  });
+
+  it("updates organization name and timezone via PATCH /organization", async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      Response.json({
+        organization: {
+          id: "00000000-0000-0000-0000-000000000001",
+          name: "SpinCo Central",
+          business_timezone: "Asia/Singapore",
+          logo_url: null,
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+
+    const result = await updateOrganizationDetails({
+      name: "SpinCo Central",
+      business_timezone: "Asia/Singapore",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        organization: {
+          name: "SpinCo Central",
+          business_timezone: "Asia/Singapore",
+        },
+      },
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "http://localhost:8000/organization",
+      expect.objectContaining({ method: "PATCH" }),
+    );
   });
 });

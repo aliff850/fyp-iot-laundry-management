@@ -1,10 +1,12 @@
 """Exercise one QR checkout and retry against the isolated restored Pi database only."""
 import os
+import sys
 from pathlib import Path
 
 import pymysql
 from pymysql.cursors import DictCursor
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 try:
     import demo_checkout
 except ImportError:
@@ -14,7 +16,7 @@ TEST_DB = "edge_iot_demo_test_20261113"
 
 
 def main():
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parents[1]
     gateway_root = root.parent if root.name.startswith("staging-") else root
     values = {}
     for line in (gateway_root / ".env").read_text().splitlines():

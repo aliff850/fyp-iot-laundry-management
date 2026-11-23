@@ -74,6 +74,7 @@ class EdgeIngestionWorker:
         self.branch_id: Optional[str] = None
         self.is_active = False
         self._subscribed_branch: Optional[str] = None
+        self.hysteresis_tracker = lpg_interpreter.HysteresisStateTracker()
 
         # Setup MQTT Client
         if mqtt is not None:
@@ -242,12 +243,14 @@ class EdgeIngestionWorker:
             )
             return False
 
-    def apply_lpg_edge_state(self, conn, source_id: str, sensor_data: Dict[str, Any], quality: Dict[str, Any]) -> None:
+    def apply_lpg_edge_state(
+        self, conn, source_id: str, sensor_data: Dict[str, Any], quality: Dict[str, Any]
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         """Apply edge-owned MQ-6 gas estimation and per-node maintenance/tare metadata."""
         if not self.gateway_id:
-            return
+            return None, None
         if not any(k in sensor_data for k in ("voltage", "mq6_raw_adc", "lpg_weight_kg", "gross_weight_kg")):
-            return
+            return None, None
         cfg_row: Optional[Dict[str, Any]] = None
         maint_row: Optional[Dict[str, Any]] = None
         try:
@@ -295,6 +298,189 @@ class EdgeIngestionWorker:
             quality["mq6_baseline_v"] = gas_info["mq6_baseline_v"]
         if gas_info["estimated_ppm"] is not None:
             sensor_data["estimated_ppm"] = gas_info["estimated_ppm"]
+        return gas_info, norm_cfg
+
+    def _persist_condition_step(self, conn, source_id: str, condition_key: str, evaluator) -> None:
+        if not self.gateway_id:
+            return
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """SELECT gateway_id, source_id, condition_key, active_episode_id,
+                              active_severity, active_fault_code, active_fault_name,
+                              pending_state, pending_count, last_sample_identity,
+                              last_sample_at, revision
+                       FROM edge_condition_states
+                       WHERE gateway_id=%s AND source_id=%s AND condition_key=%s
+                       FOR UPDATE""",
+                    (self.gateway_id, source_id, condition_key),
+                )
+                row = cursor.fetchone()
+                current = (
+                    lpg_interpreter.ConditionTrackerState.from_row(row)
+                    if isinstance(row, dict)
+                    else lpg_interpreter.ConditionTrackerState(
+                        gateway_id=self.gateway_id,
+                        source_id=source_id,
+                        condition_key=condition_key,
+                    )
+                )
+                updated, transition = evaluator(current)
+                if updated == current and transition is None:
+                    return
+                last_at_sql = (
+                    updated.last_sample_at.strftime("%Y-%m-%d %H:%M:%S.%f")
+                    if updated.last_sample_at
+                    else None
+                )
+                cursor.execute(
+                    """INSERT INTO edge_condition_states
+                       (gateway_id, source_id, condition_key, active_episode_id,
+                        active_severity, active_fault_code, active_fault_name,
+                        pending_state, pending_count, last_sample_identity,
+                        last_sample_at, revision, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(6))
+                       ON DUPLICATE KEY UPDATE
+                           active_episode_id = VALUES(active_episode_id),
+                           active_severity = VALUES(active_severity),
+                           active_fault_code = VALUES(active_fault_code),
+                           active_fault_name = VALUES(active_fault_name),
+                           pending_state = VALUES(pending_state),
+                           pending_count = VALUES(pending_count),
+                           last_sample_identity = VALUES(last_sample_identity),
+                           last_sample_at = VALUES(last_sample_at),
+                           revision = VALUES(revision),
+                           updated_at = UTC_TIMESTAMP(6)""",
+                    (
+                        updated.gateway_id,
+                        updated.source_id,
+                        updated.condition_key,
+                        updated.active_episode_id,
+                        updated.active_severity,
+                        updated.active_fault_code,
+                        updated.active_fault_name,
+                        updated.pending_state,
+                        updated.pending_count,
+                        updated.last_sample_identity,
+                        last_at_sql,
+                        updated.revision,
+                    ),
+                )
+                if transition is not None:
+                    occ_sql = transition["occurred_at"].strftime("%Y-%m-%d %H:%M:%S.%f")
+                    cursor.execute(
+                        """INSERT INTO edge_incident_outbox
+                           (transition_id, gateway_id, source_id, episode_id, domain,
+                            condition_key, transition_type, severity, fault_code, fault_name,
+                            summary, rule_version, revision, evidence_json, occurred_at, is_synced)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)""",
+                        (
+                            transition["transition_id"],
+                            transition["gateway_id"],
+                            transition["source_id"],
+                            transition["episode_id"],
+                            transition["domain"],
+                            transition["condition_key"],
+                            transition["transition_type"],
+                            transition["severity"],
+                            transition["fault_code"],
+                            transition["fault_name"],
+                            transition["summary"],
+                            transition["rule_version"],
+                            transition["revision"],
+                            json.dumps(transition["evidence"]),
+                            occ_sql,
+                        ),
+                    )
+        except Exception as err:
+            err_code = err.args[0] if getattr(err, "args", None) else None
+            if err_code == 1146:
+                logger.debug("Optional edge incident tables not installed yet")
+                return
+            raise
+
+    def _record_lpg_conditions(
+        self,
+        conn,
+        source_id: str,
+        sensor_data: Dict[str, Any],
+        quality: Dict[str, Any],
+        gas_info: Optional[Dict[str, Any]],
+        norm_cfg: Optional[Dict[str, Any]],
+        sample_identity: str,
+        sample_at: datetime,
+    ) -> None:
+        if gas_info is None and not any(
+            k in sensor_data for k in ("lpg_percent", "temperature_c", "temp_c", "ambient_temp_c")
+        ):
+            return
+        self._persist_condition_step(
+            conn,
+            source_id,
+            "lpg_fuel",
+            lambda st: self.hysteresis_tracker.evaluate_lpg_fuel(
+                st,
+                lpg_percent=sensor_data.get("lpg_percent"),
+                weight_valid=quality.get("weight_valid") is not False,
+                maintenance_mode=bool(quality.get("maintenance_mode")),
+                sample_identity=sample_identity,
+                sample_at=sample_at,
+            ),
+        )
+        if gas_info is not None:
+            self._persist_condition_step(
+                conn,
+                source_id,
+                "gas_concentration",
+                lambda st: self.hysteresis_tracker.evaluate_gas_concentration(
+                    st,
+                    gas_info=gas_info,
+                    node_config=norm_cfg,
+                    sample_identity=sample_identity,
+                    sample_at=sample_at,
+                ),
+            )
+        raw_temp = (
+            sensor_data.get("temperature_c")
+            if "temperature_c" in sensor_data
+            else sensor_data.get("temp_c")
+            if "temp_c" in sensor_data
+            else sensor_data.get("ambient_temp_c")
+        )
+        if raw_temp is not None:
+            self._persist_condition_step(
+                conn,
+                source_id,
+                "high_temperature",
+                lambda st: self.hysteresis_tracker.evaluate_high_temperature(
+                    st,
+                    temperature_c=raw_temp,
+                    sample_identity=sample_identity,
+                    sample_at=sample_at,
+                ),
+            )
+
+    def _record_machine_condition(
+        self,
+        conn,
+        source_id: str,
+        data: Dict[str, Any],
+        sample_identity: str,
+        sample_at: datetime,
+    ) -> None:
+        self._persist_condition_step(
+            conn,
+            source_id,
+            "machine_fault",
+            lambda st: self.hysteresis_tracker.evaluate_machine_fault(
+                st,
+                machine_state=str(data.get("state") or ""),
+                fault_code=data.get("fault_code"),
+                fault_name=data.get("fault_name"),
+                sample_identity=sample_identity,
+                sample_at=sample_at,
+            ),
+        )
 
     def normalize_payload(self, raw_payload: str, topic_device: Optional[str]) -> Tuple[str, str, Dict[str, Any]]:
         """Parses and normalizes telemetry payload for local MariaDB persistence."""
@@ -354,8 +540,10 @@ class EdgeIngestionWorker:
                 else:
                     quarantine = None
             quality = parsed.get("quality") if isinstance(parsed.get("quality"), dict) else {}
+            gas_info: Optional[Dict[str, Any]] = None
+            norm_cfg: Optional[Dict[str, Any]] = None
             if msg.topic != TOPIC_LEGACY and approved:
-                self.apply_lpg_edge_state(conn, source_id, sensor_data, quality)
+                gas_info, norm_cfg = self.apply_lpg_edge_state(conn, source_id, sensor_data, quality)
             source_time_quality = self.source_time_quality(parsed.get("recorded_at") or parsed.get("timestamp"))
 
             # Insert observation
@@ -385,6 +573,18 @@ class EdgeIngestionWorker:
                         0 if quarantine is None else -1,
                         quarantine,
                     ),
+                )
+            if msg.topic != TOPIC_LEGACY and approved and quarantine is None:
+                sample_at_dt = datetime.strptime(recorded_at, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc)
+                self._record_lpg_conditions(
+                    conn,
+                    source_id,
+                    sensor_data,
+                    quality,
+                    gas_info,
+                    norm_cfg,
+                    f"{boot_id}:{sequence}",
+                    sample_at_dt,
                 )
             conn.commit()
 
@@ -462,6 +662,13 @@ class EdgeIngestionWorker:
                         (gateway_id,source_id,boot_id,sequence,state_payload,last_seen_at)
                         VALUES (%s,%s,%s,%s,%s,UTC_TIMESTAMP(6))""",
                         (self.gateway_id, source_id, boot_id, sequence, json.dumps(data)))
+            self._record_machine_condition(
+                conn,
+                source_id,
+                data,
+                f"{boot_id}:{sequence}",
+                datetime.now(timezone.utc),
+            )
             conn.commit()
         except (ValueError, TypeError, pymysql.MySQLError):
             if self.connection:

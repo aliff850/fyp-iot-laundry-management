@@ -532,7 +532,7 @@ def test_get_branch_overview_owner_success(monkeypatch):
             "state": "active",
             "is_primary_manager": True,
         }
-    ], [], [], []]
+    ], [], [], [], []]
     @contextmanager
     def db(**_kwargs):
         yield conn
@@ -638,10 +638,10 @@ def test_get_branch_customer_reports_owner_manager_and_maintenance_access(monkey
         {"?column?": 1},
     ]
     conn.execute.return_value.fetchall.side_effect = [
-        [sample_row], [sample_hist],
-        [sample_row], [sample_hist],
-        [sample_row], [sample_hist],
-        [sample_row], [sample_hist],
+        [sample_row], [sample_hist], [],
+        [sample_row], [sample_hist], [],
+        [sample_row], [sample_hist], [],
+        [sample_row], [sample_hist], [],
     ]
     @contextmanager
     def db(**_kwargs):
@@ -1017,3 +1017,147 @@ def test_branch_manager_cannot_change_branch_publication(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         branches.update_branch(branch_id, payload, user={"id": USER})
     assert exc.value.status_code == 403
+
+
+def _valid_png_b64() -> str:
+    import base64
+    import struct
+    import zlib
+
+    ihdr = struct.pack(">IIBBBBB", 64, 64, 8, 2, 0, 0, 0)
+    ihdr_chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr) & 0xFFFFFFFF)
+    iend_chunk = struct.pack(">I", 0) + b"IEND" + struct.pack(">I", zlib.crc32(b"IEND") & 0xFFFFFFFF)
+    return base64.b64encode(b"\x89PNG\r\n\x1a\n" + ihdr_chunk + iend_chunk).decode("ascii")
+
+
+def test_branch_images_upload_limit_roles_cover_and_delete(monkeypatch):
+    import storage_images
+
+    branch_id = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+    img_1 = UUID("dddddddd-dddd-dddd-dddd-dddddddddd01")
+    img_2 = UUID("dddddddd-dddd-dddd-dddd-dddddddddd02")
+    body = branches.BranchImageUpload(content_type="image/png", data_base64=_valid_png_b64())
+
+    # 1. Specialists cannot upload branch images
+    conn_forbidden = MagicMock()
+    conn_forbidden.execute.return_value.fetchone.return_value = member("machine_maintenance", "active")
+
+    @contextmanager
+    def db_forbidden(**_kwargs):
+        yield conn_forbidden
+
+    monkeypatch.setattr(branches, "_database", db_forbidden)
+    monkeypatch.setattr(branches, "_configuration", lambda: ("https://proj.supabase.co", "pub", "dsn"))
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "srv-secret")
+
+    with pytest.raises(HTTPException) as exc_role:
+        branches.upload_branch_image(branch_id, body, user={"id": USER})
+    assert exc_role.value.status_code == 403
+
+    # 2. Enforces 10-image limit
+    conn_limit = MagicMock()
+    conn_limit.execute.return_value.fetchone.side_effect = [
+        member("owner", "active"),
+        {"id": branch_id, "organization_id": ORG},
+    ]
+    conn_limit.execute.return_value.fetchall.return_value = [
+        {"id": UUID(f"dddddddd-dddd-dddd-dddd-dddddddddd{i:02d}"), "image_url": f"https://img/{i}", "sort_order": i, "created_at": None}
+        for i in range(10)
+    ]
+
+    @contextmanager
+    def db_limit(**_kwargs):
+        yield conn_limit
+
+    monkeypatch.setattr(branches, "_database", db_limit)
+    with pytest.raises(HTTPException) as exc_cap:
+        branches.upload_branch_image(branch_id, body, user={"id": USER})
+    assert exc_cap.value.status_code == 422
+    assert "at most 10" in str(exc_cap.value.detail)
+
+    # 3. Assigned branch_manager upload succeeds, sets cover, and deletes cleanly
+    posted = []
+    deleted = []
+    monkeypatch.setattr(
+        storage_images.httpx,
+        "post",
+        lambda url, **kw: posted.append((url, kw)) or type("R", (), {"status_code": 200})(),
+    )
+    monkeypatch.setattr(
+        storage_images.httpx,
+        "delete",
+        lambda url, **kw: deleted.append(url) or type("R", (), {"status_code": 200})(),
+    )
+
+    conn_ok = MagicMock()
+    conn_ok.execute.return_value.fetchone.side_effect = [
+        member("branch_manager", "active"),
+        {"?column?": 1},
+        {"id": branch_id, "organization_id": ORG},
+        member("branch_manager", "active"),
+        {"?column?": 1},
+        {"id": branch_id, "organization_id": ORG},
+        {"id": img_2, "image_url": "https://proj.supabase.co/storage/v1/object/public/branch-images/x.png", "sort_order": 1, "created_at": None},
+    ]
+    conn_ok.execute.return_value.fetchall.side_effect = [
+        [{"id": img_1, "image_url": "https://proj.supabase.co/storage/v1/object/public/branch-images/a.png", "sort_order": 0, "created_at": None}],
+        [{"sort_order": 0}],
+        [
+            {"id": img_1, "image_url": "https://proj.supabase.co/storage/v1/object/public/branch-images/a.png", "sort_order": 0, "created_at": None},
+            {"id": img_2, "image_url": "https://proj.supabase.co/storage/v1/object/public/branch-images/x.png", "sort_order": 1, "created_at": None},
+        ],
+    ]
+
+    @contextmanager
+    def db_ok(**_kwargs):
+        yield conn_ok
+
+    monkeypatch.setattr(branches, "_database", db_ok)
+    uploaded = branches.upload_branch_image(branch_id, body, user={"id": USER})
+    assert len(posted) == 1
+    assert f"branch-images/{ORG}/{branch_id}/img-" in posted[0][0]
+    assert len(uploaded["images"]) == 2
+
+    # Set cover reorders target to index 0
+    conn_cover = MagicMock()
+    conn_cover.execute.return_value.fetchone.side_effect = [
+        member("owner", "active"),
+        {"id": branch_id, "organization_id": ORG},
+    ]
+    conn_cover.execute.return_value.fetchall.side_effect = [
+        [{"id": img_1}, {"id": img_2}],
+        [
+            {"id": img_2, "image_url": "https://img/2", "sort_order": 0, "created_at": None},
+            {"id": img_1, "image_url": "https://img/1", "sort_order": 1, "created_at": None},
+        ],
+    ]
+
+    @contextmanager
+    def db_cover(**_kwargs):
+        yield conn_cover
+
+    monkeypatch.setattr(branches, "_database", db_cover)
+    reordered = branches.set_branch_cover_image(branch_id, img_2, user={"id": USER})
+    assert reordered["images"][0]["id"] == str(img_2)
+
+    # Delete removes row and invokes storage cleanup
+    conn_del = MagicMock()
+    conn_del.execute.return_value.fetchone.side_effect = [
+        member("owner", "active"),
+        {"id": branch_id, "organization_id": ORG},
+        {"storage_path": f"{ORG}/{branch_id}/img-2.png"},
+    ]
+    conn_del.execute.return_value.fetchall.side_effect = [
+        [{"id": img_1}],
+        [{"id": img_1, "image_url": "https://img/1", "sort_order": 0, "created_at": None}],
+    ]
+
+    @contextmanager
+    def db_del(**_kwargs):
+        yield conn_del
+
+    monkeypatch.setattr(branches, "_database", db_del)
+    after_del = branches.delete_branch_image(branch_id, img_2, user={"id": USER})
+    assert len(after_del["images"]) == 1
+    assert len(deleted) == 1
+    assert deleted[0].endswith(f"{ORG}/{branch_id}/img-2.png")

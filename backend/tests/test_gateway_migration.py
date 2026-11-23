@@ -27,7 +27,7 @@ def test_gateway_migrations_on_disposable_local_postgres():
         connection.execute("create table auth.users (id uuid primary key)")
         connection.execute("create role anon")
         connection.execute("create role authenticated")
-        migration_dir = Path(__file__).resolve().parent / "migrations"
+        migration_dir = Path(__file__).resolve().parents[1] / "migrations"
         for name in (
             "001_onboarding.sql", "002_branches.sql",
             "003_personnel_roles.sql", "004_gateway_device_onboarding.sql",

@@ -19,8 +19,9 @@ def test_endpoint(path, method="GET", data=None):
 
 if __name__ == "__main__":
     print("Testing backend endpoints directly against in-memory models...")
+    from pathlib import Path
     import sys
-    sys.path.append(r"c:\Users\admin\Desktop\Code\FYP-smart-laundry\backend")
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     import main
     from fastapi.testclient import TestClient
 

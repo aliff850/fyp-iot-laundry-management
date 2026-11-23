@@ -1,7 +1,58 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { businessRequest } from "@/lib/auth/business";
+import { businessRequest, updateOrganizationDetails } from "@/lib/auth/business";
+
+export type OrganizationSettingsActionState = {
+  success?: boolean;
+  message?: string;
+  fieldErrors?: Partial<Record<"name" | "business_timezone", string>>;
+  name?: string;
+  businessTimezone?: string;
+};
+
+export async function updateOrganizationSettingsAction(
+  _prevState: OrganizationSettingsActionState,
+  formData: FormData,
+): Promise<OrganizationSettingsActionState> {
+  const rawName = formData.get("name");
+  const rawTimezone = formData.get("business_timezone");
+  const name = typeof rawName === "string" ? rawName.trim() : "";
+  const businessTimezone = typeof rawTimezone === "string" ? rawTimezone.trim() : "";
+
+  const fieldErrors: OrganizationSettingsActionState["fieldErrors"] = {};
+  if (name.length < 1 || name.length > 120) {
+    fieldErrors.name = "Enter an organization name (1–120 characters).";
+  }
+  if (!businessTimezone || businessTimezone.length > 64) {
+    fieldErrors.business_timezone = "Select a business timezone.";
+  }
+  if (Object.keys(fieldErrors).length > 0) {
+    return {
+      success: false,
+      message: "Review the highlighted organization fields.",
+      fieldErrors,
+    };
+  }
+
+  const result = await updateOrganizationDetails({
+    name,
+    business_timezone: businessTimezone,
+  });
+  if (!result.ok) {
+    return { success: false, message: result.message };
+  }
+
+  revalidatePath("/personnel");
+  revalidatePath("/branches", "layout");
+  revalidatePath("/account", "layout");
+  return {
+    success: true,
+    message: "Organization details updated.",
+    name: result.value.organization.name,
+    businessTimezone: result.value.organization.business_timezone ?? businessTimezone,
+  };
+}
 
 export type RoleUpdateActionState = { message?: string; success?: boolean };
 

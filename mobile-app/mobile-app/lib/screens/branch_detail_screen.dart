@@ -4,7 +4,10 @@ import '../models/public_models.dart';
 import '../services/location_service.dart';
 import '../services/public_api_service.dart';
 import '../theme/spinsense_theme.dart';
+import '../widgets/branch_banner_image.dart';
+import '../widgets/branch_images_gallery.dart';
 import '../widgets/organization_logo_badge.dart';
+import '../widgets/peak_demand_hours_card.dart';
 import '../widgets/public_machine_card.dart';
 import '../widgets/public_machine_sheet.dart';
 import '../widgets/status_badge.dart';
@@ -124,7 +127,6 @@ class _BranchDetailScreenState extends State<BranchDetailScreen> {
           organizationName: branch.organizationName,
           machineId: machine.machineId,
           machineLabel: machine.label,
-          sourceKind: machine.sourceKind,
         ),
       ),
     );
@@ -283,7 +285,15 @@ class _BranchDetailScreenState extends State<BranchDetailScreen> {
           ],
           _BranchIdentityCard(
             branch: branch,
+            fallbackCoverImageUrl: widget.initialSummary?.coverImageUrl,
             distanceKm: widget.distanceKm,
+            onBannerTap: branch.images.isNotEmpty
+                ? () => showBranchImagesViewer(
+                      context: context,
+                      branchName: branch.name,
+                      images: branch.images,
+                    )
+                : null,
             onDirections: branch.hasCoordinates ? () => _openDirections(branch) : null,
             onCall: branch.contactPhone != null
                 ? () => _callBranch(branch.contactPhone!)
@@ -295,6 +305,15 @@ class _BranchDetailScreenState extends State<BranchDetailScreen> {
             timezone: branch.timezone,
             openingHoursText: branch.openingHours,
             weeklyHours: branch.weeklyHours,
+          ),
+          const SizedBox(height: 14),
+          PeakDemandHoursCard(
+            peakHours: payload.peakHours,
+          ),
+          const SizedBox(height: 14),
+          BranchImagesGallery(
+            branchName: branch.name,
+            images: branch.images,
           ),
           const SizedBox(height: 20),
           if (payload.machines.isEmpty)
@@ -348,26 +367,43 @@ class _BranchDetailScreenState extends State<BranchDetailScreen> {
 class _BranchIdentityCard extends StatelessWidget {
   const _BranchIdentityCard({
     required this.branch,
+    this.fallbackCoverImageUrl,
     this.distanceKm,
+    this.onBannerTap,
     this.onDirections,
     this.onCall,
   });
 
   final PublicBranchDetail branch;
+  final String? fallbackCoverImageUrl;
   final double? distanceKm;
+  final VoidCallback? onBannerTap;
   final VoidCallback? onDirections;
   final VoidCallback? onCall;
 
   @override
   Widget build(BuildContext context) {
     final fullAddress = branch.fullAddressDisplay;
+    final bannerUrl = branch.coverImage?.imageUrl ?? fallbackCoverImageUrl;
 
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (bannerUrl != null && bannerUrl.trim().isNotEmpty)
+            BranchBannerImage(
+              imageUrl: bannerUrl,
+              height: 176,
+              semanticLabel: '${branch.name} header photo',
+              onTap: onBannerTap,
+            ),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -452,8 +488,10 @@ class _BranchIdentityCard extends StatelessWidget {
                   ),
               ],
             ),
-          ],
-        ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

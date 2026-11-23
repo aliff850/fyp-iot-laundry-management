@@ -61,7 +61,12 @@ class WeeklyInterval {
     );
   }
 
-  String get displayRange => '$open - $close';
+  String get displayRange {
+    if (open == '00:00' && close == '24:00') {
+      return '24 hours';
+    }
+    return '$open - $close';
+  }
 }
 
 @immutable
@@ -128,7 +133,7 @@ enum HoursStatus {
       case HoursStatus.closedByOperator:
         return 'Closed by operator';
       case HoursStatus.hoursUnknown:
-        return 'Hours unknown';
+        return 'Hours unavailable';
     }
   }
 }
@@ -141,6 +146,7 @@ class PublicBranchSummary {
     required this.organizationId,
     required this.organizationName,
     this.organizationLogoUrl,
+    this.coverImageUrl,
     this.address,
     this.city,
     this.region,
@@ -165,6 +171,7 @@ class PublicBranchSummary {
   final String organizationId;
   final String organizationName;
   final String? organizationLogoUrl;
+  final String? coverImageUrl;
   final String? address;
   final String? city;
   final String? region;
@@ -184,6 +191,7 @@ class PublicBranchSummary {
   final DateTime? asOf;
 
   bool get hasCoordinates => latitude != null && longitude != null;
+  bool get hasCoverImage => coverImageUrl != null && coverImageUrl!.trim().isNotEmpty;
   bool get isClosedByOperator => serviceStatus.toLowerCase() == 'closed';
 
   String get cityRegionLabel {
@@ -202,6 +210,7 @@ class PublicBranchSummary {
       organizationId: (json['organization_id'] ?? '').toString(),
       organizationName: (json['organization_name'] ?? '').toString(),
       organizationLogoUrl: _asNullableString(json['organization_logo_url']),
+      coverImageUrl: _asNullableString(json['cover_image_url']),
       address: _asNullableString(json['address']),
       city: _asNullableString(json['city']),
       region: _asNullableString(json['region']),
@@ -289,7 +298,7 @@ enum PublicMachineAvailabilityStatus {
       case PublicMachineAvailabilityStatus.maintenance:
         return 'Maintenance';
       case PublicMachineAvailabilityStatus.unknown:
-        return 'Unknown';
+        return 'Offline';
     }
   }
 }
@@ -386,32 +395,11 @@ class PublicMachine {
   bool get isSimulated => sourceKind.toLowerCase() == 'simulated';
   bool get isStaleOrMissing => freshness.toLowerCase() != 'fresh';
 
-  String get sourceDisplayLabel {
-    switch (sourceKind.toLowerCase()) {
-      case 'simulated':
-        return 'Simulated telemetry';
-      case 'vendor':
-        return 'Vendor telemetry';
-      default:
-        return 'Physical telemetry';
-    }
-  }
-
   String? get availabilityReasonLabel {
-    switch (availabilityReason) {
-      case 'branch_closed':
-        return 'Branch closed by operator';
-      case 'gateway_unavailable':
-        return 'Branch gateway offline';
-      case 'stale_or_offline':
-        return 'Reading is stale or offline';
-      case 'no_telemetry':
-        return 'No telemetry received yet';
-      case 'unrecognized_state':
-        return 'Unrecognized machine status';
-      default:
-        return null;
+    if (availabilityReason == 'branch_closed') {
+      return 'Branch closed by operator';
     }
+    return null;
   }
 
   String? get formattedHeadlinePrice {
@@ -467,6 +455,24 @@ class PublicMachine {
 }
 
 @immutable
+class PublicBranchImage {
+  const PublicBranchImage({
+    required this.id,
+    required this.imageUrl,
+  });
+
+  final String id;
+  final String imageUrl;
+
+  factory PublicBranchImage.fromJson(Map<String, dynamic> json) {
+    return PublicBranchImage(
+      id: (json['id'] ?? '').toString(),
+      imageUrl: (json['image_url'] ?? '').toString().trim(),
+    );
+  }
+}
+
+@immutable
 class PublicBranchDetail {
   const PublicBranchDetail({
     required this.branchId,
@@ -474,6 +480,7 @@ class PublicBranchDetail {
     required this.organizationId,
     required this.organizationName,
     this.organizationLogoUrl,
+    this.coverImageUrl,
     this.address,
     this.city,
     this.region,
@@ -488,6 +495,7 @@ class PublicBranchDetail {
     this.openNow,
     this.regularOpenNow,
     required this.hoursStatus,
+    this.images = const [],
   });
 
   final String branchId;
@@ -495,6 +503,7 @@ class PublicBranchDetail {
   final String organizationId;
   final String organizationName;
   final String? organizationLogoUrl;
+  final String? coverImageUrl;
   final String? address;
   final String? city;
   final String? region;
@@ -509,8 +518,15 @@ class PublicBranchDetail {
   final bool? openNow;
   final bool? regularOpenNow;
   final HoursStatus hoursStatus;
+  final List<PublicBranchImage> images;
 
   bool get hasCoordinates => latitude != null && longitude != null;
+  bool get hasCoverImage => coverImageUrl != null && coverImageUrl!.trim().isNotEmpty;
+  PublicBranchImage? get coverImage => images.isNotEmpty
+      ? images.first
+      : (hasCoverImage
+          ? PublicBranchImage(id: 'cover', imageUrl: coverImageUrl!.trim())
+          : null);
   bool get isClosedByOperator => serviceStatus.toLowerCase() == 'closed';
 
   String get fullAddressDisplay {
@@ -523,12 +539,22 @@ class PublicBranchDetail {
   }
 
   factory PublicBranchDetail.fromJson(Map<String, dynamic> json) {
+    final rawImages = json['images'];
+    final parsedImages = rawImages is List
+        ? rawImages
+            .whereType<Map>()
+            .map((e) => PublicBranchImage.fromJson(Map<String, dynamic>.from(e)))
+            .where((img) => img.imageUrl.isNotEmpty)
+            .toList()
+        : const <PublicBranchImage>[];
+
     return PublicBranchDetail(
       branchId: (json['branch_id'] ?? '').toString(),
       name: (json['name'] ?? '').toString(),
       organizationId: (json['organization_id'] ?? '').toString(),
       organizationName: (json['organization_name'] ?? '').toString(),
       organizationLogoUrl: _asNullableString(json['organization_logo_url']),
+      coverImageUrl: _asNullableString(json['cover_image_url']),
       address: _asNullableString(json['address']),
       city: _asNullableString(json['city']),
       region: _asNullableString(json['region']),
@@ -544,6 +570,167 @@ class PublicBranchDetail {
       regularOpenNow:
           json['regular_open_now'] is bool ? json['regular_open_now'] as bool : null,
       hoursStatus: HoursStatus.fromWire(_asNullableString(json['hours_status'])),
+      images: parsedImages,
+    );
+  }
+}
+
+@immutable
+class PeakDemandHourPoint {
+  const PeakDemandHourPoint({
+    required this.hour,
+    required this.hourLabel,
+    required this.busyPct,
+    required this.level,
+  });
+
+  final int hour;
+  final String hourLabel;
+  final int busyPct;
+  final String level; // 'none', 'quiet', 'moderate', 'busy'
+
+  String get displayLevel {
+    switch (level) {
+      case 'busy':
+        return 'Usually busiest';
+      case 'moderate':
+        return 'Moderately busy';
+      case 'quiet':
+        return 'Quiet';
+      default:
+        return 'No recorded activity';
+    }
+  }
+
+  factory PeakDemandHourPoint.fromJson(Map<String, dynamic> json) {
+    final hr = (_asNullableInt(json['hour']) ?? 0).clamp(0, 23);
+    final pct = (_asNullableInt(json['busy_pct']) ?? 0).clamp(0, 100);
+    return PeakDemandHourPoint(
+      hour: hr,
+      hourLabel: _asNullableString(json['hour_label']) ??
+          '${hr.toString().padLeft(2, '0')}:00',
+      busyPct: pct,
+      level: _asNullableString(json['level']) ?? 'none',
+    );
+  }
+}
+
+@immutable
+class PeakDemandBucket {
+  const PeakDemandBucket({
+    required this.hasData,
+    this.peakHour,
+    this.peakHourLabel,
+    required this.hours,
+  });
+
+  final bool hasData;
+  final int? peakHour;
+  final String? peakHourLabel;
+  final List<PeakDemandHourPoint> hours;
+
+  factory PeakDemandBucket.empty() => PeakDemandBucket(
+        hasData: false,
+        hours: List.generate(
+          24,
+          (h) => PeakDemandHourPoint(
+            hour: h,
+            hourLabel: '${h.toString().padLeft(2, '0')}:00',
+            busyPct: 0,
+            level: 'none',
+          ),
+        ),
+      );
+
+  factory PeakDemandBucket.fromJson(Map<String, dynamic> json) {
+    final rawHours = json['hours'];
+    final parsed = rawHours is List
+        ? rawHours
+            .whereType<Map>()
+            .map((e) => PeakDemandHourPoint.fromJson(Map<String, dynamic>.from(e)))
+            .toList()
+        : <PeakDemandHourPoint>[];
+    final byHour = {for (final p in parsed) p.hour: p};
+    final normalizedHours = List.generate(
+      24,
+      (h) =>
+          byHour[h] ??
+          PeakDemandHourPoint(
+            hour: h,
+            hourLabel: '${h.toString().padLeft(2, '0')}:00',
+            busyPct: 0,
+            level: 'none',
+          ),
+    );
+    return PeakDemandBucket(
+      hasData: json['has_data'] is bool ? json['has_data'] as bool : false,
+      peakHour: _asNullableInt(json['peak_hour']),
+      peakHourLabel: _asNullableString(json['peak_hour_label']),
+      hours: normalizedHours,
+    );
+  }
+}
+
+@immutable
+class PublicPeakDemandHours {
+  const PublicPeakDemandHours({
+    required this.hasData,
+    required this.windowDays,
+    required this.timezone,
+    required this.defaultBucket,
+    required this.buckets,
+  });
+
+  static const List<String> orderedKeys = [
+    'overall',
+    'mon',
+    'tue',
+    'wed',
+    'thu',
+    'fri',
+    'sat',
+    'sun',
+  ];
+
+  final bool hasData;
+  final int windowDays;
+  final String timezone;
+  final String defaultBucket;
+  final Map<String, PeakDemandBucket> buckets;
+
+  PeakDemandBucket bucketFor(String key) =>
+      buckets[key] ?? PeakDemandBucket.empty();
+
+  factory PublicPeakDemandHours.empty({String timezone = 'Asia/Kuala_Lumpur'}) =>
+      PublicPeakDemandHours(
+        hasData: false,
+        windowDays: 90,
+        timezone: timezone,
+        defaultBucket: 'overall',
+        buckets: {for (final key in orderedKeys) key: PeakDemandBucket.empty()},
+      );
+
+  factory PublicPeakDemandHours.fromJson(
+    Map<String, dynamic> json, {
+    String fallbackTimezone = 'Asia/Kuala_Lumpur',
+  }) {
+    if (json.isEmpty) {
+      return PublicPeakDemandHours.empty(timezone: fallbackTimezone);
+    }
+    final rawBuckets = _asMap(json['buckets']);
+    final parsedBuckets = <String, PeakDemandBucket>{};
+    for (final key in orderedKeys) {
+      parsedBuckets[key] = rawBuckets[key] is Map
+          ? PeakDemandBucket.fromJson(_asMap(rawBuckets[key]))
+          : PeakDemandBucket.empty();
+    }
+    final def = _asNullableString(json['default_bucket']) ?? 'overall';
+    return PublicPeakDemandHours(
+      hasData: json['has_data'] is bool ? json['has_data'] as bool : false,
+      windowDays: _asNullableInt(json['window_days']) ?? 90,
+      timezone: _asNullableString(json['timezone']) ?? fallbackTimezone,
+      defaultBucket: parsedBuckets.containsKey(def) ? def : 'overall',
+      buckets: parsedBuckets,
     );
   }
 }
@@ -554,13 +741,18 @@ class PublicBranchAvailabilityResponse {
     required this.branch,
     required this.summary,
     required this.machines,
+    PublicPeakDemandHours? peakHours,
     this.asOf,
-  });
+  }) : _peakHours = peakHours;
 
   final PublicBranchDetail branch;
   final MachineAvailabilitySummary summary;
   final List<PublicMachine> machines;
+  final PublicPeakDemandHours? _peakHours;
   final DateTime? asOf;
+
+  PublicPeakDemandHours get peakHours =>
+      _peakHours ?? PublicPeakDemandHours.empty(timezone: branch.timezone);
 
   List<PublicMachine> get washers =>
       machines.where((m) => m.deviceType == 'washer').toList();
@@ -571,8 +763,9 @@ class PublicBranchAvailabilityResponse {
 
   factory PublicBranchAvailabilityResponse.fromJson(Map<String, dynamic> json) {
     final rawMachines = json['machines'];
+    final branch = PublicBranchDetail.fromJson(_asMap(json['branch']));
     return PublicBranchAvailabilityResponse(
-      branch: PublicBranchDetail.fromJson(_asMap(json['branch'])),
+      branch: branch,
       summary: MachineAvailabilitySummary.fromJson(_asMap(json['summary'])),
       machines: rawMachines is List
           ? rawMachines
@@ -580,6 +773,10 @@ class PublicBranchAvailabilityResponse {
               .map((m) => PublicMachine.fromJson(Map<String, dynamic>.from(m)))
               .toList()
           : const [],
+      peakHours: PublicPeakDemandHours.fromJson(
+        _asMap(json['peak_hours']),
+        fallbackTimezone: branch.timezone,
+      ),
       asOf: _parseDateTime(json['as_of']),
     );
   }

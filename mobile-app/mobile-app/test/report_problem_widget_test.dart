@@ -46,11 +46,12 @@ void main() {
           organizationName: 'Alpha Wash',
           machineId: 'm-1',
           machineLabel: 'Washer #01',
-          sourceKind: 'simulated',
         ),
       ),
     );
     await tester.pumpAndSettle();
+
+    expect(find.text('Reported against a simulated demo machine.'), findsNothing);
 
     // Submit empty description triggers validation cleanly
     await tester.ensureVisible(find.text('Submit problem report'));

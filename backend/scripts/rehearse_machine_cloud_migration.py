@@ -1,16 +1,18 @@
 """Run migration 005 in a rollback-only PostgreSQL transaction."""
 
 from pathlib import Path
+import sys
 from uuid import uuid4
 
 import psycopg
 from psycopg.types.json import Jsonb
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from onboarding import _configuration
 
 
 def main():
-    sql = (Path(__file__).resolve().parent / "migrations" / "005_machine_remote_commands.sql").read_text()
+    sql = (Path(__file__).resolve().parents[1] / "migrations" / "005_machine_remote_commands.sql").read_text()
     sql = sql.replace("begin;", "", 1)
     sql = sql.rsplit("commit;", 1)[0]
     _, _, dsn = _configuration()

@@ -15,6 +15,7 @@ from psycopg.types.json import Jsonb
 
 from branches import _authorize_branch_access
 from edge import _gateway
+from fault_catalog import explain_fault
 from onboarding import _database, _user
 
 router = APIRouter()
@@ -30,7 +31,7 @@ class EdgeMachineState(BaseModel):
 
 class OperatorMachineCommand(BaseModel):
     request_id: UUID
-    action: Literal["start", "pause", "resume", "stop", "set_settings"]
+    action: Literal["start", "pause", "resume", "stop", "set_settings", "clear_fault"]
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -284,11 +285,21 @@ def list_machine_state(branch_id: UUID, user=Depends(_user)):
             payload = {**payload, "settings": {k: v for k, v in (payload.get("settings") or {}).items() if k != "price_myr"},
                 "programs": {k: {field: value for field, value in program.items() if field != "price_myr"}
                     for k, program in (payload.get("programs") or {}).items()}}
+        fault_code = payload.get("fault_code") if payload else None
+        diagnosis = (
+            explain_fault(
+                str(fault_code),
+                domain="machine",
+                fault_name_hint=payload.get("fault_name") if isinstance(payload, dict) else None,
+            )
+            if fault_code
+            else None
+        )
         items.append({"source_id": row["source_id"], "type": row["device_type"], "source": row["source_kind"],
             "label": row["label"], "capacity_kg": row["capacity_kg"],
             "state": payload.get("state") if payload else "unknown",
             "freshness": "fresh" if fresh else "stale" if row["cloud_seen_at"] else "missing",
-            "last_update": row["cloud_seen_at"], "data": payload})
+            "last_update": row["cloud_seen_at"], "data": payload, "diagnosis": diagnosis})
     return {"machines": items}
 
 
@@ -350,7 +361,7 @@ def create_machine_command(branch_id: UUID, source_id: str, body: OperatorMachin
             raise HTTPException(409, "Machine is unavailable")
         state = latest["state_payload"].get("state")
         allowed = {"start": {"idle"}, "pause": {"running"}, "resume": {"paused"},
-            "stop": {"running", "paused"}, "set_settings": {"idle"}}
+            "stop": {"running", "paused"}, "set_settings": {"idle"}, "clear_fault": {"error"}}
         if state not in allowed[body.action]:
             raise HTTPException(409, "Machine state does not allow this action")
         if body.action not in {"set_settings", "start"} and body.arguments:

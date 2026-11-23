@@ -48,7 +48,7 @@ def test_gateway_ceremony_and_sync_against_postgresql(monkeypatch):
         with psycopg.connect(child_url, row_factory=dict_row) as conn:
             conn.execute("create schema auth")
             conn.execute("create table auth.users (id uuid primary key)")
-            migrations = Path(__file__).resolve().parent / "migrations"
+            migrations = Path(__file__).resolve().parents[1] / "migrations"
             for name in ("001_onboarding.sql", "002_branches.sql", "003_personnel_roles.sql",
                          "004_gateway_device_onboarding.sql"):
                 script = (migrations / name).read_text(encoding="utf-8")

@@ -7,6 +7,21 @@ from zoneinfo import ZoneInfo
 
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 TIME_HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+DAILY_RANGE_HHMM = re.compile(
+    r"^\s*(?:daily\s+)?([01]\d|2[0-3]):([0-5]\d)\s*[-–—]\s*((?:[01]\d|2[0-3]):[0-5]\d|24:00)\s*$",
+    re.IGNORECASE,
+)
+ALWAYS_OPEN_LABELS = frozenset({
+    "24 hours",
+    "24 hour",
+    "24 hrs",
+    "24 hr",
+    "24h",
+    "24/7",
+    "24 hours / always open",
+    "always open",
+    "open 24 hours",
+})
 
 
 def parse_hhmm_minutes(value: str, *, allow_2400: bool = False) -> int | None:
@@ -52,21 +67,57 @@ def validate_weekly_hours(raw: Any) -> dict[str, list[dict[str, str]]] | None:
     return normalized
 
 
+def infer_weekly_hours_from_opening_hours(
+    opening_hours: str | None,
+) -> dict[str, list[dict[str, str]]] | None:
+    """Derive a regular daily schedule from unambiguous 24h or HH:MM-HH:MM opening_hours text."""
+    if not isinstance(opening_hours, str):
+        return None
+    normalized_text = " ".join(opening_hours.strip().lower().split())
+    if not normalized_text:
+        return None
+
+    if normalized_text in ALWAYS_OPEN_LABELS:
+        interval = {"open": "00:00", "close": "24:00"}
+        return {day: [dict(interval)] for day in WEEKDAYS}
+
+    match = DAILY_RANGE_HHMM.fullmatch(opening_hours.strip())
+    if not match:
+        return None
+
+    open_str = f"{match.group(1)}:{match.group(2)}"
+    close_str = match.group(3)
+    if open_str == "00:00" and close_str in ("00:00", "24:00"):
+        interval = {"open": "00:00", "close": "24:00"}
+    elif open_str == close_str:
+        return None
+    else:
+        interval = {"open": open_str, "close": close_str}
+    return {day: [dict(interval)] for day in WEEKDAYS}
+
+
 def compute_open_now(
     weekly_hours: dict[str, Any] | None,
     timezone_name: str | None,
     service_status: str,
     now_utc: datetime | None = None,
+    opening_hours: str | None = None,
 ) -> tuple[bool | None, bool | None, str]:
     """Return (effective_open_now, regular_hours_open_now, status_reason) in branch timezone."""
     current = now_utc or datetime.now(timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
 
+    effective_weekly = (
+        weekly_hours
+        if isinstance(weekly_hours, dict)
+        else infer_weekly_hours_from_opening_hours(opening_hours)
+    )
+
     regular_open: bool | None = None
-    if isinstance(weekly_hours, dict):
+    if isinstance(effective_weekly, dict):
         try:
-            validated = validate_weekly_hours(weekly_hours)
+            validated = validate_weekly_hours(effective_weekly)
         except ValueError:
             validated = None
         if validated is not None:

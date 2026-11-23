@@ -315,7 +315,7 @@ export function MachineDetailModal({
   );
 
   const sendCommand = (
-    action: "start" | "pause" | "resume" | "stop",
+    action: "start" | "pause" | "resume" | "stop" | "clear_fault",
     args: Record<string, unknown> = {},
   ) => {
     if (!machine || !canControl) return;
@@ -616,22 +616,93 @@ export function MachineDetailModal({
             {effectiveStatus === "ERROR" && (
               <div
                 role="alert"
-                className="rounded-md border border-negative/40 bg-negative/10 p-4"
+                className="space-y-4 rounded-md border border-negative/40 bg-negative/10 p-4"
               >
-                <div className="flex items-start gap-3">
-                  <ShieldAlert
-                    className="mt-0.5 size-5 shrink-0 text-negative"
-                    aria-hidden="true"
-                  />
-                  <div className="space-y-1">
-                    <h3 className="text-sm font-semibold text-negative">
-                      Active Fault: {machine.data?.fault_code ?? "SIM_FAULT"}
-                    </h3>
-                    <p className="text-sm text-ink">
-                      Review the active fault before issuing remote controls.
-                    </p>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex items-start gap-3">
+                    <ShieldAlert
+                      className="mt-0.5 size-5 shrink-0 text-negative"
+                      aria-hidden="true"
+                    />
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center rounded border border-negative/50 bg-surface px-2 py-0.5 font-mono text-xs font-semibold text-negative">
+                          {machine.diagnosis?.fault_code ??
+                            machine.data?.fault_code ??
+                            "FAULT"}
+                        </span>
+                        <h3 className="text-sm font-semibold text-ink">
+                          {machine.diagnosis?.title ??
+                            machine.data?.fault_name ??
+                            "Active Machine Fault"}
+                        </h3>
+                      </div>
+                      <p className="text-sm text-ink">
+                        {machine.diagnosis?.plain_explanation ??
+                          "Review the active fault before issuing remote controls."}
+                      </p>
+                    </div>
                   </div>
+                  {machine.diagnosis && (
+                    <span
+                      className={`inline-flex shrink-0 self-start rounded border px-2 py-0.5 text-xs font-medium ${
+                        machine.diagnosis.source_status ===
+                        "placeholder_washer_guide"
+                          ? "border-warning/40 bg-warning/10 text-warning"
+                          : machine.diagnosis.source_status ===
+                              "spinsense_safety_rule"
+                            ? "border-line bg-surface text-muted"
+                            : "border-negative/40 bg-surface text-negative"
+                      }`}
+                    >
+                      {machine.diagnosis.source_status ===
+                      "placeholder_washer_guide"
+                        ? "Placeholder guide"
+                        : machine.diagnosis.source_status ===
+                            "spinsense_safety_rule"
+                          ? "SpinSense safety rule"
+                          : "Unverified vendor code"}
+                    </span>
+                  )}
                 </div>
+
+                {machine.diagnosis && (
+                  <div className="space-y-3 rounded-md border border-rule bg-surface p-3.5 text-xs">
+                    <p className="text-muted">{machine.diagnosis.disclaimer}</p>
+                    <div className="rounded border border-warning/30 bg-warning/10 px-3 py-2 text-ink">
+                      <span className="font-semibold text-warning">
+                        Safety:{" "}
+                      </span>
+                      {machine.diagnosis.safety_precautions}
+                    </div>
+                    {machine.diagnosis.likely_causes.length > 0 && (
+                      <div className="space-y-1.5">
+                        <h4 className="font-semibold text-ink">
+                          Likely Causes
+                        </h4>
+                        <ul className="list-disc space-y-1 pl-4 text-muted">
+                          {machine.diagnosis.likely_causes.map((cause) => (
+                            <li key={cause}>{cause}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {machine.diagnosis.troubleshooting_steps.length > 0 && (
+                      <div className="space-y-1.5">
+                        <h4 className="font-semibold text-ink">
+                          Troubleshooting Steps
+                        </h4>
+                        <ol className="list-decimal space-y-1 pl-4 text-ink">
+                          {machine.diagnosis.troubleshooting_steps.map(
+                            (step) => (
+                              <li key={step}>{step}</li>
+                            ),
+                          )}
+                        </ol>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -757,7 +828,7 @@ export function MachineDetailModal({
                             ? effectiveStatus === "PAUSED"
                             : action === "stop"
                               ? ["RUNNING", "PAUSED"].includes(effectiveStatus)
-                              : false; // clear_fault is local Pi5-only until cloud contract supports it
+                              : effectiveStatus === "ERROR";
 
                     const isStartUnavailable =
                       action === "start" && !selectedStartProgram;
@@ -777,7 +848,6 @@ export function MachineDetailModal({
                         type="button"
                         disabled={disabled}
                         onClick={() => {
-                          if (action === "clear_fault") return;
                           sendCommand(
                             action,
                             action === "start"

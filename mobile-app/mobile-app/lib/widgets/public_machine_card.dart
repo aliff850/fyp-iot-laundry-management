@@ -13,14 +13,6 @@ class PublicMachineCard extends StatelessWidget {
   final PublicMachine machine;
   final VoidCallback onInspect;
 
-  String _formatTimestamp(DateTime? dt) {
-    if (dt == null) return 'Not yet reported';
-    final local = dt.toLocal();
-    final hh = local.hour.toString().padLeft(2, '0');
-    final mm = local.minute.toString().padLeft(2, '0');
-    return '$hh:$mm local';
-  }
-
   @override
   Widget build(BuildContext context) {
     final countdown = machine.formattedCountdownEstimate;
@@ -121,20 +113,6 @@ class PublicMachineCard extends StatelessWidget {
                 label: 'Starting price',
                 value: priceText ?? 'Unavailable',
                 isMuted: priceText == null,
-              ),
-              const SizedBox(height: 4),
-              _MetadataGridRow(
-                label: 'Source',
-                value: machine.sourceDisplayLabel,
-                isMuted: machine.isSimulated,
-              ),
-              const SizedBox(height: 4),
-              _MetadataGridRow(
-                label: 'Last reading',
-                value: machine.isStaleOrMissing
-                    ? '${_formatTimestamp(machine.observedAt)} (${machine.freshness})'
-                    : _formatTimestamp(machine.observedAt),
-                isMuted: machine.isStaleOrMissing,
               ),
               const SizedBox(height: 12),
               SizedBox(

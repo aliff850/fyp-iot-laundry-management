@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useTransition } from "react";
+import Link from "next/link";
 import {
   AlertCircle,
   Calendar,
@@ -18,6 +19,7 @@ import {
 import type {
   CustomerReportItem,
   CustomerReportsSummary,
+  OpenBranchIncidentOption,
 } from "@/lib/auth/business";
 import {
   executeInvestigateReport,
@@ -34,6 +36,7 @@ interface CustomerReportTriageModalProps {
   report: CustomerReportItem;
   branchId: string;
   userRole?: ReportsOperatorRole;
+  openIncidents?: OpenBranchIncidentOption[];
   onClose: () => void;
   onReportUpdated: (
     updatedReport: CustomerReportItem,
@@ -45,6 +48,7 @@ export function CustomerReportTriageModal({
   report,
   branchId,
   userRole = "owner",
+  openIncidents = [],
   onClose,
   onReportUpdated,
 }: CustomerReportTriageModalProps) {
@@ -53,6 +57,9 @@ export function CustomerReportTriageModal({
   const [specialistRole, setSpecialistRole] = useState<
     "machine_maintenance" | "lpg_maintenance" | ""
   >(report.assigned_specialist_role ?? "");
+  const [linkedIncidentId, setLinkedIncidentId] = useState<string>(
+    report.linked_incident_id ?? ""
+  );
   const [resolutionReason, setResolutionReason] = useState(
     report.resolution_reason ?? ""
   );
@@ -119,7 +126,8 @@ export function CustomerReportTriageModal({
         branchId,
         report.id,
         notes,
-        specialistRole === "" ? null : specialistRole
+        specialistRole === "" ? null : specialistRole,
+        linkedIncidentId === "" ? null : linkedIncidentId
       );
       if (!res.success) {
         setErrorMsg(res.message || "Unable to save investigation details.");
@@ -315,51 +323,90 @@ export function CustomerReportTriageModal({
               />
             </div>
 
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-              <div className="flex-1">
-                <label
-                  htmlFor="specialist-domain-select"
-                  className="block text-xs font-medium text-muted"
-                >
-                  Flag specialist maintenance domain (optional)
-                </label>
-                <div className="relative mt-1.5 flex items-center">
-                  <Wrench
-                    className="pointer-events-none absolute left-2.5 size-3.5 text-faint"
-                    aria-hidden="true"
-                  />
-                  <select
-                    id="specialist-domain-select"
-                    disabled={isPending}
-                    value={specialistRole}
-                    onChange={e =>
-                      setSpecialistRole(
-                        e.target.value as
-                          | "machine_maintenance"
-                          | "lpg_maintenance"
-                          | ""
-                      )
-                    }
-                    className="min-h-9 w-full rounded-md border border-control bg-navy pl-8 pr-4 py-1.5 text-xs text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            <div className="space-y-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                <div className="flex-1">
+                  <label
+                    htmlFor="specialist-domain-select"
+                    className="block text-xs font-medium text-muted"
                   >
-                    <option value="">No specialist dispatch required</option>
-                    <option value="machine_maintenance">
-                      Machine Maintenance Specialist
-                    </option>
-                    <option value="lpg_maintenance">
-                      LPG &amp; Gas Maintenance Specialist
-                    </option>
+                    Flag specialist maintenance domain (optional)
+                  </label>
+                  <div className="relative mt-1.5 flex items-center">
+                    <Wrench
+                      className="pointer-events-none absolute left-2.5 size-3.5 text-faint"
+                      aria-hidden="true"
+                    />
+                    <select
+                      id="specialist-domain-select"
+                      disabled={isPending}
+                      value={specialistRole}
+                      onChange={e =>
+                        setSpecialistRole(
+                          e.target.value as
+                            | "machine_maintenance"
+                            | "lpg_maintenance"
+                            | ""
+                        )
+                      }
+                      className="min-h-11 w-full rounded-md border border-control bg-navy pl-8 pr-4 py-1.5 text-xs text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                    >
+                      <option value="">No specialist dispatch required</option>
+                      <option value="machine_maintenance">
+                        Machine Maintenance Specialist
+                      </option>
+                      <option value="lpg_maintenance">
+                        LPG &amp; Gas Maintenance Specialist
+                      </option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex-1">
+                  <label
+                    htmlFor="linked-incident-select"
+                    className="block text-xs font-medium text-muted"
+                  >
+                    Link to active incident (optional)
+                  </label>
+                  <select
+                    id="linked-incident-select"
+                    disabled={isPending}
+                    value={linkedIncidentId}
+                    onChange={e => setLinkedIncidentId(e.target.value)}
+                    className="mt-1.5 min-h-11 w-full rounded-md border border-control bg-navy px-3 py-1.5 text-xs text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    <option value="">No linked hardware incident</option>
+                    {openIncidents.map(inc => (
+                      <option key={inc.id} value={inc.id}>
+                        {inc.reference_code} — {inc.asset_name}
+                        {inc.fault_code ? ` (${inc.fault_code})` : ""}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>
 
-              <button
-                type="submit"
-                disabled={isPending}
-                className="inline-flex min-h-9 shrink-0 items-center justify-center gap-1.5 rounded-md border border-control bg-navy px-4 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50"
-              >
-                <span>Save &amp; Mark Investigating</span>
-              </button>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                {report.linked_incident ? (
+                  <Link
+                    href={`/branches/${branchId}/incidents/${report.linked_incident.id}`}
+                    className="inline-flex min-h-11 items-center text-xs font-semibold text-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+                  >
+                    Open linked incident {report.linked_incident.reference_code} &rarr;
+                  </Link>
+                ) : (
+                  <span />
+                )}
+
+                <button
+                  type="submit"
+                  disabled={isPending}
+                  className="inline-flex min-h-11 w-full sm:w-auto shrink-0 items-center justify-center gap-1.5 rounded-md border border-control bg-navy px-4 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50"
+                >
+                  <span>Save &amp; Mark Investigating</span>
+                </button>
+              </div>
             </div>
           </form>
 

@@ -16,6 +16,7 @@ from branch_records import router as branch_records_router
 from notifications import router as notifications_router
 from push_notifications import router as push_notifications_router
 from public_customer import router as public_customer_router
+from incidents import router as incidents_router
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -46,16 +47,19 @@ app.include_router(branch_records_router)
 app.include_router(notifications_router)
 app.include_router(push_notifications_router)
 app.include_router(public_customer_router)
+app.include_router(incidents_router)
 
 @app.middleware("http")
 async def retire_unsecured_prototype(request, call_next):
     path = request.url.path
     allowed = (
-        path in {"/api", "/api/status", "/public/organizations", "/public/branches", "/me", "/onboarding", "/join-requests", "/branches", "/branches/manager-options", "/organization/analytics", "/organization/logo", "/personnel", "/notifications", "/push/public-key", "/push/subscriptions"}
+        path in {"/api", "/api/status", "/public/organizations", "/public/branches", "/me", "/onboarding", "/join-requests", "/branches", "/branches/manager-options", "/organization", "/organization/analytics", "/organization/logo", "/personnel", "/notifications", "/push/public-key", "/push/subscriptions", "/incidents", "/maintenance-tasks"}
         or path.startswith("/public/branches/")
         or path.startswith("/join-requests/")
         or path.startswith("/branches/")
         or path.startswith("/personnel/")
+        or path.startswith("/incidents/")
+        or path.startswith("/maintenance-tasks/")
         or path.startswith("/edge")
     )
     if not allowed:

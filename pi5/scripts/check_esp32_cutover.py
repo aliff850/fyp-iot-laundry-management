@@ -9,7 +9,7 @@ from pymysql.cursors import DictCursor
 
 def main():
     values = {}
-    for line in (Path(__file__).resolve().parent / ".env").read_text().splitlines():
+    for line in (Path(__file__).resolve().parents[1] / ".env").read_text().splitlines():
         if "=" in line and not line.lstrip().startswith("#"):
             key, value = line.split("=", 1)
             values[key.strip()] = value.strip().strip('"')

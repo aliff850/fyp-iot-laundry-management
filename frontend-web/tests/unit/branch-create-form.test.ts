@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToString } from "react-dom/server";
-import { BranchCreateForm } from "@/components/workspace/branches/BranchCreateForm";
+import {
+  BranchCreateForm,
+} from "@/components/workspace/branches/BranchCreateForm";
+import { validateBranchPhotoFiles } from "@/components/workspace/branches/BranchImagesManager";
 import { createWorkspaceBranch } from "@/app/branches/new/actions";
 import { businessRequest } from "@/lib/auth/business";
 import type { ManagerOption } from "@/lib/auth/business";
@@ -18,9 +21,13 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
-vi.mock("@/lib/auth/business", () => ({
-  businessRequest: vi.fn(),
-}));
+vi.mock("@/lib/auth/business", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/auth/business")>();
+  return {
+    ...actual,
+    businessRequest: vi.fn(),
+  };
+});
 
 const mockManagers: ManagerOption[] = [
   { user_id: "u-owner", full_name: "John Doe", role: "owner" },
@@ -82,8 +89,25 @@ describe("BranchCreateForm component", () => {
     const raw = renderToString(
       React.createElement(BranchCreateForm, { managers: nonOwnerManagers })
     );
-    expect(raw).toContain("1. Details and location");
-    expect(raw).toContain("Branch name");
+    const text = raw.replace(/<!--.*?-->/g, "");
+    expect(text).toContain("1. Details and location");
+    expect(text).toContain("Branch name");
+    expect(text).toContain("Branch Photos (Optional)");
+    expect(text).toContain("0 / 10");
+  });
+
+  it("validates optional branch photo file types, 5 MB limit, and 10-photo cap", () => {
+    const validFile = new File([new Uint8Array(1024)], "front.jpg", { type: "image/jpeg" });
+    const badType = new File([new Uint8Array(128)], "doc.pdf", { type: "application/pdf" });
+    const tooLarge = new File([new Uint8Array(5_242_881)], "huge.png", { type: "image/png" });
+
+    expect(validateBranchPhotoFiles([validFile], 0)).toEqual({
+      accepted: [validFile],
+      error: null,
+    });
+    expect(validateBranchPhotoFiles([badType], 0).error).toContain("PNG, JPEG, or WebP");
+    expect(validateBranchPhotoFiles([tooLarge], 0).error).toContain("5 MB");
+    expect(validateBranchPhotoFiles([validFile], 10).error).toContain("at most 10");
   });
 });
 

@@ -11,7 +11,7 @@ from jinja2 import FileSystemLoader
 
 
 def main():
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parents[1]
     gateway_root = root.parent if root.name.startswith("staging-") else root
     sys.path.insert(0, str(gateway_root))
     values = {}

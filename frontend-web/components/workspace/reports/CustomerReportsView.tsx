@@ -325,6 +325,7 @@ export function CustomerReportsView({
           report={selectedReport}
           branchId={branchId}
           userRole={userRole}
+          openIncidents={initialData.open_branch_incidents ?? []}
           onClose={() => setSelectedReport(null)}
           onReportUpdated={handleReportUpdated}
         />
