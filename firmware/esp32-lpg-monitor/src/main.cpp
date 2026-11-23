@@ -67,7 +67,7 @@ const unsigned long SERIAL_INTERVAL_MS = 1000; // 1 Hz serial telemetry
 const unsigned long MQTT_PUBLISH_INTERVAL_MS =
     5000;                                         // 5-second telemetry interval
 const unsigned long NET_RETRY_INTERVAL_MS = 5000; // 5-second retry throttle
-const unsigned long WIFI_WATCHDOG_MS = 10000;     // 10-second Wi-Fi watchdog
+const unsigned long WIFI_WATCHDOG_MS = 15000;     // 15-second clean Wi-Fi watchdog
 
 unsigned long lastDisplayTime = 0;
 unsigned long lastDhtTime = 0;
@@ -75,6 +75,8 @@ unsigned long lastSerialTime = 0;
 unsigned long lastMqttPublishTime = 0;
 unsigned long lastMqttRetryTime = 0;
 unsigned long lastWifiRetryTime = 0;
+unsigned long nextWifiAttemptAt = 0;
+volatile bool wifiNeedsReset = false;
 
 // Monotonic sequence counter for Ingestion Worker deduplication (PRD TI-02)
 unsigned long telemetrySequence = 0;
@@ -166,9 +168,11 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
                    String(WIFI_SSID));
     break;
   case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+    wifiNeedsReset = false;
     Serial.println("[WiFi Event] Connected to AP: " + String(WIFI_SSID));
     break;
   case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+    wifiNeedsReset = false;
     Serial.print("[WiFi Event] Got IP address: ");
     Serial.println(WiFi.localIP());
     Serial.print("[WiFi Event] Gateway: ");
@@ -178,6 +182,8 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
     Serial.println(" dBm");
     break;
   case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+    wifiNeedsReset = true;
+    nextWifiAttemptAt = millis() + 2500UL;
     Serial.print("[WiFi Event] Disconnected from AP. Reason Code: ");
     Serial.println(info.wifi_sta_disconnected.reason);
     break;
@@ -186,10 +192,27 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   }
 }
 
+void startWifiAttempt(unsigned long currentMillis) {
+  if (mqttClient.connected()) {
+    mqttClient.disconnect();
+  }
+  lastWifiRetryTime = currentMillis;
+  nextWifiAttemptAt = currentMillis + WIFI_WATCHDOG_MS;
+  WiFi.disconnect(false, false);
+  delay(100);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  wifiNeedsReset = false;
+}
+
 // Non-blocking Wi-Fi and MQTT connection manager
 void maintainNetwork(unsigned long currentMillis) {
-  // If Wi-Fi is temporarily negotiating, do nothing and wait
   if (WiFi.status() != WL_CONNECTED) {
+    bool minElapsed = (currentMillis - lastWifiRetryTime >= 4000UL);
+    bool timedOut = (currentMillis - lastWifiRetryTime >= WIFI_WATCHDOG_MS);
+    if (minElapsed && ((wifiNeedsReset && (long)(currentMillis - nextWifiAttemptAt) >= 0) || timedOut)) {
+      Serial.println("[WiFi Watchdog] Resetting STA session and reconnecting...");
+      startWifiAttempt(currentMillis);
+    }
     return;
   }
 
@@ -268,18 +291,18 @@ void setup() {
   Serial.println(WIFI_SSID);
 
   WiFi.persistent(false);
-  WiFi.disconnect(true);
-  delay(100);
+  WiFi.disconnect(true, true);
+  delay(150);
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false); // Keeps radio awake to prevent Reason 2 auth expiry
-  WiFi.setAutoReconnect(true);
+  WiFi.setAutoReconnect(false);
 
   // Force the ESP32 to accept Linux NetworkManager beacon security flags
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
   WiFi.setMinSecurity(WIFI_AUTH_WPA_PSK);
 
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  startWifiAttempt(millis());
 
   mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
 

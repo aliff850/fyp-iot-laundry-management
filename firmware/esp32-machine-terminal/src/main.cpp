@@ -46,6 +46,41 @@ int pendingMove = 0;
 bool machinePresenceDirty = true;
 unsigned long lastAnimationAt = 0;
 uint8_t drumFrame = 0;
+unsigned long wifiAttemptStartedAt = 0;
+unsigned long nextWifiAttemptAt = 0;
+volatile bool wifiNeedsReset = false;
+volatile uint8_t lastWifiDisconnectReason = 0;
+volatile bool wifiGotIpLogged = false;
+
+void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    lastWifiDisconnectReason = info.wifi_sta_disconnected.reason;
+    wifiNeedsReset = true;
+    wifiGotIpLogged = false;
+    nextWifiAttemptAt = millis() + 2500UL;
+  } else if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
+    wifiNeedsReset = false;
+  } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+    wifiNeedsReset = false;
+    wifiGotIpLogged = true;
+  }
+}
+
+void startWifiAttempt() {
+  if (mqtt.connected()) mqtt.disconnect();
+  if (lastWifiDisconnectReason) {
+    Serial.printf("[WiFi] Resetting after disconnect reason=%u\n", (unsigned)lastWifiDisconnectReason);
+    lastWifiDisconnectReason = 0;
+  } else {
+    Serial.println("[WiFi] Starting STA connection attempt");
+  }
+  wifiAttemptStartedAt = millis();
+  nextWifiAttemptAt = wifiAttemptStartedAt + 15000UL;
+  WiFi.disconnect(false, false);
+  delay(100);
+  WiFi.begin(TERMINAL_WIFI_SSID, TERMINAL_WIFI_PASSWORD);
+  wifiNeedsReset = false;
+}
 
 bool hasFinalOutcome() {
   return cycleOutcome == "completed" || cycleOutcome == "stopped" ||
@@ -434,6 +469,9 @@ void returnToPrograms() {
 }
 
 void setup() {
+  Serial.begin(115200);
+  delay(200);
+  Serial.println("\n[Boot] SpinSense machine terminal starting");
   pinMode(TERMINAL_BUTTON_QUICK, INPUT_PULLUP);
   pinMode(TERMINAL_BUTTON_STANDARD, INPUT_PULLUP);
   pinMode(TERMINAL_BUTTON_BACK, INPUT_PULLUP);
@@ -444,18 +482,39 @@ void setup() {
   tft.setRotation(1);
   machine.begin();
   render();
+  WiFi.persistent(false);
+  WiFi.disconnect(true, true);
+  delay(150);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
-  WiFi.begin(TERMINAL_WIFI_SSID, TERMINAL_WIFI_PASSWORD);
+  WiFi.setAutoReconnect(false);
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setMinSecurity(WIFI_AUTH_WPA_PSK);
+  WiFi.onEvent(onWiFiEvent);
+  startWifiAttempt();
   mqtt.setServer(TERMINAL_MQTT_HOST, TERMINAL_MQTT_PORT);
   mqtt.setBufferSize(6144);
   mqtt.setCallback(onMessage);
 }
 
 void loop() {
-  if (!WiFi.isConnected()) {
-    static unsigned long lastWifi = 0;
-    if (millis() - lastWifi > 5000) { lastWifi = millis(); WiFi.reconnect(); render(); }
+  if (wifiGotIpLogged) {
+    wifiGotIpLogged = false;
+    Serial.print("[WiFi] Connected IP=");
+    Serial.print(WiFi.localIP());
+    Serial.printf(" RSSI=%d dBm\n", WiFi.RSSI());
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    unsigned long nowMs = millis();
+    bool minElapsed = (nowMs - wifiAttemptStartedAt >= 4000UL);
+    bool timedOut = (nowMs - wifiAttemptStartedAt >= 15000UL);
+    if (minElapsed && ((wifiNeedsReset && (long)(nowMs - nextWifiAttemptAt) >= 0) || timedOut)) {
+      if (timedOut && !wifiNeedsReset) {
+        Serial.println("[WiFi] Association timeout; resetting STA");
+      }
+      startWifiAttempt();
+      render();
+    }
     delay(30);
     return;
   }

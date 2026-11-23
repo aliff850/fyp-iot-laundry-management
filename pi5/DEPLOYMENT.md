@@ -127,3 +127,31 @@ The 2026-11-15 rollout used a live Supabase schema catalog snapshot and rollback
 The initial worker transfer omitted Pi-only machine presence and remote-command sync. If cloud machine state becomes stale after a worker update, compare the live worker against `sync_worker.py.before` in the backup directory before changing the ESP32 or dashboard. The merged worker now runs machine-state and command exchange before telemetry and cycle uploads; it uses a separate autocommit read connection to avoid a stale MariaDB snapshot. After deploying the merged worker, the owner machine-state API returned fresh `idle` state and three programs. Cycle history stayed at 27 cloud records.
 
 The Pi and cloud both reported presence sequence 3832 with a seven-second age, and the owner confirmed that the refreshed Next.js view showed fresh IDLE state and all three saved programs. The branch was open during this check. No new machine cycle or payment was started.
+
+
+# Dedicated `hostapd` + `dnsmasq` AP & Stale-Station Watchdog (`wlan0`)
+
+Raspberry Pi OS's default NetworkManager hotspot runs `wpa_supplicant` AP mode over the `brcmfmac` (`BCM4345/6` FullMAC) firmware, which does not expose `disassoc_low_ack` or aggressive `ap_max_inactivity` pruning and can retain ghost station state (`authorized: yes` with `ip neigh` `FAILED`) after an ESP32 loses power without sending an 802.11 Deauth.
+
+The reviewed Option A templates under `pi5/cutover/` and `pi5/scripts/spinsense_ap_watchdog.py` switch `wlan0` (`SpinSense-GW`, `10.42.0.1/24`) to dedicated `hostapd` + `dnsmasq` while keeping `wlan1` managed by NetworkManager:
+
+- `pi5/cutover/98-unmanage-wlan0.conf`: leaves `wlan1` untouched and hands `wlan0` to systemd/hostapd.
+- `pi5/cutover/hostapd.conf.example`: sets `wpa=2` CCMP (`ieee80211w=0`), `disassoc_low_ack=1`, `ap_max_inactivity=20`, and `skip_inactivity_poll=0`.
+- `pi5/cutover/dnsmasq-wlan0.conf`: serves DHCP `10.42.0.10..254` on `wlan0` with a pinned lease for `70:4b:ca:5d:d7:30` (`10.42.0.57`).
+- `pi5/cutover/spinsense-wlan0-ip.service` and `pi5/cutover/spinsense-ap-watchdog.service`: assign `10.42.0.1/24` before `hostapd`/`dnsmasq` and evict verified unreachable `brcmfmac` stations automatically via `pi5/scripts/spinsense_ap_watchdog.py`.
+
+To apply on `pi5laundry` once files are synced under `/home/aliff850/edge_gateway/`:
+
+```bash
+sudo bash /home/aliff850/edge_gateway/cutover/apply_hostapd_cutover.sh
+```
+
+To roll back to the previous NetworkManager hotspot:
+
+```bash
+sudo systemctl disable --now spinsense-ap-watchdog.service hostapd dnsmasq spinsense-wlan0-ip.service
+sudo rm -f /etc/NetworkManager/conf.d/98-unmanage-wlan0.conf
+sudo systemctl reload NetworkManager
+sudo nmcli con modify Hotspot-ESP32 connection.autoconnect yes
+sudo nmcli con up Hotspot-ESP32
+```

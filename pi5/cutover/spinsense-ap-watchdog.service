@@ -1,0 +1,13 @@
+[Unit]
+Description=SpinSense AP stale-station watchdog for wlan0
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/aliff850/edge_gateway/scripts/spinsense_ap_watchdog.py --iface wlan0 --interval 5 --inactive-ms 15000 --cooldown 15
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
