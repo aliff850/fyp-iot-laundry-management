@@ -102,6 +102,8 @@ export default async function BranchMachinesPage({ params }: BranchMachinesPageP
   const branch = branchRes.value;
   const machines = machinesRes.value;
   const orgName = membershipRes.value.organization?.name ?? "Your Organization";
+  const defaultTechnicianName =
+    membershipRes.value.profile?.full_name?.trim() || "";
 
   return (
     <BranchWorkspaceShell
@@ -117,6 +119,7 @@ export default async function BranchMachinesPage({ params }: BranchMachinesPageP
           branchId={branchId}
           branchOpen={branch.service_status === "open"}
           role={role}
+          defaultTechnicianName={defaultTechnicianName}
         />
         <BranchRecordsTable
           key={`machine-records-${branch.id}`}

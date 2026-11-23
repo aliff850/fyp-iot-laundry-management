@@ -29,6 +29,13 @@ describe("confirmation callback", () => {
     expect(response.headers.get("location")).toBe("http://localhost:3000/login?confirmed=1");
   });
 
+  it("supports signup OTP callbacks alongside email OTP callbacks", async () => {
+    const response = await GET(new NextRequest("http://localhost:3000/auth/confirm?token_hash=test-signup&type=signup"));
+    expect(auth.verifyOtp).toHaveBeenCalledWith({ token_hash: "test-signup", type: "signup" });
+    expect(auth.signOut).toHaveBeenCalledWith({ scope: "local" });
+    expect(response.headers.get("location")).toBe("http://localhost:3000/login?confirmed=1");
+  });
+
   it.each(["?token_hash=test-token&type=recovery", "?next=//outside.example.test", "?code=x&token_hash=y&type=email"])("rejects malformed or unrelated callbacks %s", async (query) => {
     const response = await GET(new NextRequest(`http://localhost:3000/auth/confirm${query}`));
     expect(response.headers.get("location")).toBe("http://localhost:3000/check-email?confirmation=invalid");

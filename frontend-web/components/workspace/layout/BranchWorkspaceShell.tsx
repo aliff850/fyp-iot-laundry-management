@@ -11,6 +11,7 @@ import type { BranchDetail } from "@/lib/auth/business";
 export type BranchWorkspaceTab =
   | "overview"
   | "machines"
+  | "maintenance"
   | "lpg"
   | "customer-reports"
   | "personnel"
@@ -51,6 +52,13 @@ export function BranchWorkspaceShell({
       label: "Machines",
       href: `/branches/${branch.id}/machines`,
       icon: "machines",
+      visible: isOwner || isManager || isMachineTech,
+    },
+    {
+      id: "maintenance",
+      label: "Maintenance",
+      href: `/branches/${branch.id}/maintenance`,
+      icon: "maintenance",
       visible: isOwner || isManager || isMachineTech,
     },
     {

@@ -226,7 +226,9 @@ class Machine:
                     self.state.update(state="ERROR", fault_code=fault)
                 else:
                     reason = "unsupported_fault"
-            elif action == "clear_fault" and state == "ERROR":
+            elif action == "start_maintenance" and state in ("ERROR", "IDLE"):
+                self.state.update(state="MAINTENANCE", remaining_seconds=0)
+            elif action == "clear_fault" and state in ("ERROR", "MAINTENANCE"):
                 self.state.update(state="IDLE", fault_code=None, remaining_seconds=0)
             else:
                 reason = "invalid_transition"

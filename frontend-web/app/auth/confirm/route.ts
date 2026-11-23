@@ -14,14 +14,16 @@ export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const token = params.get("token_hash");
   const code = params.get("code");
-  const validToken = token && params.get("type") === "email" && !code;
+  const rawType = params.get("type");
+  const otpType = rawType === "email" || rawType === "signup" ? rawType : null;
+  const validToken = Boolean(token && otpType && !code);
   const validCode = code && !token && !params.has("type");
   if (params.has("error") || (!validToken && !validCode) || (token?.length ?? 0) > 4096 || (code?.length ?? 0) > 4096) return finish("/check-email?confirmation=invalid");
   try {
     const client = await createClient(true);
     if (!client) return finish("/check-email?confirmation=unavailable");
     const { error } = validToken
-      ? await client.auth.verifyOtp({ token_hash: token, type: "email" })
+      ? await client.auth.verifyOtp({ token_hash: token!, type: otpType! })
       : await client.auth.exchangeCodeForSession(code!);
     if (error) return finish(error.code === "otp_expired" ? "/check-email?confirmation=expired" : "/check-email?confirmation=invalid");
     // The confirmed product flow requires a fresh login after email confirmation.

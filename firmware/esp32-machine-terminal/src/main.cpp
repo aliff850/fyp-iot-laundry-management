@@ -15,7 +15,7 @@
 #endif
 
 static const uint16_t canvas = 0x10A3, surface = 0x1082, ink = 0xF79E, muted = 0xB5B7;
-static const uint16_t accent = 0xEB0D, positive = 0x7E34;
+static const uint16_t accent = 0xEB0D, positive = 0x7E34, warning = 0xDDAC;
 Adafruit_ST7789 tft(TERMINAL_TFT_CS, TERMINAL_TFT_DC, TERMINAL_TFT_RST);
 WiFiClient wifi;
 PubSubClient mqtt(wifi);
@@ -153,28 +153,30 @@ void drawDrum() {
   lastAnimationAt = millis();
 }
 
-void drawErrorScreen(const String &faultCode, const String &faultName) {
-  heading("Machine fault", "Out of service - Staff notified");
+void drawStatusBoxScreen(const char *title, const char *subtitle, uint16_t borderColor,
+                         const char *boxLabel, const String &headline, const String &detailText,
+                         const char *footer) {
+  heading(title, subtitle);
   tft.fillRoundRect(16, 66, 288, 122, 8, surface);
-  tft.drawRoundRect(16, 66, 288, 122, 8, accent);
+  tft.drawRoundRect(16, 66, 288, 122, 8, borderColor);
   tft.setTextSize(1);
   tft.setTextColor(muted, surface);
   tft.setCursor(28, 78);
-  tft.print("FAULT CODE");
-  tft.setTextColor(accent, surface);
-  tft.setTextSize(faultCode.length() > 10 ? 2 : 3);
+  tft.print(boxLabel);
+  tft.setTextColor(borderColor, surface);
+  tft.setTextSize(headline.length() > 10 ? 2 : 3);
   tft.setCursor(28, 92);
-  tft.print(faultCode);
+  tft.print(headline);
   tft.setTextColor(ink, surface);
   tft.setTextSize(2);
   const int maxChars = 21;
-  String line1 = faultName;
+  String line1 = detailText;
   String line2 = "";
-  if ((int)faultName.length() > maxChars) {
-    int splitAt = faultName.lastIndexOf(' ', maxChars);
+  if ((int)detailText.length() > maxChars) {
+    int splitAt = detailText.lastIndexOf(' ', maxChars);
     if (splitAt <= 0) splitAt = maxChars;
-    line1 = faultName.substring(0, splitAt);
-    line2 = faultName.substring(splitAt);
+    line1 = detailText.substring(0, splitAt);
+    line2 = detailText.substring(splitAt);
     line2.trim();
     if ((int)line2.length() > maxChars) line2 = line2.substring(0, maxChars);
   }
@@ -187,7 +189,20 @@ void drawErrorScreen(const String &faultCode, const String &faultName) {
   tft.setTextSize(1);
   tft.setTextColor(ink, canvas);
   tft.setCursor(16, 206);
-  tft.print("Use SpinSense app for help");
+  tft.print(footer);
+}
+
+void drawErrorScreen(const String &faultCode, const String &faultName) {
+  drawStatusBoxScreen("Machine fault", "Out of service - Staff notified", accent, "FAULT CODE",
+                      faultCode, faultName, "Use SpinSense app for help");
+}
+
+void drawMaintenanceScreen(const String &faultCode, const String &faultName) {
+  String headline = faultCode.length() ? faultCode : String("SERVICE");
+  String detail = faultName.length() ? faultName : String("Scheduled maintenance");
+  drawStatusBoxScreen("Machine under maintenance", "Technician service in progress", warning,
+                      faultCode.length() ? "SERVICING FAULT" : "MAINTENANCE", headline, detail,
+                      "Temporarily unavailable");
 }
 
 void drawRunningMachine(const String &program) {
@@ -222,6 +237,16 @@ void render() {
     const char *fallbackName = MachineEngine::faultNameFor(faultCode.c_str());
     String faultName = machine.data["fault_name"] | fallbackName;
     drawErrorScreen(faultCode, faultName);
+    return;
+  }
+  if (deviceState == "maintenance") {
+    String faultCode = machine.data["fault_code"] | "";
+    String faultName = "";
+    if (faultCode.length()) {
+      const char *fallbackName = MachineEngine::faultNameFor(faultCode.c_str());
+      faultName = machine.data["fault_name"] | fallbackName;
+    }
+    drawMaintenanceScreen(faultCode, faultName);
     return;
   }
   if (remoteFinishedAt && millis() - remoteFinishedAt < 5000) {
@@ -357,7 +382,7 @@ void onMessage(char *topic, byte *payload, unsigned int length) {
       machinePresenceDirty = true;
       String nextState = String(machine.data["state"] | "unknown");
       if (nextState == "running") remoteFinishedAt = 0;
-      else if (nextState == "error") {
+      else if (nextState == "error" || nextState == "maintenance") {
         checkoutState = "";
         checkoutUrl = "";
         requestId = "";

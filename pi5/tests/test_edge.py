@@ -44,6 +44,45 @@ def test_machine_presence_upload_uses_gateway_auth_and_current_local_identity(mo
     assert kwargs["headers"]["Authorization"] == "Bearer private-test-token"
 
 
+def test_sync_machine_operations_accepts_start_maintenance_command(monkeypatch):
+    worker = EdgeSyncWorker()
+    worker.status = "active"
+    worker.gateway_id = "gateway-1"
+    worker.credential = "private-test-token"
+    read_conn = MagicMock()
+    read_cursor = read_conn.cursor.return_value.__enter__.return_value
+    read_cursor.fetchall.side_effect = [[], []]
+    write_conn = MagicMock()
+    write_cursor = write_conn.cursor.return_value.__enter__.return_value
+    write_cursor.fetchone.side_effect = [{"source_id": "washer-sim-01"}, None]
+    monkeypatch.setattr(worker, "get_state_db_connection", lambda: read_conn)
+    monkeypatch.setattr(worker, "get_db_connection", lambda: write_conn)
+    worker.session = MagicMock()
+    cmd_id = "22222222-2222-2222-2222-222222222222"
+    worker.session.get.return_value.json.return_value = {
+        "commands": [
+            {
+                "command_id": cmd_id,
+                "source_id": "washer-sim-01",
+                "action": "start_maintenance",
+                "arguments": {},
+                "expires_at": "2099-01-01T00:00:00Z",
+            }
+        ]
+    }
+
+    worker.sync_machine_operations()
+
+    inserts = [
+        call.args for call in write_cursor.execute.call_args_list
+        if "INSERT IGNORE INTO machine_commands" in call.args[0]
+    ]
+    assert len(inserts) == 1
+    assert inserts[0][1][0] == cmd_id
+    assert inserts[0][1][3] == "start_maintenance"
+    write_conn.commit.assert_called_once()
+
+
 def test_cycle_sync_acknowledges_only_submitted_committed_ids(monkeypatch):
     worker = EdgeSyncWorker()
     worker.gateway_id = "gateway-1"

@@ -19,6 +19,7 @@ import {
   resolveIncidentAction,
   updateMaintenanceTaskAction,
 } from "@/app/branches/[branchId]/incidents/[incidentId]/actions";
+import { useActionToast } from "@/components/workspace/common/ActionToastContext";
 
 interface IncidentDetailClientProps {
   branchId: string;
@@ -58,10 +59,8 @@ export function IncidentDetailClient({
   initialIncident,
 }: IncidentDetailClientProps) {
   const router = useRouter();
+  const { notify } = useActionToast();
   const [incident, setIncident] = useState<IncidentDetail>(initialIncident);
-  const [feedback, setFeedback] = useState<{ tone: "positive" | "negative"; text: string } | null>(
-    null,
-  );
   const [ackNote, setAckNote] = useState("");
   const [resolutionNote, setResolutionNote] = useState(initialIncident.resolution_note ?? "");
   const [taskTitle, setTaskTitle] = useState(
@@ -87,31 +86,63 @@ export function IncidentDetailClient({
     resolutionNote.trim().length >= 3;
 
   const handleAcknowledge = () => {
-    setFeedback(null);
+    const toastId = `incident-ack-${incident.id}`;
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Acknowledging incident",
+      message: `Recording acknowledgement for ${incident.reference_code}…`,
+    });
     startTransition(async () => {
       const res = await acknowledgeIncidentAction(branchId, incident.id, ackNote.trim() || undefined);
       if (!res.ok) {
-        setFeedback({ tone: "negative", text: res.message });
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Acknowledge failed",
+          message: res.message,
+        });
         return;
       }
       setIncident((prev) => ({ ...prev, ...res.incident }));
       setAckNote("");
-      setFeedback({ tone: "positive", text: "Incident acknowledged." });
+      notify({
+        id: toastId,
+        kind: "success",
+        title: "Incident acknowledged",
+        message: `${incident.reference_code} marked as acknowledged.`,
+      });
       router.refresh();
     });
   };
 
   const handleResolve = (event: React.FormEvent) => {
     event.preventDefault();
-    setFeedback(null);
+    const toastId = `incident-resolve-${incident.id}`;
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Resolving incident",
+      message: `Closing incident ${incident.reference_code}…`,
+    });
     startTransition(async () => {
       const res = await resolveIncidentAction(branchId, incident.id, resolutionNote.trim());
       if (!res.ok) {
-        setFeedback({ tone: "negative", text: res.message });
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Resolution failed",
+          message: res.message,
+        });
         return;
       }
       setIncident((prev) => ({ ...prev, ...res.incident }));
-      setFeedback({ tone: "positive", text: "Incident resolved." });
+      notify({
+        id: toastId,
+        kind: "success",
+        title: "Incident resolved",
+        message: `${incident.reference_code} marked as resolved.`,
+      });
       router.refresh();
     });
   };
@@ -119,7 +150,13 @@ export function IncidentDetailClient({
   const handleAssignTask = (event: React.FormEvent) => {
     event.preventDefault();
     if (!assigneeId || taskTitle.trim().length < 3) return;
-    setFeedback(null);
+    const toastId = `incident-task-assign-${incident.id}`;
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Assigning task",
+      message: "Creating maintenance task…",
+    });
     startTransition(async () => {
       const res = await createMaintenanceTaskAction(branchId, incident.id, {
         domain: incident.domain,
@@ -128,7 +165,12 @@ export function IncidentDetailClient({
         service_notes: taskNotes.trim() || undefined,
       });
       if (!res.ok) {
-        setFeedback({ tone: "negative", text: res.message });
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Assignment failed",
+          message: res.message,
+        });
         return;
       }
       setIncident((prev) => ({
@@ -137,7 +179,12 @@ export function IncidentDetailClient({
       }));
       setDraftNotes((prev) => ({ ...prev, [res.task.id]: res.task.service_notes ?? "" }));
       setTaskNotes("");
-      setFeedback({ tone: "positive", text: "Maintenance task assigned." });
+      notify({
+        id: toastId,
+        kind: "success",
+        title: "Maintenance task assigned",
+        message: `Task "${res.task.title}" assigned.`,
+      });
       router.refresh();
     });
   };
@@ -146,21 +193,37 @@ export function IncidentDetailClient({
     taskId: string,
     status: "assigned" | "in_progress" | "completed",
   ) => {
-    setFeedback(null);
+    const toastId = `incident-task-${taskId}`;
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Updating task",
+      message: `Updating task status to ${taskStatusLabel(status)}…`,
+    });
     startTransition(async () => {
       const res = await updateMaintenanceTaskAction(branchId, incident.id, taskId, {
         status,
         service_notes: draftNotes[taskId] ?? "",
       });
       if (!res.ok) {
-        setFeedback({ tone: "negative", text: res.message });
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Task update failed",
+          message: res.message,
+        });
         return;
       }
       setIncident((prev) => ({
         ...prev,
         tasks: prev.tasks.map((t) => (t.id === taskId ? res.task : t)),
       }));
-      setFeedback({ tone: "positive", text: `Task updated to ${taskStatusLabel(status)}.` });
+      notify({
+        id: toastId,
+        kind: "success",
+        title: "Task updated",
+        message: `Task updated to ${taskStatusLabel(status)}.`,
+      });
       router.refresh();
     });
   };
@@ -253,19 +316,6 @@ export function IncidentDetailClient({
           </p>
         </div>
       </div>
-
-      {feedback && (
-        <div
-          role="status"
-          className={`rounded-md border p-3.5 text-sm ${
-            feedback.tone === "positive"
-              ? "border-positive/40 bg-positive/10 text-positive"
-              : "border-negative/40 bg-negative/10 text-negative"
-          }`}
-        >
-          {feedback.text}
-        </div>
-      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">

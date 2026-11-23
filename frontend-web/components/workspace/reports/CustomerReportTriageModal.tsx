@@ -25,6 +25,7 @@ import {
   executeInvestigateReport,
   executeResolveReport,
 } from "@/app/branches/[branchId]/customer-reports/actions";
+import { useActionToast } from "@/components/workspace/common/ActionToastContext";
 
 export type ReportsOperatorRole =
   | "owner"
@@ -52,6 +53,7 @@ export function CustomerReportTriageModal({
   onClose,
   onReportUpdated,
 }: CustomerReportTriageModalProps) {
+  const { notify } = useActionToast();
   const [isPending, startTransition] = useTransition();
   const [notes, setNotes] = useState(report.investigation_notes ?? "");
   const [specialistRole, setSpecialistRole] = useState<
@@ -63,8 +65,6 @@ export function CustomerReportTriageModal({
   const [resolutionReason, setResolutionReason] = useState(
     report.resolution_reason ?? ""
   );
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -116,10 +116,16 @@ export function CustomerReportTriageModal({
 
   const statusBadge = getStatusBadge(report.status);
 
+  const toastId = `customer-report-${report.id}`;
+
   const handleInvestigateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setErrorMsg(null);
-    setFeedbackMsg(null);
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Saving triage notes",
+      message: `Updating ticket #${report.id}…`,
+    });
 
     startTransition(async () => {
       const res = await executeInvestigateReport(
@@ -130,17 +136,31 @@ export function CustomerReportTriageModal({
         linkedIncidentId === "" ? null : linkedIncidentId
       );
       if (!res.success) {
-        setErrorMsg(res.message || "Unable to save investigation details.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Triage update failed",
+          message: res.message || "Unable to save investigation details.",
+        });
       } else if (res.report && res.summary) {
-        setFeedbackMsg("Investigation notes saved and ticket marked as investigating.");
+        notify({
+          id: toastId,
+          kind: "success",
+          title: "Investigation updated",
+          message: "Investigation notes saved and ticket marked as investigating.",
+        });
         onReportUpdated(res.report, res.summary);
       }
     });
   };
 
   const handleResolveAction = (action: "resolve" | "dismiss") => {
-    setErrorMsg(null);
-    setFeedbackMsg(null);
+    notify({
+      id: toastId,
+      kind: "info",
+      title: action === "dismiss" ? "Dismissing ticket" : "Resolving ticket",
+      message: `Closing ticket #${report.id}…`,
+    });
 
     startTransition(async () => {
       const res = await executeResolveReport(
@@ -150,8 +170,19 @@ export function CustomerReportTriageModal({
         resolutionReason
       );
       if (!res.success) {
-        setErrorMsg(res.message || `Unable to ${action} report.`);
+        notify({
+          id: toastId,
+          kind: "error",
+          title: action === "dismiss" ? "Dismiss failed" : "Resolve failed",
+          message: res.message || `Unable to ${action} report.`,
+        });
       } else if (res.report && res.summary) {
+        notify({
+          id: toastId,
+          kind: "success",
+          title: action === "dismiss" ? "Ticket dismissed" : "Ticket resolved",
+          message: `Customer report #${report.id} has been ${action === "dismiss" ? "dismissed" : "resolved"}.`,
+        });
         onReportUpdated(res.report, res.summary);
         onClose();
       }
@@ -277,24 +308,6 @@ export function CustomerReportTriageModal({
               </div>
             </div>
           </div>
-
-          {errorMsg && (
-            <div
-              className="rounded-md border border-negative/40 bg-negative/10 px-3.5 py-2.5 text-xs text-negative"
-              role="alert"
-            >
-              {errorMsg}
-            </div>
-          )}
-
-          {feedbackMsg && (
-            <div
-              className="rounded-md border border-positive/30 bg-positive/10 px-3.5 py-2.5 text-xs text-positive"
-              role="status"
-            >
-              {feedbackMsg}
-            </div>
-          )}
 
           {/* Step 1: Investigation Notes & Specialist Domain Assignment */}
           <form onSubmit={handleInvestigateSubmit} className="space-y-3 rounded-md border border-line bg-surface p-4">

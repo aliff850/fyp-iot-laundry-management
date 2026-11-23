@@ -153,5 +153,77 @@ describe("live branch machine UI", () => {
     }));
     expect(specialistHtml).toContain("Unverified vendor code (E14)");
     expect(specialistHtml).not.toContain("CLEAR FAULT");
+    expect(specialistHtml).toContain("Open maintenance form");
+    expect(specialistHtml).toContain("Put under maintenance");
+    expect(specialistHtml).toContain("Maintenance &amp; Repair Log");
+    expect(specialistHtml).toContain("Log maintenance &amp; return to idle");
+    expect(specialistHtml).not.toContain("Save service log");
+  });
+
+  it("renders amber maintenance badge, fault diagnosis, and pre-filled repair form for maintenance state", () => {
+    const maintenanceWasher: RemoteMachine = {
+      ...washer,
+      state: "maintenance",
+      data: {
+        ...washer.data,
+        fault_code: "E01",
+        fault_name: "Water Inlet Failure",
+      },
+      diagnosis: {
+        fault_code: "E01",
+        title: "Water Inlet Failure",
+        source_status: "placeholder_washer_guide",
+        disclaimer: "Placeholder troubleshooting guide pending vendor manual.",
+        plain_explanation: "The washer did not detect expected fill within intake window.",
+        likely_causes: ["Wall shutoff valve closed"],
+        safety_precautions: "Verify floor dryness around outlets.",
+        troubleshooting_steps: ["Confirm water supply valve is fully open."],
+      },
+    };
+
+    const cardHtml = renderToString(React.createElement(MachineCard, {
+      ...cardProps,
+      machine: maintenanceWasher,
+    }));
+    expect(cardHtml).toContain("Under maintenance (E01)");
+    expect(cardHtml).toContain("text-warning");
+
+    const fleetHtml = renderToString(React.createElement(RemoteMachineFleet, {
+      branchId: "branch-1",
+      branchOpen: true,
+      role: "machine_maintenance",
+      defaultTechnicianName: "Ali Technician",
+      initialMachines: [maintenanceWasher],
+    }));
+    const fleetText = fleetHtml.replace(/<!--.*?-->/g, "");
+    expect(fleetText).toContain("Maintenance (1)");
+
+    const modalHtml = renderToString(React.createElement(MachineDetailModal, {
+      machine: maintenanceWasher,
+      branchId: "branch-1",
+      branchOpen: true,
+      role: "machine_maintenance",
+      defaultTechnicianName: "Ali Technician",
+      onClose: () => {},
+    }));
+    expect(modalHtml).toContain("Machine under maintenance");
+    expect(modalHtml).toContain("Maintenance active");
+    expect(modalHtml).toContain("Water Inlet Failure");
+    expect(modalHtml).toContain("Return to idle");
+    expect(modalHtml).toContain("Log maintenance &amp; return to idle");
+    expect(modalHtml).toContain("value=\"E01\"");
+    expect(modalHtml).toContain("value=\"Ali Technician\"");
+    expect(modalHtml).toContain("Tasks carried out");
+    expect(modalHtml).not.toContain("Program for START");
+    expect(modalHtml).not.toContain("Statistics &amp; Revenue");
+  });
+
+  it("renders clean stale offline badge when backend omits raw state as unknown", () => {
+    const staleUnknownCard = renderToString(React.createElement(MachineCard, {
+      ...cardProps,
+      machine: { ...washer, freshness: "stale", state: "unknown" },
+    }));
+    expect(staleUnknownCard).toContain("Offline / Telemetry stale");
+    expect(staleUnknownCard).not.toContain("last reported UNKNOWN");
   });
 });

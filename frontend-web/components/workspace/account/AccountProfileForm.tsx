@@ -6,6 +6,10 @@ import {
   updateAccountProfileAction,
   type AccountProfileActionState,
 } from "@/app/account/actions";
+import {
+  useActionToast,
+  withActionToast,
+} from "@/components/workspace/common/ActionToastContext";
 
 export interface AccountProfileFormProps {
   initialFullName: string;
@@ -26,12 +30,17 @@ export function AccountProfileForm({
   email,
   memberSince,
 }: AccountProfileFormProps) {
+  const { notify } = useActionToast();
   const initialState: AccountProfileActionState = {
     fullName: initialFullName,
     phone: initialPhone,
   };
   const [state, action, pending] = useActionState(
-    updateAccountProfileAction,
+    withActionToast(notify, updateAccountProfileAction, {
+      id: "account-profile-save",
+      successTitle: "Profile saved",
+      errorTitle: "Profile save failed",
+    }),
     initialState,
   );
 
@@ -48,17 +57,6 @@ export function AccountProfileForm({
           Profile Details
         </h2>
       </div>
-
-      {state.message && (
-        <p
-          role={state.success ? "status" : "alert"}
-          className={`mt-4 rounded-md border-l-2 bg-raised px-4 py-3 text-sm text-ink ${
-            state.success ? "border-positive" : "border-negative"
-          }`}
-        >
-          {state.message}
-        </p>
-      )}
 
       <form action={action} className="mt-4 space-y-5">
         <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2">

@@ -119,7 +119,11 @@ class EdgeSyncWorker:
                 if response.status_code == 200:
                     self.last_machine_state[state["source_id"]] = identity
                 else:
-                    logger.warning("Machine state sync returned HTTP %s", response.status_code)
+                    logger.warning(
+                        "Machine state sync returned HTTP %s: %s",
+                        response.status_code,
+                        (response.text or "")[:160],
+                    )
             except (requests.exceptions.RequestException, ValueError) as error:
                 logger.warning("Machine state sync failed: %s", type(error).__name__)
 
@@ -138,7 +142,7 @@ class EdgeSyncWorker:
                     arguments = command["arguments"]
                     expires_at = datetime.fromisoformat(command["expires_at"].replace("Z", "+00:00"))
                     if (expires_at.tzinfo is None or expires_at <= datetime.now(timezone.utc)
-                            or action not in {"start", "pause", "resume", "stop", "set_settings", "clear_fault"}
+                            or action not in {"start", "pause", "resume", "stop", "set_settings", "clear_fault", "start_maintenance"}
                             or not isinstance(arguments, dict)):
                         continue
                     with self.get_db_connection().cursor() as cursor:

@@ -7,6 +7,7 @@ import {
   fetchLpgCommandStatus,
   fetchLpgMaintenanceStatus,
 } from "@/app/branches/[branchId]/lpg/actions";
+import { useActionToast } from "@/components/workspace/common/ActionToastContext";
 import type { SafetyNodeDevice } from "@/lib/auth/business";
 
 export interface LpgGasBaselineModalProps {
@@ -64,9 +65,8 @@ export function LpgGasBaselineModal({
   const [roKohm, setRoKohm] = useState<number | null>(cfg?.mq6_ro_kohm ?? null);
   const [baselineV, setBaselineV] = useState<number | null>(cfg?.mq6_baseline_v ?? null);
 
+  const { notify } = useActionToast();
   const [submitting, setSubmitting] = useState<"calibrate" | "save" | "reset" | null>(null);
-  const [pendingText, setPendingText] = useState<string | null>(null);
-  const [errorText, setErrorText] = useState<string | null>(null);
 
   const dirtyRef = useRef(false);
   const requestIdRef = useRef<string>(randomRequestId());
@@ -113,32 +113,58 @@ export function LpgGasBaselineModal({
   const gasInterp = device.gas_interpretation;
   const isCalibrated = roKohm !== null || Boolean(gasInterp?.ppm_calibrated);
 
-  async function pollUntilTerminal(commandId: string): Promise<boolean> {
+  const toastId = `lpg-gas-${branchId}-${device.source_id}`;
+
+  async function pollUntilTerminal(
+    commandId: string,
+    successTitle: string,
+    successMessage: string,
+  ): Promise<boolean> {
     const deadline = Date.now() + POLL_TIMEOUT_MS;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
       const statusRes = await fetchLpgCommandStatus(branchId, device.source_id, commandId);
       if (!statusRes.ok) {
-        setErrorText(statusRes.message || "Failed to verify calibration status with gateway.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Gas calibration failed",
+          message: statusRes.message || "Failed to verify calibration status with gateway.",
+        });
         return false;
       }
       const st = statusRes.value.status;
       if (st === "succeeded") {
         await onConfirmed();
+        notify({
+          id: toastId,
+          kind: "success",
+          title: successTitle,
+          message: successMessage,
+        });
         return true;
       }
       if (st === "failed" || st === "expired" || st === "unknown") {
-        setErrorText(statusRes.value.reason || "Branch gateway rejected gas calibration update.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Gas calibration rejected",
+          message: statusRes.value.reason || "Branch gateway rejected gas calibration update.",
+        });
         return false;
       }
     }
-    setErrorText("Timed out waiting for branch gateway confirmation.");
+    notify({
+      id: toastId,
+      kind: "error",
+      title: "Gas calibration timed out",
+      message: "Timed out waiting for branch gateway confirmation.",
+    });
     return false;
   }
 
   async function submitAction(mode: "calibrate" | "save" | "reset") {
     if (submitting) return;
-    setErrorText(null);
 
     const warnPpm = Number(warnPpmInput);
     const critPpm = Number(critPpmInput);
@@ -148,35 +174,78 @@ export function LpgGasBaselineModal({
 
     if (mode !== "reset") {
       if (!Number.isFinite(warnPpm) || warnPpm < 10 || warnPpm > 10000) {
-        setErrorText("Warning alert threshold must be between 10 and 10,000 ppm.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Invalid warning limit",
+          message: "Warning alert threshold must be between 10 and 10,000 ppm.",
+        });
         return;
       }
       if (!Number.isFinite(critPpm) || critPpm < 20 || critPpm > 20000 || critPpm <= warnPpm) {
-        setErrorText("Critical alert threshold must exceed warning threshold (20–20,000 ppm).");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Invalid critical limit",
+          message: "Critical alert threshold must exceed warning threshold (20–20,000 ppm).",
+        });
         return;
       }
       if (!Number.isFinite(rlKohm) || rlKohm < 0.1 || rlKohm > 200) {
-        setErrorText("Load resistor RL must be between 0.1 and 200 kOhm.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Invalid resistor value",
+          message: "Load resistor RL must be between 0.1 and 200 kOhm.",
+        });
         return;
       }
       if (!Number.isFinite(divider) || divider < 0.1 || divider > 10) {
-        setErrorText("Voltage divider ratio must be between 0.1 and 10.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Invalid divider ratio",
+          message: "Voltage divider ratio must be between 0.1 and 10.",
+        });
         return;
       }
       if (!Number.isFinite(vccV) || vccV < 2.5 || vccV > 12) {
-        setErrorText("Supply voltage must be between 2.5 and 12 V.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Invalid supply voltage",
+          message: "Supply voltage must be between 2.5 and 12 V.",
+        });
         return;
       }
     }
 
-    setSubmitting(mode);
-    setPendingText(
+    const pendingMsg =
       mode === "reset"
         ? "Clearing gas calibration on branch gateway…"
         : mode === "save"
           ? "Saving alert thresholds on branch gateway…"
-          : "Capturing clean-air baseline on branch gateway…",
-    );
+          : "Capturing clean-air baseline on branch gateway…";
+    const successTitle =
+      mode === "reset"
+        ? "Calibration cleared"
+        : mode === "save"
+          ? "Alert limits saved"
+          : "Gas baseline calibrated";
+    const successMsg =
+      mode === "reset"
+        ? `${device.label} MQ-6 baseline cleared.`
+        : mode === "save"
+          ? `${device.label} gas alert thresholds updated.`
+          : `${device.label} clean-air baseline captured.`;
+
+    setSubmitting(mode);
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Updating gas calibration",
+      message: pendingMsg,
+    });
 
     try {
       const res = await calibrateBranchLpgGasBaseline(branchId, device.source_id, {
@@ -192,18 +261,34 @@ export function LpgGasBaselineModal({
       });
 
       if (!res.ok) {
-        setErrorText(res.message || "Could not dispatch gas baseline command.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Gas calibration failed",
+          message: res.message || "Could not dispatch gas baseline command.",
+        });
         return;
       }
 
       if (res.value.status === "succeeded") {
         await onConfirmed();
+        notify({
+          id: toastId,
+          kind: "success",
+          title: successTitle,
+          message: successMsg,
+        });
         onClose();
         return;
       }
 
-      setPendingText("Waiting for branch gateway confirmation…");
-      const ok = await pollUntilTerminal(res.value.command_id);
+      notify({
+        id: toastId,
+        kind: "info",
+        title: "Updating gas calibration",
+        message: "Waiting for branch gateway confirmation…",
+      });
+      const ok = await pollUntilTerminal(res.value.command_id, successTitle, successMsg);
       if (ok) {
         onClose();
       } else {
@@ -211,7 +296,6 @@ export function LpgGasBaselineModal({
       }
     } finally {
       setSubmitting(null);
-      setPendingText(null);
     }
   }
 
@@ -425,24 +509,6 @@ export function LpgGasBaselineModal({
               </div>
             </details>
           </div>
-
-          {pendingText && (
-            <div
-              aria-busy="true"
-              className="rounded-md border-l-2 border-control bg-raised px-4 py-3 text-sm text-muted"
-            >
-              {pendingText}
-            </div>
-          )}
-
-          {errorText && (
-            <div
-              role="alert"
-              className="rounded-md border-l-2 border-negative bg-raised px-4 py-3 text-sm text-ink"
-            >
-              {errorText}
-            </div>
-          )}
 
           <div className="mt-6 flex flex-col gap-3 border-t border-rule pt-4">
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">

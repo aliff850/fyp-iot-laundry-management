@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { CheckCircle2, Loader2, ShieldAlert, XCircle } from "lucide-react";
 import { confirmGatewayAction, cancelPairingClaimAction } from "@/app/branches/[branchId]/hardware-setup/actions";
+import { useActionToast } from "@/components/workspace/common/ActionToastContext";
 import type { GatewayClaimItem } from "@/lib/auth/business";
 
 interface FingerprintComparisonCardProps {
@@ -20,25 +21,53 @@ export function FingerprintComparisonCard({
   onConfirmed,
   onCancelled,
 }: FingerprintComparisonCardProps) {
+  const { notify } = useActionToast();
   const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const toastId = `hardware-claim-${branchId}-${claim.claim_id}`;
 
   const handleConfirm = async () => {
     if (!claim.gateway_id) {
-      setErrorMessage("Missing gateway identity on pending claim.");
+      notify({
+        id: toastId,
+        kind: "error",
+        title: "Missing gateway identity",
+        message: "Missing gateway identity on pending claim.",
+      });
       return;
     }
     setLoading(true);
-    setErrorMessage(null);
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Activating gateway",
+      message: "Confirming gateway pairing fingerprint…",
+    });
     try {
       const res = await confirmGatewayAction(branchId, claim.claim_id, claim.gateway_id);
       if (res.success) {
+        notify({
+          id: toastId,
+          kind: "success",
+          title: "Gateway activated",
+          message: res.message || "Edge gateway verified and paired to branch.",
+        });
         onConfirmed?.();
       } else {
-        setErrorMessage(res.message || "Failed to confirm gateway.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Confirmation failed",
+          message: res.message || "Failed to confirm gateway.",
+        });
       }
     } catch {
-      setErrorMessage("Network error during gateway confirmation.");
+      notify({
+        id: toastId,
+        kind: "error",
+        title: "Confirmation failed",
+        message: "Network error during gateway confirmation.",
+      });
     } finally {
       setLoading(false);
     }
@@ -46,16 +75,37 @@ export function FingerprintComparisonCard({
 
   const handleCancel = async () => {
     setLoading(true);
-    setErrorMessage(null);
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Cancelling pairing",
+      message: "Cancelling pending gateway pairing claim…",
+    });
     try {
       const res = await cancelPairingClaimAction(branchId, claim.claim_id);
       if (res.success) {
+        notify({
+          id: toastId,
+          kind: "success",
+          title: "Pairing cancelled",
+          message: "Pending gateway pairing claim cancelled.",
+        });
         onCancelled?.();
       } else {
-        setErrorMessage(res.message || "Failed to cancel claim.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Cancel failed",
+          message: res.message || "Failed to cancel claim.",
+        });
       }
     } catch {
-      setErrorMessage("Network error during cancellation.");
+      notify({
+        id: toastId,
+        kind: "error",
+        title: "Cancel failed",
+        message: "Network error during cancellation.",
+      });
     } finally {
       setLoading(false);
     }
@@ -73,12 +123,6 @@ export function FingerprintComparisonCard({
       <p className="mt-2 text-sm text-muted">
         The pairing code was redeemed by a Pi 5 gateway. Visually compare the verification fingerprint below with the one displayed on the Pi local dashboard.
       </p>
-
-      {errorMessage && (
-        <div className="mt-3 rounded bg-negative/10 border border-negative/30 p-3 text-xs text-negative" role="alert">
-          {errorMessage}
-        </div>
-      )}
 
       <div className="mt-4 flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
         <div className="flex-1 rounded-md border border-rule bg-raised p-4 text-center">

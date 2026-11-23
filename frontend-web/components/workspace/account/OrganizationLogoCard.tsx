@@ -7,6 +7,10 @@ import {
   uploadOrganizationLogoAction,
   type OrganizationLogoState,
 } from "@/app/account/actions";
+import {
+  useActionToast,
+  withActionToast,
+} from "@/components/workspace/common/ActionToastContext";
 
 export interface OrganizationLogoCardProps {
   organizationName: string;
@@ -26,13 +30,22 @@ export function OrganizationLogoCard({
   initialLogoUrl,
   embedded = false,
 }: OrganizationLogoCardProps) {
+  const { notify } = useActionToast();
   const initialState: OrganizationLogoState = { logoUrl: initialLogoUrl };
   const [uploadState, uploadAction, uploadPending] = useActionState(
-    uploadOrganizationLogoAction,
+    withActionToast(notify, uploadOrganizationLogoAction, {
+      id: "organization-logo-action",
+      successTitle: "Organization logo updated",
+      errorTitle: "Logo upload failed",
+    }),
     initialState,
   );
   const [removeState, removeAction, removePending] = useActionState(
-    removeOrganizationLogoAction,
+    withActionToast(notify, removeOrganizationLogoAction, {
+      id: "organization-logo-action",
+      successTitle: "Organization logo removed",
+      errorTitle: "Logo removal failed",
+    }),
     initialState,
   );
   const [clientError, setClientError] = useState<string | null>(null);
@@ -44,14 +57,6 @@ export function OrganizationLogoCard({
       : uploadState.logoUrl !== undefined
         ? uploadState.logoUrl
         : initialLogoUrl;
-
-  const feedback =
-    clientError ??
-    (uploadState.message || removeState.message || null);
-  const feedbackIsError =
-    Boolean(clientError) ||
-    (Boolean(uploadState.message) && uploadState.success === false) ||
-    (Boolean(removeState.message) && removeState.success === false);
 
   const content = (
     <>
@@ -98,17 +103,6 @@ export function OrganizationLogoCard({
         )}
       </div>
 
-      {feedback && (
-        <p
-          role={feedbackIsError ? "alert" : "status"}
-          className={`mt-4 rounded-md border-l-2 bg-raised px-4 py-3 text-sm text-ink ${
-            feedbackIsError ? "border-negative" : "border-positive"
-          }`}
-        >
-          {feedback}
-        </p>
-      )}
-
       <form
         action={uploadAction}
         className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center"
@@ -127,7 +121,14 @@ export function OrganizationLogoCard({
                 return;
               }
               if (file.size > 1_048_576) {
-                setClientError("Logo file must be 1 MB or smaller.");
+                const msg = "Logo file must be 1 MB or smaller.";
+                setClientError(msg);
+                notify({
+                  id: "organization-logo-action",
+                  kind: "error",
+                  title: "Logo file too large",
+                  message: msg,
+                });
               } else {
                 setClientError(null);
               }

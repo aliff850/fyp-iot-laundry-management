@@ -31,7 +31,7 @@ class EdgeMachineState(BaseModel):
 
 class OperatorMachineCommand(BaseModel):
     request_id: UUID
-    action: Literal["start", "pause", "resume", "stop", "set_settings", "clear_fault"]
+    action: Literal["start", "pause", "resume", "stop", "set_settings", "clear_fault", "start_maintenance"]
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -193,7 +193,7 @@ def upload_machine_state(body: EdgeMachineState, gateway=Depends(_gateway)):
     if seen.tzinfo is None or not now - timedelta(seconds=45) <= seen <= now + timedelta(seconds=15):
         raise HTTPException(422, "Machine state is stale or has an invalid timestamp")
     state = body.state.get("state")
-    if state not in {"idle", "running", "paused", "error"} or body.state.get("simulation") is not True:
+    if state not in {"idle", "running", "paused", "error", "maintenance"} or body.state.get("simulation") is not True:
         raise HTTPException(422, "Invalid simulated machine state")
     with _database() as conn:
         device = _active_device(conn, gateway["id"], body.source_id)
@@ -327,7 +327,12 @@ def list_machine_commands(branch_id: UUID, source_id: str, user=Depends(_user)):
 def create_machine_command(branch_id: UUID, source_id: str, body: OperatorMachineCommand,
                            user=Depends(_user)):
     with _database() as conn:
-        member, _ = _authorize_branch_access(conn, user["id"], branch_id, ("owner", "branch_manager"))
+        allowed_roles = (
+            ("owner", "branch_manager", "machine_maintenance")
+            if body.action in {"start_maintenance", "clear_fault"}
+            else ("owner", "branch_manager")
+        )
+        member, _ = _authorize_branch_access(conn, user["id"], branch_id, allowed_roles)
         branch_state = conn.execute("select service_status from public.branches where id=%s", (branch_id,)).fetchone()
         if not branch_state or branch_state["service_status"] != "open":
             raise HTTPException(409, "Branch is closed")
@@ -361,7 +366,8 @@ def create_machine_command(branch_id: UUID, source_id: str, body: OperatorMachin
             raise HTTPException(409, "Machine is unavailable")
         state = latest["state_payload"].get("state")
         allowed = {"start": {"idle"}, "pause": {"running"}, "resume": {"paused"},
-            "stop": {"running", "paused"}, "set_settings": {"idle"}, "clear_fault": {"error"}}
+            "stop": {"running", "paused"}, "set_settings": {"idle"},
+            "start_maintenance": {"error", "idle"}, "clear_fault": {"error", "maintenance"}}
         if state not in allowed[body.action]:
             raise HTTPException(409, "Machine state does not allow this action")
         if body.action not in {"set_settings", "start"} and body.arguments:

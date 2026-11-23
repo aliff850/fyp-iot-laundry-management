@@ -12,6 +12,7 @@ import {
   Settings,
   Users,
   WashingMachine,
+  Wrench,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -19,6 +20,7 @@ import {
 export type NavIconName =
   | "overview"
   | "machines"
+  | "maintenance"
   | "lpg"
   | "reports"
   | "customer-reports"
@@ -30,6 +32,7 @@ export type NavIconName =
 const ICON_MAP: Record<string, LucideIcon> = {
   overview: LayoutDashboard,
   machines: WashingMachine,
+  maintenance: Wrench,
   lpg: Flame,
   reports: MessageSquareWarning,
   "customer-reports": MessageSquareWarning,

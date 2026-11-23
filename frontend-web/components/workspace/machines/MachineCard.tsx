@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useTransition } from "react";
+import React, { useTransition } from "react";
 import {
   Play,
   Pause,
@@ -11,6 +11,7 @@ import {
   requestRemoteMachineCommand,
   type RemoteMachine,
 } from "@/app/branches/[branchId]/machines/actions";
+import { useActionToast } from "@/components/workspace/common/ActionToastContext";
 
 export type MachineModalTab = "diagnostics" | "statistics" | "programs" | "parameters";
 
@@ -127,7 +128,7 @@ export function programDisplayName(
 }
 
 export function getMachineStatusBadge(machine: RemoteMachine): {
-  effectiveStatus: "RUNNING" | "IDLE" | "PAUSED" | "ERROR" | "OFFLINE";
+  effectiveStatus: "RUNNING" | "IDLE" | "PAUSED" | "ERROR" | "MAINTENANCE" | "OFFLINE";
   label: string;
   wrapper: string;
   dot: string;
@@ -146,7 +147,10 @@ export function getMachineStatusBadge(machine: RemoteMachine): {
       effectiveStatus: "OFFLINE",
       wrapper: "border-line bg-raised text-muted",
       dot: "bg-muted",
-      label: `Current state unknown (last reported ${rawUpper})`,
+      label:
+        rawUpper && rawUpper !== "UNKNOWN"
+          ? `Current state unknown (last reported ${rawUpper})`
+          : "Offline / Telemetry stale",
     };
   }
   switch (rawUpper) {
@@ -180,6 +184,15 @@ export function getMachineStatusBadge(machine: RemoteMachine): {
           ? `Fault: ${machine.data.fault_code}`
           : "Error",
       };
+    case "MAINTENANCE":
+      return {
+        effectiveStatus: "MAINTENANCE",
+        wrapper: "border-warning/40 bg-warning/10 text-warning",
+        dot: "bg-warning",
+        label: machine.data?.fault_code
+          ? `Under maintenance (${machine.data.fault_code})`
+          : "Under maintenance",
+      };
     default:
       return {
         effectiveStatus: "OFFLINE",
@@ -199,8 +212,8 @@ export function MachineCard({
   onOpenDetails,
   onCommandSent,
 }: MachineCardProps) {
+  const { notify } = useActionToast();
   const [isPending, startTransition] = useTransition();
-  const [actionError, setActionError] = useState<string | null>(null);
 
   const isFresh = machine.freshness === "fresh";
   const badge = getMachineStatusBadge(machine);
@@ -248,7 +261,11 @@ export function MachineCard({
             ? machine.data?.fault_code
               ? `Fault (${machine.data.fault_code})`
               : "Fault"
-            : "Offline";
+            : effectiveStatus === "MAINTENANCE"
+              ? machine.data?.fault_code
+                ? `Under maintenance (${machine.data.fault_code})`
+                : "Under maintenance"
+              : "Offline";
 
   const categoryText =
     machine.type === "washer_dryer"
@@ -287,7 +304,15 @@ export function MachineCard({
     ) {
       return;
     }
-    setActionError(null);
+    const toastId = `machine-card-${machine.source_id}`;
+    const verb =
+      action === "resume" ? "Resuming" : action === "pause" ? "Pausing" : "Stopping";
+    notify({
+      id: toastId,
+      kind: "info",
+      title: `${verb} ${machine.label}`,
+      message: "Sending command to gateway...",
+    });
     startTransition(async () => {
       const requestId = crypto.randomUUID();
       const result = await requestRemoteMachineCommand(
@@ -298,9 +323,20 @@ export function MachineCard({
         {},
       );
       if (!result.ok) {
-        setActionError(result.message || `Failed to execute ${action}`);
+        notify({
+          id: toastId,
+          kind: "error",
+          title: `Failed to ${action} ${machine.label}`,
+          message: result.message || `Failed to execute ${action}`,
+        });
         return;
       }
+      notify({
+        id: toastId,
+        kind: "success",
+        title: `${action.charAt(0).toUpperCase() + action.slice(1)} queued`,
+        message: `${machine.label} command status: ${result.value.status}.`,
+      });
       onCommandSent?.();
     });
   };
@@ -420,15 +456,6 @@ export function MachineCard({
           </button>
         </div>
       </div>
-
-      {actionError && (
-        <p
-          role="alert"
-          className="rounded-md border-l-2 border-negative bg-raised px-4 py-3 text-xs text-ink"
-        >
-          {actionError}
-        </p>
-      )}
     </article>
   );
 }

@@ -6,6 +6,10 @@ import {
   updateOrganizationSettingsAction,
   type OrganizationSettingsActionState,
 } from "@/app/personnel/actions";
+import {
+  useActionToast,
+  withActionToast,
+} from "@/components/workspace/common/ActionToastContext";
 
 const TIMEZONE_OPTIONS = [
   "Asia/Kuala_Lumpur",
@@ -39,12 +43,17 @@ export function OrganizationSettingsForm({
   roleLabel,
   accessScope,
 }: OrganizationSettingsFormProps) {
+  const { notify } = useActionToast();
   const initialState: OrganizationSettingsActionState = {
     name: initialName,
     businessTimezone: initialTimezone,
   };
   const [state, action, pending] = useActionState(
-    updateOrganizationSettingsAction,
+    withActionToast(notify, updateOrganizationSettingsAction, {
+      id: "organization-settings-save",
+      successTitle: "Organization updated",
+      errorTitle: "Organization update failed",
+    }),
     initialState,
   );
 
@@ -56,17 +65,6 @@ export function OrganizationSettingsForm({
 
   return (
     <div className="space-y-6">
-      {state.message && (
-        <p
-          role={state.success ? "status" : "alert"}
-          className={`rounded-md border-l-2 bg-raised px-4 py-3 text-sm text-ink ${
-            state.success ? "border-positive" : "border-negative"
-          }`}
-        >
-          {state.message}
-        </p>
-      )}
-
       <form action={action} className="space-y-4">
         <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2">
           <div className="grid content-start gap-2">

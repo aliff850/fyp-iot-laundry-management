@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { Check, Copy, KeyRound, Loader2, RefreshCw, XCircle } from "lucide-react";
 import { requestPairingCodeAction, cancelPairingClaimAction } from "@/app/branches/[branchId]/hardware-setup/actions";
+import { useActionToast } from "@/components/workspace/common/ActionToastContext";
 import type { GatewayClaimItem } from "@/lib/auth/business";
 
 interface PairingCodeCardProps {
@@ -22,10 +23,10 @@ export function PairingCodeCard({
   isOwner,
   onClaimUpdate,
 }: PairingCodeCardProps) {
+  const { notify } = useActionToast();
   const [issuedCode, setIssuedCode] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [timeLeft, setTimeLeft] = useState<string>("");
 
   const activeClaim = currentClaim && currentClaim.status === "issued" ? currentClaim : null;
@@ -53,19 +54,42 @@ export function PairingCodeCard({
     return () => clearInterval(interval);
   }, [activeClaim?.expires_at]);
 
+  const toastId = `hardware-pairing-${branchId}`;
+
   const handleRequestCode = async (replace = false) => {
     setLoading(true);
-    setErrorMessage(null);
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Generating pairing code",
+      message: "Issuing one-time Pi 5 pairing code…",
+    });
     try {
       const res = await requestPairingCodeAction(branchId, replace ? activeGatewayId : undefined);
       if (res.success && res.code) {
         setIssuedCode(res.code);
+        notify({
+          id: toastId,
+          kind: "success",
+          title: "Pairing code issued",
+          message: "One-time gateway pairing code is ready.",
+        });
         onClaimUpdate?.();
       } else {
-        setErrorMessage(res.message || "Could not generate pairing code.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Pairing code failed",
+          message: res.message || "Could not generate pairing code.",
+        });
       }
     } catch {
-      setErrorMessage("Network error generating pairing code.");
+      notify({
+        id: toastId,
+        kind: "error",
+        title: "Pairing code failed",
+        message: "Network error generating pairing code.",
+      });
     } finally {
       setLoading(false);
     }
@@ -75,17 +99,38 @@ export function PairingCodeCard({
     const claimId = currentClaim?.claim_id;
     if (!claimId) return;
     setLoading(true);
-    setErrorMessage(null);
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Cancelling claim",
+      message: "Cancelling active pairing code…",
+    });
     try {
       const res = await cancelPairingClaimAction(branchId, claimId);
       if (res.success) {
         setIssuedCode(null);
+        notify({
+          id: toastId,
+          kind: "success",
+          title: "Pairing code cancelled",
+          message: "Active gateway pairing claim cancelled.",
+        });
         onClaimUpdate?.();
       } else {
-        setErrorMessage(res.message || "Failed to cancel claim.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Cancel failed",
+          message: res.message || "Failed to cancel claim.",
+        });
       }
     } catch {
-      setErrorMessage("Network error cancelling claim.");
+      notify({
+        id: toastId,
+        kind: "error",
+        title: "Cancel failed",
+        message: "Network error cancelling claim.",
+      });
     } finally {
       setLoading(false);
     }
@@ -95,6 +140,12 @@ export function PairingCodeCard({
     if (!issuedCode) return;
     navigator.clipboard.writeText(issuedCode);
     setCopied(true);
+    notify({
+      id: `${toastId}-copy`,
+      kind: "success",
+      title: "Copied",
+      message: "Gateway pairing code copied to clipboard.",
+    });
     setTimeout(() => setCopied(false), 2000);
   };
 
@@ -126,12 +177,6 @@ export function PairingCodeCard({
           </span>
         )}
       </div>
-
-      {errorMessage && (
-        <div className="mt-4 rounded bg-negative/10 border border-negative/30 p-3 text-xs text-negative" role="alert">
-          {errorMessage}
-        </div>
-      )}
 
       {/* Case 1: Code was just issued or is currently active */}
       {issuedCode ? (

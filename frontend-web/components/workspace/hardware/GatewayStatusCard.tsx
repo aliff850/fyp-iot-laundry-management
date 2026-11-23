@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { AlertTriangle, Cpu, Loader2, PowerOff } from "lucide-react";
 import { revokeGatewayAction } from "@/app/branches/[branchId]/hardware-setup/actions";
+import { useActionToast } from "@/components/workspace/common/ActionToastContext";
 import type { GatewayItem } from "@/lib/auth/business";
 
 interface GatewayStatusCardProps {
@@ -18,9 +19,9 @@ export function GatewayStatusCard({
   isOwner,
   onRevoked,
 }: GatewayStatusCardProps) {
+  const { notify } = useActionToast();
   const [loading, setLoading] = useState(false);
   const [confirmingRevoke, setConfirmingRevoke] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(false);
 
   useEffect(() => {
@@ -39,18 +40,40 @@ export function GatewayStatusCard({
 
   const handleRevoke = async () => {
     if (!gateway) return;
+    const toastId = `hardware-revoke-${branchId}-${gateway.id}`;
     setLoading(true);
-    setErrorMessage(null);
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Revoking gateway",
+      message: "Revoking edge gateway authorization…",
+    });
     try {
       const res = await revokeGatewayAction(branchId, gateway.id);
       if (res.success) {
         setConfirmingRevoke(false);
+        notify({
+          id: toastId,
+          kind: "success",
+          title: "Gateway revoked",
+          message: res.message || "Edge gateway authorization revoked.",
+        });
         onRevoked?.();
       } else {
-        setErrorMessage(res.message || "Failed to revoke gateway.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Revocation failed",
+          message: res.message || "Failed to revoke gateway.",
+        });
       }
     } catch {
-      setErrorMessage("Network error during gateway revocation.");
+      notify({
+        id: toastId,
+        kind: "error",
+        title: "Revocation failed",
+        message: "Network error during gateway revocation.",
+      });
     } finally {
       setLoading(false);
     }
@@ -136,12 +159,6 @@ export function GatewayStatusCard({
               </div>
             </div>
           </div>
-        </div>
-      )}
-
-      {errorMessage && (
-        <div className="mt-3 rounded bg-negative/10 border border-negative/30 p-3 text-xs text-negative" role="alert">
-          {errorMessage}
         </div>
       )}
 

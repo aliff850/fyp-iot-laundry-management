@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { X, WashingMachine, Wind, ShieldAlert } from "lucide-react";
+import { X, WashingMachine, Wind, ShieldAlert, Wrench } from "lucide-react";
 import {
   refreshRemoteMachineCommands,
   requestRemoteMachineCommand,
@@ -16,6 +16,8 @@ import {
   sourceText,
   type MachineModalTab,
 } from "@/components/workspace/machines/MachineCard";
+import { useActionToast } from "@/components/workspace/common/ActionToastContext";
+import { MachineMaintenancePanel } from "@/components/workspace/machines/MachineMaintenancePanel";
 import {
   MachineStatisticsChart,
   type ChartDataset,
@@ -68,6 +70,7 @@ export interface MachineDetailModalProps {
   branchId: string;
   branchOpen: boolean;
   role: "owner" | "branch_manager" | "machine_maintenance";
+  defaultTechnicianName?: string;
   serviceError?: string | null;
   initialTab?: MachineModalTab;
   onFetchStatistics?: (
@@ -149,13 +152,16 @@ export function MachineDetailModal({
   branchId,
   branchOpen,
   role,
+  defaultTechnicianName = "",
   serviceError,
   initialTab = "diagnostics",
   onFetchStatistics,
   onClose,
   onCommandSent,
 }: MachineDetailModalProps) {
+  const { notify } = useActionToast();
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const maintenanceSectionRef = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<MachineModalTab>(initialTab);
   const [selectedStartProgram, setSelectedStartProgram] = useState("");
   const [commands, setCommands] = useState<RemoteMachineCommand[]>([]);
@@ -163,7 +169,6 @@ export function MachineDetailModal({
   const [commandsError, setCommandsError] = useState(false);
   const [historyPeriod, setHistoryPeriod] = useState<HistoryPeriod>("week");
   const [historyPage, setHistoryPage] = useState(1);
-  const [cmdStatus, setCmdStatus] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   // Statistics tab state
@@ -176,7 +181,6 @@ export function MachineDetailModal({
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingProgramId, setEditingProgramId] = useState<string | null>(null);
   const [creatingProgram, setCreatingProgram] = useState(false);
-  const [formStatus, setFormStatus] = useState<string>("");
   const [savingProgram, setSavingProgram] = useState(false);
 
   // Parameters tab state
@@ -257,6 +261,16 @@ export function MachineDetailModal({
     onClose();
   };
 
+  const handleJumpToMaintenance = () => {
+    const container = maintenanceSectionRef.current;
+    if (!container) return;
+    container.scrollIntoView({ behavior: "smooth", block: "start" });
+    const focusTarget =
+      container.querySelector<HTMLElement>("[data-maint-primary-focus='true']") ??
+      container.querySelector<HTMLElement>("textarea, button:not(:disabled)");
+    focusTarget?.focus({ preventScroll: true });
+  };
+
   const isFresh = machine?.freshness === "fresh";
   const badge = machine ? getMachineStatusBadge(machine) : null;
   const effectiveStatus = badge?.effectiveStatus ?? "OFFLINE";
@@ -330,7 +344,14 @@ export function MachineDetailModal({
     if (typeof window.confirm === "function" && !window.confirm(confirmation)) {
       return;
     }
-    setCmdStatus(null);
+    const toastId = `machine-modal-cmd-${machine.source_id}`;
+    const actionLabel = action.replaceAll("_", " ");
+    notify({
+      id: toastId,
+      kind: "info",
+      title: `Sending ${actionLabel}`,
+      message: `Dispatching command to ${machine.label}...`,
+    });
     startTransition(async () => {
       const requestId = crypto.randomUUID();
       const result = await requestRemoteMachineCommand(
@@ -341,10 +362,20 @@ export function MachineDetailModal({
         args,
       );
       if (!result.ok) {
-        setCmdStatus(result.message);
+        notify({
+          id: toastId,
+          kind: "error",
+          title: `Failed to ${actionLabel}`,
+          message: result.message,
+        });
         return;
       }
-      setCmdStatus(`Command ${result.value.status}. Awaiting result.`);
+      notify({
+        id: toastId,
+        kind: "success",
+        title: `Command ${result.value.status}`,
+        message: `${actionLabel.toUpperCase()} sent to ${machine.label}.`,
+      });
       const history = await refreshRemoteMachineCommands(branchId, machine.source_id);
       if (history.ok) setCommands(history.value);
       onCommandSent?.();
@@ -354,7 +385,6 @@ export function MachineDetailModal({
   const openProgramForm = (id: string | null) => {
     setCreatingProgram(!id);
     setEditingProgramId(id || generateCustomProgramId());
-    setFormStatus("");
     setEditorOpen(true);
   };
 
@@ -383,8 +413,14 @@ export function MachineDetailModal({
         }),
     };
 
+    const toastId = `machine-program-${machine.source_id}`;
     setSavingProgram(true);
-    setFormStatus("");
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Saving program",
+      message: `Sending updated settings to ${machine.label}...`,
+    });
     try {
       const requestId = crypto.randomUUID();
       const submitted = await requestRemoteMachineCommand(
@@ -395,11 +431,15 @@ export function MachineDetailModal({
         args,
       );
       if (!submitted.ok) {
-        setFormStatus(submitted.message || "Failed to queue program request.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Program save rejected",
+          message: submitted.message || "Failed to queue program request.",
+        });
         setSavingProgram(false);
         return;
       }
-      setFormStatus("Program request queued. Awaiting machine result.");
       for (let attempt = 0; attempt < 15; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         if (!dialogRef.current?.open) return;
@@ -416,22 +456,38 @@ export function MachineDetailModal({
           continue;
         }
         if (record.status !== "succeeded") {
-          setFormStatus(
-            `Program ${record.status}${record.reason ? `: ${record.reason}` : "."}`,
-          );
+          notify({
+            id: toastId,
+            kind: "error",
+            title: `Program ${record.status}`,
+            message: record.reason || "Machine did not apply program settings.",
+          });
           setSavingProgram(record.status === "unknown");
           return;
         }
         onCommandSent?.();
-        setFormStatus("Machine applied the command. Refreshing confirmed catalog.");
+        notify({
+          id: toastId,
+          kind: "success",
+          title: "Program saved",
+          message: `${machine.label} confirmed updated program settings.`,
+        });
         setSavingProgram(false);
         return;
       }
-      setFormStatus(
-        "Result unknown. Check command history before trying again.",
-      );
+      notify({
+        id: toastId,
+        kind: "error",
+        title: "Program status unknown",
+        message: "Check command history before trying again.",
+      });
     } catch {
-      setFormStatus("Failed to save program.");
+      notify({
+        id: toastId,
+        kind: "error",
+        title: "Program save failed",
+        message: "Could not save program.",
+      });
     } finally {
       setSavingProgram(false);
     }
@@ -613,7 +669,36 @@ export function MachineDetailModal({
         {/* TAB 1: State & Diagnostics */}
         {tab === "diagnostics" && (
           <div className="space-y-5">
-            {effectiveStatus === "ERROR" && (
+            {effectiveStatus === "MAINTENANCE" && (
+              <div
+                role="status"
+                className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/10 p-4 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="flex items-start gap-3">
+                  <Wrench
+                    className="mt-0.5 size-5 shrink-0 text-warning"
+                    aria-hidden="true"
+                  />
+                  <div className="min-w-0 space-y-1">
+                    <h3 className="text-sm font-semibold text-ink">
+                      Machine under maintenance
+                    </h3>
+                    <p className="text-xs text-muted">
+                      Technician service in progress. Customer cycles remain paused until returned to service.
+                    </p>
+                  </div>
+                </div>
+                {machine.data?.fault_code && (
+                  <span className="inline-flex shrink-0 self-start rounded border border-warning/50 bg-surface px-2.5 py-1 font-mono text-xs font-semibold text-warning">
+                    {machine.data.fault_code}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {(effectiveStatus === "ERROR" ||
+              (effectiveStatus === "MAINTENANCE" &&
+                Boolean(machine.diagnosis || machine.data?.fault_code))) && (
               <div
                 role="alert"
                 className="space-y-4 rounded-md border border-negative/40 bg-negative/10 p-4"
@@ -701,6 +786,19 @@ export function MachineDetailModal({
                         </ol>
                       </div>
                     )}
+                  </div>
+                )}
+
+                {effectiveStatus === "ERROR" && (
+                  <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:items-center">
+                    <button
+                      type="button"
+                      onClick={handleJumpToMaintenance}
+                      className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-4 py-2 text-xs font-semibold text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:w-auto"
+                    >
+                      <Wrench className="size-4 shrink-0 text-warning" aria-hidden="true" />
+                      <span>Open maintenance form</span>
+                    </button>
                   </div>
                 )}
               </div>
@@ -828,7 +926,8 @@ export function MachineDetailModal({
                             ? effectiveStatus === "PAUSED"
                             : action === "stop"
                               ? ["RUNNING", "PAUSED"].includes(effectiveStatus)
-                              : effectiveStatus === "ERROR";
+                              : effectiveStatus === "ERROR" ||
+                                effectiveStatus === "MAINTENANCE";
 
                     const isStartUnavailable =
                       action === "start" && !selectedStartProgram;
@@ -862,15 +961,27 @@ export function MachineDetailModal({
                     );
                   })}
                 </div>
-
-                <p role="status" className="text-xs text-muted">
-                  {cmdStatus ??
-                    (enabled
-                      ? "Ready to dispatch remote machine commands."
-                      : "Controls not enabled for this device.")}
-                </p>
               </div>
             )}
+
+            <div ref={maintenanceSectionRef}>
+              <MachineMaintenancePanel
+                machine={machine}
+                effectiveStatus={effectiveStatus}
+                branchId={branchId}
+                branchOpen={branchOpen}
+                serviceError={serviceError}
+                defaultTechnicianName={defaultTechnicianName}
+                onMaintenanceUpdated={() => {
+                  refreshRemoteMachineCommands(branchId, machine.source_id).then(
+                    (res) => {
+                      if (res.ok) setCommands(res.value);
+                    },
+                  );
+                  onCommandSent?.();
+                }}
+              />
+            </div>
 
             {/* Recent commands (inside Tab 1 matching Pi 5) */}
             <section className="space-y-4 rounded-md border border-line bg-surface p-4">
@@ -1362,10 +1473,6 @@ export function MachineDetailModal({
                     </button>
                   </div>
                 </form>
-
-                <p role="status" className="text-xs text-muted">
-                  {formStatus}
-                </p>
               </div>
             )}
           </div>

@@ -19,7 +19,7 @@ export default async function CheckEmailPage({ searchParams }: { searchParams: P
   return <AuthShell title="Check your email" description="If registration was accepted, you’ll receive a confirmation email. Follow the link, then return to log in.">
     <div className="space-y-6">
       {message && <Notice>{message}</Notice>}
-      <p className="text-sm leading-relaxed text-muted">Check your spam folder too. Need another link? Enter the email address you registered with.</p>
+      <p className="text-sm leading-relaxed text-muted">Check your spam folder too. Need another link? Enter the email address you registered with. If you already registered and confirmed this address, try logging in instead.</p>
       <AuthForm mode="resend" configured={Boolean(getAuthConfig() && getSiteUrl())} />
       <Link href="/login" className={textLink}>Back to log in</Link>
     </div>

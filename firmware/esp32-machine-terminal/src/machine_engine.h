@@ -164,6 +164,9 @@ class MachineEngine {
     target["remaining_seconds"] = data["remaining_seconds"];
     target["settings"] = data["settings"].is<JsonObject>() ? data["settings"] : data["programs"]["standard"];
     target["programs"] = data["programs"];
+    if (data["maintenance_started_at"].is<const char *>()) {
+      target["maintenance_started_at"] = data["maintenance_started_at"];
+    }
     target["simulation"] = true;
   }
 
@@ -390,9 +393,14 @@ class MachineEngine {
                          fault == "E05" || fault == "SIM_DOOR" || fault == "SIM_WATER" || fault == "SIM_HEAT";
         if (!supported) reason = "unsupported_fault";
         else if (!enterFault(fault.c_str(), "mqtt_command")) reason = "fault_unavailable";
-      } else if (action == "clear_fault" && state == "error") {
+      } else if (action == "start_maintenance" && (state == "error" || state == "idle")) {
+        data["state"] = "maintenance";
+        data["remaining_seconds"] = 0;
+        data["maintenance_started_at"] = iso(epochMs());
+      } else if (action == "clear_fault" && (state == "error" || state == "maintenance")) {
         data["state"] = "idle"; data["fault_code"] = nullptr; data["fault_name"] = nullptr;
-        data["fault_origin"] = nullptr; data["remaining_seconds"] = 0;
+        data["fault_origin"] = nullptr; data["maintenance_started_at"] = nullptr;
+        data["remaining_seconds"] = 0;
       } else reason = "invalid_transition";
     }
     JsonObject result = results.createNestedObject();

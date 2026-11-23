@@ -201,6 +201,8 @@ def project_public_machine(
                 remaining_seconds = int(rem)
         elif raw_state in ("error", "fault", "faulted", "out_of_service"):
             public_status = "out_of_service"
+        elif raw_state == "maintenance":
+            public_status = "maintenance"
         else:
             public_status = "unknown"
             reason = "unrecognized_state"

@@ -395,3 +395,64 @@ def test_update_organization_owner_only_and_timezone_validated(monkeypatch):
         onboarding.OrganizationUpdate(name="   ", business_timezone="Asia/Kuala_Lumpur")
 
 
+def test_is_email_registered_and_endpoint_validation_and_rate_limit(monkeypatch):
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.side_effect = [
+        {"?column?": 1},
+        None,
+    ]
+
+    assert onboarding.is_email_registered(conn, "  Owner@Example.COM ") is True
+    assert onboarding.is_email_registered(conn, "new@example.com") is False
+    assert conn.execute.call_args_list[0].args[1] == ("owner@example.com",)
+
+    @contextmanager
+    def database(**_kwargs):
+        yield conn
+
+    conn.execute.return_value.fetchone.side_effect = [{"?column?": 1}, None]
+    monkeypatch.setattr(onboarding, "_database", database)
+    onboarding._EMAIL_CHECK_ATTEMPTS.clear()
+
+    client = TestClient(main.app)
+    resp_existing = client.post(
+        "/public/registration-email-check",
+        json={"email": "Owner@Example.COM"},
+    )
+    assert resp_existing.status_code == 200
+    assert resp_existing.json() == {"registered": True}
+
+    resp_available = client.post(
+        "/public/registration-email-check",
+        json={"email": "fresh@example.com"},
+    )
+    assert resp_available.status_code == 200
+    assert resp_available.json() == {"registered": False}
+
+    resp_bad = client.post(
+        "/public/registration-email-check",
+        json={"email": "not-an-email"},
+    )
+    assert resp_bad.status_code == 422
+
+    onboarding._EMAIL_CHECK_ATTEMPTS.clear()
+    conn.execute.return_value.fetchone.side_effect = None
+    conn.execute.return_value.fetchone.return_value = None
+    for _ in range(onboarding._EMAIL_CHECK_MAX_ATTEMPTS):
+        ok_resp = client.post(
+            "/public/registration-email-check",
+            json={"email": "fresh@example.com"},
+            headers={"x-forwarded-for": "203.0.113.10"},
+        )
+        assert ok_resp.status_code == 200
+
+    limited_resp = client.post(
+        "/public/registration-email-check",
+        json={"email": "fresh@example.com"},
+        headers={"x-forwarded-for": "203.0.113.10"},
+    )
+    assert limited_resp.status_code == 429
+    assert "Retry-After" in limited_resp.headers
+    onboarding._EMAIL_CHECK_ATTEMPTS.clear()
+
+

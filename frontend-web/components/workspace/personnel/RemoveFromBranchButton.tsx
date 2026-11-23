@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState, useTransition } from "react";
+import React, { useTransition } from "react";
 import { UserMinus } from "lucide-react";
 import { removePersonnelFromBranch } from "@/app/personnel/actions";
+import { useActionToast } from "@/components/workspace/common/ActionToastContext";
 
 interface RemoveFromBranchButtonProps {
   branchId: string;
@@ -19,8 +20,8 @@ export function RemoveFromBranchButton({
   isOwnerRow = false,
   isPrimaryManager = false,
 }: RemoveFromBranchButtonProps) {
+  const { notify } = useActionToast();
   const [isPending, startTransition] = useTransition();
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (isOwnerRow) {
     return <span className="text-xs text-faint">All locations (Owner)</span>;
@@ -31,12 +32,30 @@ export function RemoveFromBranchButton({
   }
 
   const handleRemove = () => {
-    setErrorMessage(null);
+    const toastId = `personnel-remove-${branchId}-${userId}`;
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Updating branch roster",
+      message: `Removing ${fullName} from branch…`,
+    });
     startTransition(async () => {
       const res = await removePersonnelFromBranch(branchId, userId);
       if (!res.success) {
-        setErrorMessage(res.message);
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Removal failed",
+          message: res.message,
+        });
+        return;
       }
+      notify({
+        id: toastId,
+        kind: "success",
+        title: "Staff removed",
+        message: `${fullName} removed from branch.`,
+      });
     });
   };
 
@@ -52,11 +71,6 @@ export function RemoveFromBranchButton({
         <UserMinus className="size-3 shrink-0" aria-hidden="true" />
         <span>{isPending ? "Removing…" : "Remove from branch"}</span>
       </button>
-      {errorMessage && (
-        <span className="text-xs text-negative" role="alert">
-          {errorMessage}
-        </span>
-      )}
     </div>
   );
 }

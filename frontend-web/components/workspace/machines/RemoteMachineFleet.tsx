@@ -18,16 +18,24 @@ export interface RemoteMachineFleetProps {
   branchId: string;
   branchOpen: boolean;
   role: "owner" | "branch_manager" | "machine_maintenance";
+  defaultTechnicianName?: string;
   initialMachines: RemoteMachine[];
 }
 
 type TypeFilter = "all" | "washer" | "dryer";
-type StatusFilter = "all" | "RUNNING" | "IDLE" | "ERROR" | "OFFLINE";
+type StatusFilter =
+  | "all"
+  | "RUNNING"
+  | "IDLE"
+  | "ERROR"
+  | "MAINTENANCE"
+  | "OFFLINE";
 
 export function RemoteMachineFleet({
   branchId,
   branchOpen,
   role,
+  defaultTechnicianName = "",
   initialMachines,
 }: RemoteMachineFleetProps) {
   const [machines, setMachines] = useState<RemoteMachine[]>(initialMachines);
@@ -88,6 +96,9 @@ export function RemoteMachineFleet({
   const runningCount = machines.filter((m) => statusOf(m) === "RUNNING").length;
   const idleCount = machines.filter((m) => statusOf(m) === "IDLE").length;
   const errorCount = machines.filter((m) => statusOf(m) === "ERROR").length;
+  const maintenanceCount = machines.filter(
+    (m) => statusOf(m) === "MAINTENANCE",
+  ).length;
   const offlineCount = machines.filter((m) => statusOf(m) === "OFFLINE").length;
 
   const filtered = machines.filter((m) => {
@@ -204,6 +215,7 @@ export function RemoteMachineFleet({
                       ["RUNNING", "Running", runningCount],
                       ["IDLE", "Idle", idleCount],
                       ["ERROR", "Error", errorCount],
+                      ["MAINTENANCE", "Maintenance", maintenanceCount],
                       ["OFFLINE", "Offline", offlineCount],
                     ] as const
                   ).map(([key, label, count]) => {
@@ -279,6 +291,7 @@ export function RemoteMachineFleet({
         branchId={branchId}
         branchOpen={branchOpen}
         role={role}
+        defaultTechnicianName={defaultTechnicianName}
         serviceError={serviceError}
         initialTab={modalTab}
         onFetchStatistics={async (sourceId, period) => {

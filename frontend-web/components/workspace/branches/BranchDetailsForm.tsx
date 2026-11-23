@@ -1,14 +1,17 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useActionState, useEffect, useState, useTransition } from "react";
+import { useActionState, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import {
   BranchImagesManager,
   type BranchPhotoToastPayload,
 } from "@/components/workspace/branches/BranchImagesManager";
-import { ActionToast } from "@/components/workspace/common/ActionToast";
+import {
+  useActionToast,
+  withActionToast,
+} from "@/components/workspace/common/ActionToastContext";
 import type {
   BranchDetail,
   BranchImage,
@@ -105,8 +108,16 @@ export function BranchDetailsForm({
   managers,
 }: BranchDetailsFormProps) {
   const router = useRouter();
+  const { notify } = useActionToast();
   const boundUpdateAction = updateWorkspaceBranch.bind(null, branch.id);
-  const [state, action, pending] = useActionState(boundUpdateAction, initialState);
+  const [, action, pending] = useActionState(
+    withActionToast(notify, boundUpdateAction, {
+      id: `branch-details-${branch.id}`,
+      successTitle: "Settings saved",
+      errorTitle: "Unable to save settings",
+    }),
+    initialState,
+  );
 
   const parsedHours = parseInitialHours(branch.opening_hours);
   const [is24Hours, setIs24Hours] = useState(parsedHours.is24Hours);
@@ -127,52 +138,45 @@ export function BranchDetailsForm({
   );
 
   const [images, setImages] = useState<BranchImage[]>(branch.images ?? []);
-  const [photoToast, setPhotoToast] = useState<BranchPhotoToastPayload | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [dismissedSavedAt, setDismissedSavedAt] = useState<number | null>(null);
   const [isDeleting, startDeleteTransition] = useTransition();
-
-  const activeToast =
-    photoToast && (!state.savedAt || photoToast.savedAt >= state.savedAt)
-      ? {
-          success: photoToast.success,
-          message: photoToast.message,
-          savedAt: photoToast.savedAt,
-          title: photoToast.success ? "Branch photos updated" : "Unable to update photos",
-        }
-      : state.message && state.savedAt
-        ? {
-            success: Boolean(state.success),
-            message: state.message,
-            savedAt: state.savedAt,
-            title: state.success ? "Settings saved" : "Unable to save settings",
-          }
-        : null;
-
-  const activeSavedAt = activeToast?.savedAt;
-  const showToast = Boolean(
-    activeToast && activeSavedAt && activeSavedAt !== dismissedSavedAt,
-  );
-
-  useEffect(() => {
-    if (!showToast || !activeToast?.success || !activeSavedAt) return;
-    const timer = window.setTimeout(() => {
-      setDismissedSavedAt(activeSavedAt);
-    }, 6000);
-    return () => window.clearTimeout(timer);
-  }, [showToast, activeToast?.success, activeSavedAt]);
 
   const openingHoursValue = is24Hours ? "24 Hours" : `${openTime} - ${closeTime}`;
 
+  const handlePhotoNotify = (payload: BranchPhotoToastPayload) => {
+    notify({
+      id: `branch-photos-${branch.id}`,
+      kind: payload.success ? "success" : "error",
+      title: payload.success ? "Branch photos updated" : "Unable to update photos",
+      message: payload.message,
+    });
+  };
+
   const handleDeleteBranch = () => {
-    setDeleteError(null);
+    const toastId = `branch-delete-${branch.id}`;
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Deleting branch",
+      message: `Removing ${branch.name}…`,
+    });
     startDeleteTransition(async () => {
       const res = await deleteWorkspaceBranch(branch.id);
       if (!res.success) {
-        setDeleteError(res.message ?? "Unable to delete branch.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Delete branch failed",
+          message: res.message ?? "Unable to delete branch.",
+        });
         return;
       }
+      notify({
+        id: toastId,
+        kind: "success",
+        title: "Branch deleted",
+        message: `${branch.name} removed.`,
+      });
       router.push("/branches");
       router.refresh();
     });
@@ -185,19 +189,6 @@ export function BranchDetailsForm({
         aria-label="Edit branch details"
         className="rounded-md border border-line bg-surface p-5 md:p-6 space-y-6"
       >
-        {state.message ? (
-          <p
-            role={state.success ? "status" : "alert"}
-            className={`rounded border px-3 py-2 text-xs ${
-              state.success
-                ? "border-positive/40 bg-positive/10 text-positive"
-                : "border-negative bg-canvas text-negative"
-            }`}
-          >
-            {state.message}
-          </p>
-        ) : null}
-
         {/* Branch Identity & Service Status */}
         <section className="space-y-4">
           <h2 className="text-sm font-semibold text-ink">Branch Identity & Status</h2>
@@ -532,7 +523,7 @@ export function BranchDetailsForm({
         branchId={branch.id}
         images={images}
         onImagesChange={setImages}
-        onNotify={setPhotoToast}
+        onNotify={handlePhotoNotify}
       />
 
       {isOwner ? (
@@ -575,26 +566,7 @@ export function BranchDetailsForm({
               </div>
             )}
           </div>
-
-          {deleteError ? (
-            <p
-              role="alert"
-              className="mt-3 rounded border border-negative bg-canvas px-3 py-2 text-xs text-negative"
-            >
-              {deleteError}
-            </p>
-          ) : null}
         </section>
-      ) : null}
-
-      {showToast && activeToast ? (
-        <ActionToast
-          kind={activeToast.success ? "success" : "error"}
-          title={activeToast.title}
-          message={activeToast.message}
-          timestamp={activeSavedAt}
-          onDismiss={() => setDismissedSavedAt(activeSavedAt ?? null)}
-        />
       ) : null}
     </div>
   );

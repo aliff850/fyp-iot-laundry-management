@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { SessionCleanup } from "@/components/auth/SessionCleanup";
+import { ActionToastProvider } from "@/components/workspace/common/ActionToastContext";
 
 export const metadata: Metadata = {
   title: { default: "SpinSense", template: "%s · SpinSense" },
@@ -11,7 +12,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className="h-full scheme-dark">
-      <body className="min-h-screen bg-canvas font-sans text-sm leading-normal text-ink antialiased"><SessionCleanup />{children}</body>
+      <body className="min-h-screen bg-canvas font-sans text-sm leading-normal text-ink antialiased">
+        <SessionCleanup />
+        <ActionToastProvider>{children}</ActionToastProvider>
+      </body>
     </html>
   );
 }

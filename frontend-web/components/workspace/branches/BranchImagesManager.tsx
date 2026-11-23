@@ -8,6 +8,7 @@ import {
   setBranchCoverImageAction,
   uploadBranchImageAction,
 } from "@/app/branches/[branchId]/details/actions";
+import { useActionToast } from "@/components/workspace/common/ActionToastContext";
 import type { BranchImage } from "@/lib/auth/business";
 
 export const MAX_BRANCH_PHOTOS = 10;
@@ -84,9 +85,9 @@ export function validateBranchPhotoFiles(
 }
 
 export function BranchImagesManager(props: BranchImagesManagerProps) {
+  const { notify } = useActionToast();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [queuedFiles, setQueuedFiles] = useState<File[]>([]);
-  const [clientError, setClientError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
   const items =
@@ -101,12 +102,18 @@ export function BranchImagesManager(props: BranchImagesManagerProps) {
     const picked = Array.from(e.target.files ?? []);
     if (picked.length === 0) {
       if (props.mode === "managed") setQueuedFiles([]);
-      setClientError(null);
       return;
     }
 
     const { accepted, error } = validateBranchPhotoFiles(picked, items.length);
-    setClientError(error);
+    if (error) {
+      notify({
+        id: "branch-photo-validation",
+        kind: "error",
+        title: "Invalid photo selection",
+        message: error,
+      });
+    }
 
     if (props.mode === "draft") {
       if (accepted.length > 0) {
@@ -122,21 +129,26 @@ export function BranchImagesManager(props: BranchImagesManagerProps) {
   const handleManagedUpload = async () => {
     if (props.mode !== "managed" || queuedFiles.length === 0 || isDisabled) return;
 
-    setClientError(null);
     let latestImages = props.images;
     let latestSavedAt = 1;
     let uploadedCount = 0;
 
     for (let idx = 0; idx < queuedFiles.length; idx += 1) {
       const file = queuedFiles[idx];
-      setBusyAction(`Uploading ${idx + 1} of ${queuedFiles.length}…`);
+      const stepLabel = `Uploading ${idx + 1} of ${queuedFiles.length}…`;
+      setBusyAction(stepLabel);
+      notify({
+        id: `branch-photos-${props.branchId}`,
+        kind: "info",
+        title: "Uploading branch photos",
+        message: stepLabel,
+      });
       const formData = new FormData();
       formData.set("image", file);
 
       const res = await uploadBranchImageAction(props.branchId, formData);
       if (!res.success || !res.images) {
         const failureMsg = res.message || `Failed to upload ${file.name}.`;
-        setClientError(failureMsg);
         props.onNotify({
           success: false,
           message: failureMsg,
@@ -169,7 +181,6 @@ export function BranchImagesManager(props: BranchImagesManagerProps) {
 
   const handleSetCover = async (id: string) => {
     if (isDisabled) return;
-    setClientError(null);
     if (props.mode === "draft") {
       props.onSetCover(id);
       return;
@@ -180,7 +191,6 @@ export function BranchImagesManager(props: BranchImagesManagerProps) {
     setBusyAction(null);
     if (!res.success || !res.images) {
       const msg = res.message || "Unable to set cover photo.";
-      setClientError(msg);
       props.onNotify({ success: false, message: msg, savedAt: res.savedAt ?? 1 });
       return;
     }
@@ -194,7 +204,6 @@ export function BranchImagesManager(props: BranchImagesManagerProps) {
 
   const handleRemove = async (id: string) => {
     if (isDisabled) return;
-    setClientError(null);
     if (props.mode === "draft") {
       props.onRemove(id);
       return;
@@ -205,7 +214,6 @@ export function BranchImagesManager(props: BranchImagesManagerProps) {
     setBusyAction(null);
     if (!res.success || !res.images) {
       const msg = res.message || "Unable to remove branch photo.";
-      setClientError(msg);
       props.onNotify({ success: false, message: msg, savedAt: res.savedAt ?? 1 });
       return;
     }
@@ -245,15 +253,6 @@ export function BranchImagesManager(props: BranchImagesManagerProps) {
       <p className="text-xs text-muted">
         PNG, JPEG, or WebP up to 5 MB each. Shown to customers beneath opening hours; the first photo appears first.
       </p>
-
-      {clientError ? (
-        <p
-          role="alert"
-          className="rounded border border-negative/50 bg-negative/10 px-3 py-2 text-xs text-negative"
-        >
-          {clientError}
-        </p>
-      ) : null}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <label className="block min-w-0 flex-1">

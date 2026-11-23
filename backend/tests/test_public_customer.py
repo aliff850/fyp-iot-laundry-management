@@ -485,3 +485,33 @@ def test_public_branches_list_includes_cover_image_url_when_uploaded(monkeypatch
         res["branches"][0]["cover_image_url"]
         == "https://proj.supabase.co/storage/v1/object/public/branch-images/cover.jpg"
     )
+
+
+def test_public_machine_projection_maps_maintenance_state():
+    now = datetime(2026, 11, 23, 6, 30, tzinfo=timezone.utc)
+    fresh = now - timedelta(seconds=8)
+    projected = public_customer.project_public_machine(
+        {
+            "id": DEV_1,
+            "source_id": "washer-sim-01",
+            "device_type": "washer",
+            "source_kind": "simulated",
+            "label": "Washer 01",
+            "status": "active",
+            "capacity_kg": 15,
+            "capabilities": {"supports_wash": True, "supports_dry": False},
+            "state_payload": {
+                "state": "maintenance",
+                "fault_code": "E01",
+                "programs": {"standard": {"name": "Standard", "price_myr": 7.0, "duration_seconds": 1800}},
+            },
+            "cloud_seen_at": fresh,
+            "gateway_seen_at": fresh,
+        },
+        service_status="open",
+        gateway_status="active",
+        now_utc=now,
+    )
+    assert projected["availability"] == "maintenance"
+    assert projected["availability_reason"] is None
+    assert "fault_code" not in projected

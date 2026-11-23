@@ -1,26 +1,12 @@
 "use client";
 
-import React, { useState, useEffect, useActionState, useTransition } from "react";
+import React, { useState, useEffect } from "react";
 import { LogOut } from "lucide-react";
-import { signOut } from "@/app/auth/actions";
-import { unregisterPushSubscription } from "@/app/notifications/actions";
-import { clearWorkspaceNotificationsStorage } from "@/components/workspace/notifications/notificationLogic";
-import { cleanupPushOnSignOut } from "@/components/workspace/notifications/pushClient";
-import type { AuthFormState } from "@/lib/auth/validation";
+import { useSignOutAction } from "@/components/auth/useSignOutAction";
 
 export function MobileSignOutTab() {
   const [isOpen, setIsOpen] = useState(false);
-  const [state, action, pending] = useActionState<AuthFormState>(signOut, {});
-  const [cleaning, startTransition] = useTransition();
-  const isPending = pending || cleaning;
-
-  function handleSignOutAction() {
-    clearWorkspaceNotificationsStorage();
-    startTransition(async () => {
-      await cleanupPushOnSignOut(unregisterPushSubscription);
-      action();
-    });
-  }
+  const { state, isPending, handleSignOutAction } = useSignOutAction();
 
   useEffect(() => {
     if (!isOpen) return;

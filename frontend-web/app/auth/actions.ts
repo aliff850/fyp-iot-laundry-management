@@ -5,8 +5,14 @@ import { createClient } from "@/lib/supabase/server";
 import { getSiteUrl } from "@/lib/auth/config";
 import { activeDestination, workspaceDestination } from "@/lib/auth/redirects";
 import { getMembership } from "@/lib/auth/business";
-import { getPublicOrganizations } from "@/lib/auth/organizations";
+import { checkEmailRegistered, getPublicOrganizations } from "@/lib/auth/organizations";
 import { validateLogin, validateRegistration, type AuthFormState } from "@/lib/auth/validation";
+
+const DUPLICATE_EMAIL_STATE: AuthFormState = {
+  status: "error",
+  message: "Email has already been registered",
+  fieldErrors: { email: "Email has already been registered" },
+};
 
 function failure(error?: { code?: string } | null): AuthFormState {
   const messages: Record<string, string> = {
@@ -71,6 +77,9 @@ export async function signUp(_state: AuthFormState, form: FormData): Promise<Aut
       return { status: "error", message: "Organization selection is unavailable. Please try again later.", fieldErrors: { organizationId: "Select an organization from the current directory." } };
     }
   }
+  const emailCheck = await checkEmailRegistered(input.value.email);
+  if (emailCheck.status !== "ok") return failure();
+  if (emailCheck.registered) return DUPLICATE_EMAIL_STATE;
   try {
     const client = await createClient(true);
     if (!client) return failure();
@@ -78,7 +87,9 @@ export async function signUp(_state: AuthFormState, form: FormData): Promise<Aut
       email: input.value.email, password: input.value.password,
       options: { emailRedirectTo: `${site}/auth/confirm`, data: input.value.metadata },
     });
+    if (error?.code === "user_already_exists") return DUPLICATE_EMAIL_STATE;
     if (error) return failure(error);
+    if (Array.isArray(data.user?.identities) && data.user.identities.length === 0) return DUPLICATE_EMAIL_STATE;
     if (data.session) {
       await client.auth.signOut({ scope: "local" });
       return { status: "error", message: "Registration requires email confirmation. Please contact your administrator before continuing." };

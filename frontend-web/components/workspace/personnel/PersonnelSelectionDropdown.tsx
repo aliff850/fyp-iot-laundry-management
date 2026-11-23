@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
+import { useActionToast } from "@/components/workspace/common/ActionToastContext";
 
 export interface SelectionOption {
   value: string;
@@ -41,9 +42,9 @@ export function PersonnelSelectionDropdown({
   defaultOpen = false,
   serverAction,
 }: PersonnelSelectionDropdownProps) {
+  const { notify } = useActionToast();
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [selected, setSelected] = useState<string[]>(currentValues);
-  const [statusMessage, setStatusMessage] = useState<{ text: string; isError: boolean } | null>(null);
   const [isPending, startTransition] = useTransition();
   const [mounted, setMounted] = useState(false);
   const [coords, setCoords] = useState<{ top: number; left: number; placement: "bottom" | "top" } | null>(null);
@@ -124,7 +125,6 @@ export function PersonnelSelectionDropdown({
         setIsOpen(false);
         // Reset uncommitted changes
         setSelected(currentValues);
-        setStatusMessage(null);
       }
     }
 
@@ -132,7 +132,6 @@ export function PersonnelSelectionDropdown({
       if (e.key === "Escape") {
         setIsOpen(false);
         setSelected(currentValues);
-        setStatusMessage(null);
       }
     }
 
@@ -182,7 +181,6 @@ export function PersonnelSelectionDropdown({
   }
 
   function handleSelectOption(val: string) {
-    setStatusMessage(null);
     if (mode === "radio") {
       setSelected([val]);
     } else {
@@ -197,7 +195,7 @@ export function PersonnelSelectionDropdown({
   }
 
   function handleSave() {
-    setStatusMessage(null);
+    const toastId = `personnel-select-${fieldName}-${userId}`;
     const formData = new FormData();
     formData.append("userId", userId);
     if (mode === "radio") {
@@ -208,20 +206,39 @@ export function PersonnelSelectionDropdown({
       }
     }
 
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Saving assignment",
+      message: "Updating personnel assignment…",
+    });
+
     startTransition(async () => {
       try {
         const res = await serverAction({}, formData);
         if (res.success) {
-          setStatusMessage({ text: res.message ?? "Saved", isError: false });
-          setTimeout(() => {
-            setIsOpen(false);
-            setStatusMessage(null);
-          }, 800);
+          notify({
+            id: toastId,
+            kind: "success",
+            title: "Assignment saved",
+            message: res.message ?? "Personnel assignment updated.",
+          });
+          setIsOpen(false);
         } else {
-          setStatusMessage({ text: res.message ?? "Failed to save", isError: true });
+          notify({
+            id: toastId,
+            kind: "error",
+            title: "Assignment failed",
+            message: res.message ?? "Failed to save assignment.",
+          });
         }
       } catch {
-        setStatusMessage({ text: "A network error occurred. Please retry.", isError: true });
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Assignment failed",
+          message: "A network error occurred. Please retry.",
+        });
       }
     });
   }
@@ -326,7 +343,6 @@ export function PersonnelSelectionDropdown({
           onClick={() => {
             setIsOpen(false);
             setSelected(currentValues);
-            setStatusMessage(null);
           }}
           className="inline-flex min-h-7 items-center rounded border border-line bg-navy px-2 py-0.5 text-xs text-muted transition-colors hover:bg-navy-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
         >
@@ -346,20 +362,6 @@ export function PersonnelSelectionDropdown({
           {isPending ? "Saving…" : "Save"}
         </button>
       </div>
-
-      {/* Inline Status Feedback */}
-      {statusMessage && (
-        <div
-          role="status"
-          className={`mt-2 rounded px-2 py-1 text-[11px] font-medium ${
-            statusMessage.isError
-              ? "border border-negative/30 bg-negative/10 text-negative"
-              : "border border-positive/30 bg-positive/10 text-positive"
-          }`}
-        >
-          {statusMessage.text}
-        </div>
-      )}
     </div>
   );
 

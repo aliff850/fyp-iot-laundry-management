@@ -5,6 +5,10 @@ import {
   updateAccountPasswordAction,
   type AccountPasswordActionState,
 } from "@/app/account/actions";
+import {
+  useActionToast,
+  withActionToast,
+} from "@/components/workspace/common/ActionToastContext";
 
 const inputClass =
   "min-h-11 w-full min-w-0 rounded-md border border-control bg-canvas px-3 py-2 text-sm text-ink placeholder:text-faint transition-colors duration-150 enabled:hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted aria-invalid:border-negative motion-reduce:transition-none";
@@ -15,8 +19,13 @@ const secondaryButtonClass =
 const initialState: AccountPasswordActionState = {};
 
 export function AccountPasswordForm() {
+  const { notify } = useActionToast();
   const [state, action, pending] = useActionState(
-    updateAccountPasswordAction,
+    withActionToast(notify, updateAccountPasswordAction, {
+      id: "account-password-save",
+      successTitle: "Password updated",
+      errorTitle: "Password update failed",
+    }),
     initialState,
   );
   const [newPassword, setNewPassword] = useState("");
@@ -39,17 +48,6 @@ export function AccountPasswordForm() {
           Password
         </h2>
       </div>
-
-      {state.message && (
-        <p
-          role={state.success ? "status" : "alert"}
-          className={`mt-4 rounded-md border-l-2 bg-raised px-4 py-3 text-sm text-ink ${
-            state.success ? "border-positive" : "border-negative"
-          }`}
-        >
-          {state.message}
-        </p>
-      )}
 
       <form action={action} className="mt-4 space-y-5">
         <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2">

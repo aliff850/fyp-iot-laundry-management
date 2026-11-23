@@ -6,19 +6,22 @@ import { useRouter } from "next/navigation";
 import { Clock } from "lucide-react";
 import { uploadBranchImageAction } from "@/app/branches/[branchId]/details/actions";
 import { createWorkspaceBranch } from "@/app/branches/new/actions";
-import { Notice } from "@/components/auth/AuthForm";
 import {
   BranchImagesManager,
   type DraftBranchImage,
 } from "@/components/workspace/branches/BranchImagesManager";
 import { BranchLocationPicker } from "@/components/workspace/branches/BranchLocationPicker";
+import {
+  useActionToast,
+  withActionToast,
+} from "@/components/workspace/common/ActionToastContext";
 import { inputClass, primaryButton, secondaryButton, textLink } from "@/lib/auth/styles";
 import type { ManagerOption } from "@/lib/auth/business";
 
 export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
   const router = useRouter();
+  const { notify } = useActionToast();
   const [step, setStep] = useState(0);
-  const [validationMessage, setValidationMessage] = useState("");
   const [requestId, setRequestId] = useState("");
   const [is24Hours, setIs24Hours] = useState(false);
   const [openTime, setOpenTime] = useState("07:00");
@@ -35,16 +38,23 @@ export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
     longitude: "",
     primary_manager_user_id: managers.find(m => m.role === "owner")?.user_id ?? managers[0]?.user_id ?? "",
   });
-  const [state, action, pending] = useActionState(createWorkspaceBranch, {});
+  const [state, action, pending] = useActionState(
+    withActionToast(notify, createWorkspaceBranch, {
+      id: "branch-create-submit",
+      successTitle: "Branch created",
+      errorTitle: "Branch setup failed",
+      resolveSuccessMessage: (s) => s.message || "Branch created successfully.",
+    }),
+    {},
+  );
   const [draftImages, setDraftImages] = useState<DraftBranchImage[]>([]);
   const draftImagesRef = useRef<DraftBranchImage[]>([]);
   const handledBranchIdRef = useRef<string | null>(null);
   const [photoUploadState, setPhotoUploadState] = useState<{
     uploading: boolean;
-    statusText: string;
     error: string | null;
     failedBranchId: string | null;
-  }>({ uploading: false, statusText: "", error: null, failedBranchId: null });
+  }>({ uploading: false, error: null, failedBranchId: null });
 
   useEffect(() => {
     draftImagesRef.current = draftImages;
@@ -89,32 +99,38 @@ export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
 
   const uploadPendingImages = useCallback(
     async (branchId: string, queue: DraftBranchImage[]) => {
+      const photoToastId = `branch-create-photos-${branchId}`;
       setPhotoUploadState({
         uploading: true,
-        statusText: `Uploading photo 1 of ${queue.length}…`,
         error: null,
         failedBranchId: null,
       });
 
       for (let i = 0; i < queue.length; i += 1) {
         const item = queue[i];
-        setPhotoUploadState({
-          uploading: true,
-          statusText: `Uploading photo ${i + 1} of ${queue.length}…`,
-          error: null,
-          failedBranchId: null,
+        notify({
+          id: photoToastId,
+          kind: "info",
+          title: "Uploading branch photos",
+          message: `Uploading photo ${i + 1} of ${queue.length}…`,
         });
         const formData = new FormData();
         formData.set("image", item.file);
         const res = await uploadBranchImageAction(branchId, formData);
         if (!res.success) {
           const remaining = queue.slice(i);
+          const failureMsg = res.message || `Failed to upload ${item.file.name}.`;
           setDraftImages(remaining);
           setPhotoUploadState({
             uploading: false,
-            statusText: "",
-            error: res.message || `Failed to upload ${item.file.name}.`,
+            error: failureMsg,
             failedBranchId: branchId,
+          });
+          notify({
+            id: photoToastId,
+            kind: "error",
+            title: "Photo upload failed",
+            message: failureMsg,
           });
           return;
         }
@@ -122,10 +138,16 @@ export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
       }
 
       setDraftImages([]);
-      setPhotoUploadState({ uploading: false, statusText: "", error: null, failedBranchId: null });
+      setPhotoUploadState({ uploading: false, error: null, failedBranchId: null });
+      notify({
+        id: photoToastId,
+        kind: "success",
+        title: "Branch photos uploaded",
+        message: `${queue.length} branch photo${queue.length === 1 ? "" : "s"} uploaded.`,
+      });
       router.push(`/branches/${branchId}/hardware-setup`);
     },
-    [router],
+    [notify, router],
   );
 
   const handleToggle24Hours = (checked: boolean) => {
@@ -405,14 +427,8 @@ export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
           <input key={name} type="hidden" name={name} value={value} />
         ))}
 
-      {validationMessage && <Notice kind="error">{validationMessage}</Notice>}
-      {state.message && <Notice kind={state.success ? "success" : "error"}>{state.message}</Notice>}
-      {photoUploadState.uploading && photoUploadState.statusText ? (
-        <Notice kind="info">{photoUploadState.statusText}</Notice>
-      ) : null}
       {photoUploadState.error && photoUploadState.failedBranchId ? (
-        <div className="space-y-3 rounded-md border border-negative/50 bg-negative/10 p-4 text-xs text-negative">
-          <p role="alert">Branch created, but photo upload failed: {photoUploadState.error}</p>
+        <div className="space-y-3 rounded-md border border-line bg-surface p-4 text-xs text-muted">
           <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
             <button
               type="button"
@@ -466,23 +482,37 @@ export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
                     !values.opening_hours.trim() ||
                     Boolean(values.latitude) !== Boolean(values.longitude)
                   ) {
-                    setValidationMessage("Complete the required details and enter both coordinates or neither.");
+                    notify({
+                      id: "branch-create-validation",
+                      kind: "error",
+                      title: "Incomplete branch details",
+                      message: "Complete the required details and enter both coordinates or neither.",
+                    });
                     return;
                   }
                   const phone = values.contact_phone.trim();
                   if (phone.length < 7 || phone.length > 32 || !/^[+()0-9 .-]+$/.test(phone)) {
-                    setValidationMessage("Enter a valid contact phone number (7 to 32 digits, symbols + ( ) - . allowed).");
+                    notify({
+                      id: "branch-create-validation",
+                      kind: "error",
+                      title: "Invalid phone number",
+                      message: "Enter a valid contact phone number (7 to 32 digits, symbols + ( ) - . allowed).",
+                    });
                     return;
                   }
                   if (!requestId) setRequestId(crypto.randomUUID());
                 }
                 if (step === 1) {
                   if (!values.primary_manager_user_id) {
-                    setValidationMessage("Select an eligible manager for this branch.");
+                    notify({
+                      id: "branch-create-validation",
+                      kind: "error",
+                      title: "Manager required",
+                      message: "Select an eligible manager for this branch.",
+                    });
                     return;
                   }
                 }
-                setValidationMessage("");
                 setStep(s => s + 1);
               }}
             >

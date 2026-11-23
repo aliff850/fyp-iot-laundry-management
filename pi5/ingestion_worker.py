@@ -634,7 +634,7 @@ class EdgeIngestionWorker:
             boot_id = sample.get("boot_id")
             sequence = sample.get("sequence")
             if (sample.get("device_id") != source_id or sample.get("source_kind") != "simulated"
-                    or not isinstance(data, dict) or data.get("state") not in ("idle", "running", "paused", "error")
+                    or not isinstance(data, dict) or data.get("state") not in ("idle", "running", "paused", "error", "maintenance")
                     or not isinstance(boot_id, str) or not 1 <= len(boot_id) <= 64
                     or type(sequence) is not int or sequence < 0):
                 return

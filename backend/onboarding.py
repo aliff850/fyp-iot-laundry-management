@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 import psycopg
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from psycopg.rows import dict_row
 from dotenv import load_dotenv
@@ -25,6 +25,12 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 PERSONNEL_ROLES = {"branch_manager", "machine_maintenance", "lpg_maintenance"}
 PHONE = re.compile(r"^[+()0-9 .-]{7,32}$")
+EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+_EMAIL_CHECK_WINDOW_SECONDS = 60.0
+_EMAIL_CHECK_MAX_ATTEMPTS = 20
+_EMAIL_CHECK_LOCK = threading.Lock()
+_EMAIL_CHECK_ATTEMPTS: dict[str, deque[float]] = {}
 
 _DEFAULT_HTTPX_GET = httpx.get
 _DEFAULT_HTTPX_PUT = httpx.put
@@ -648,3 +654,63 @@ def _admin_user(user_id):
         return target
     except (ValueError, AttributeError) as exc:
         raise HTTPException(503, "Role administration response is invalid") from exc
+
+
+class EmailRegistrationCheckRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not EMAIL_RE.fullmatch(cleaned):
+            raise ValueError("Enter a valid email address")
+        return cleaned
+
+
+def is_email_registered(conn, email: str) -> bool:
+    """Return True when a non-deleted Supabase Auth account already uses this email."""
+    normalized = email.strip().lower()
+    row = conn.execute(
+        """select 1
+           from auth.users
+           where lower(email) = %s
+             and deleted_at is null
+           limit 1""",
+        (normalized,),
+    ).fetchone()
+    return row is not None
+
+
+def _enforce_email_check_rate_limit(request: Request) -> None:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    client_ip = (
+        forwarded.split(",")[0].strip()
+        if forwarded
+        else (request.client.host if request.client else "unknown")
+    )
+    now = time.monotonic()
+    cutoff = now - _EMAIL_CHECK_WINDOW_SECONDS
+    with _EMAIL_CHECK_LOCK:
+        bucket = _EMAIL_CHECK_ATTEMPTS.setdefault(client_ip, deque())
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= _EMAIL_CHECK_MAX_ATTEMPTS:
+            retry_after = max(1, int(bucket[0] + _EMAIL_CHECK_WINDOW_SECONDS - now))
+            raise HTTPException(
+                429,
+                "Too many email checks. Wait a minute before trying again.",
+                headers={"Retry-After": str(retry_after)},
+            )
+        bucket.append(now)
+
+
+@router.post("/public/registration-email-check")
+def check_registration_email(
+    body: EmailRegistrationCheckRequest,
+    request: Request,
+):
+    _enforce_email_check_rate_limit(request)
+    with _database(read_only=True) as conn:
+        registered = is_email_registered(conn, body.email)
+    return {"registered": registered}

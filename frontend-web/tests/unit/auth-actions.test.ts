@@ -2,11 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   signInWithPassword: vi.fn(), signUp: vi.fn(), getUser: vi.fn(), signOut: vi.fn(), resend: vi.fn(),
-  client: vi.fn(), directory: vi.fn(), membership: vi.fn(),
+  client: vi.fn(), directory: vi.fn(), emailCheck: vi.fn(), membership: vi.fn(),
 }));
 
 vi.mock("@/lib/supabase/server", () => ({ createClient: mocks.client }));
-vi.mock("@/lib/auth/organizations", () => ({ getPublicOrganizations: mocks.directory }));
+vi.mock("@/lib/auth/organizations", () => ({
+  getPublicOrganizations: mocks.directory,
+  checkEmailRegistered: mocks.emailCheck,
+}));
 vi.mock("@/lib/auth/business", () => ({ getMembership: mocks.membership }));
 vi.mock("next/navigation", () => ({ redirect: (location: string) => { throw { location }; } }));
 
@@ -24,6 +27,7 @@ beforeEach(() => {
   mocks.getUser.mockResolvedValue({ data: { user: { id: "user-a", email_confirmed_at: "2026-10-27T00:00:00Z" } }, error: null });
   mocks.signOut.mockResolvedValue({ error: null });
   mocks.directory.mockResolvedValue({ status: "unavailable", organizations: [] });
+  mocks.emailCheck.mockResolvedValue({ status: "ok", registered: false });
   mocks.membership.mockResolvedValue({ ok: true, value: { state: "active", role: "owner", organization: { id: "org-a", name: "Aina Laundry" } } });
 });
 
@@ -115,6 +119,28 @@ describe("real identity provider boundary", () => {
     mocks.directory.mockResolvedValue({ status: "ready", organizations: [{ id: "org-a", name: "Laundry A" }] });
     expect((await signUp({}, form({ kind: "personnel", organizationId: "org-b" }))).status).toBe("error");
     expect(mocks.signUp).not.toHaveBeenCalled();
+  });
+
+  it("shows Email has already been registered when backend check finds an existing account", async () => {
+    mocks.emailCheck.mockResolvedValue({ status: "ok", registered: true });
+    const res = await signUp({}, form());
+    expect(res.status).toBe("error");
+    expect(res.message).toBe("Email has already been registered");
+    expect(res.fieldErrors?.email).toBe("Email has already been registered");
+    expect(mocks.signUp).not.toHaveBeenCalled();
+  });
+
+  it("also catches empty Supabase identities or user_already_exists as Email has already been registered", async () => {
+    mocks.signUp.mockResolvedValueOnce({ data: { user: { id: "u1", identities: [] }, session: null }, error: null });
+    const resIdentities = await signUp({}, form());
+    expect(resIdentities.status).toBe("error");
+    expect(resIdentities.message).toBe("Email has already been registered");
+    expect(resIdentities.fieldErrors?.email).toBe("Email has already been registered");
+
+    mocks.signUp.mockResolvedValueOnce({ data: { user: null, session: null }, error: { code: "user_already_exists" } });
+    const resCode = await signUp({}, form());
+    expect(resCode.status).toBe("error");
+    expect(resCode.message).toBe("Email has already been registered");
   });
 
   it("does not preserve an auto-login session when confirmation is disabled remotely", async () => {

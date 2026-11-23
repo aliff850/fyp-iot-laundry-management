@@ -2,12 +2,18 @@
 
 import { revalidatePath } from "next/cache";
 import {
+  createMachineMaintenanceLog,
+  getBranchMaintenanceLogs,
   getRemoteMachines,
   getRemoteMachineStatistics,
   getRemoteMachineCommands,
   issueRemoteMachineCommand,
+  type MaintenanceLogCreateInput,
+  type MaintenanceLogItem,
+  type MaintenanceLogsPage,
   type RemoteMachine,
   type RemoteMachineCommand,
+  type RemoteMachineCommandAction,
   sendMachineCommand,
   updateMachineParameters,
   type MachineItem,
@@ -29,12 +35,46 @@ export async function refreshRemoteMachineCommands(branchId: string, sourceId: s
 }
 
 export async function requestRemoteMachineCommand(branchId: string, sourceId: string,
-  requestId: string, action: "start" | "pause" | "resume" | "stop" | "set_settings" | "clear_fault",
+  requestId: string, action: RemoteMachineCommandAction,
   args: Record<string, unknown> = {}) {
   return issueRemoteMachineCommand(branchId, sourceId, requestId, action, args);
 }
 
-export type { RemoteMachine, RemoteMachineCommand };
+export async function loadBranchMaintenanceLogs(
+  branchId: string,
+  options?: {
+    source_id?: string;
+    error_code?: string;
+    search?: string;
+    page?: number;
+    page_size?: number;
+  },
+) {
+  return getBranchMaintenanceLogs(branchId, options);
+}
+
+export async function submitMachineMaintenanceLog(
+  branchId: string,
+  sourceId: string,
+  payload: MaintenanceLogCreateInput,
+) {
+  const result = await createMachineMaintenanceLog(branchId, sourceId, payload);
+  if (result.ok) {
+    revalidatePath(`/branches/${branchId}/machines`);
+    revalidatePath(`/branches/${branchId}/maintenance`);
+    revalidatePath(`/branches/${branchId}/overview`);
+  }
+  return result;
+}
+
+export type {
+  MaintenanceLogCreateInput,
+  MaintenanceLogItem,
+  MaintenanceLogsPage,
+  RemoteMachine,
+  RemoteMachineCommand,
+  RemoteMachineCommandAction,
+};
 
 export type MachineActionResponse = {
   success: boolean;

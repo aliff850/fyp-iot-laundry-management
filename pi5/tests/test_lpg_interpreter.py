@@ -237,9 +237,80 @@ def test_hysteresis_gas_temp_and_machine_episodes():
         temp_st, t_clr = tracker.evaluate_high_temperature(temp_st, temperature_c=42.1, sample_identity=f"t:{idx}", sample_at=base + timedelta(seconds=idx * 5))
     assert t_clr is not None and t_clr["transition_type"] == "cleared" and temp_st.active_episode_id is None
 
-    # Machine fault episode open -> update -> clear
+    # Machine fault episode open -> maintenance keeps episode active -> clear returns to idle
     m_st = lpg_interpreter.ConditionTrackerState("gw-1", "washer_1", "machine_fault")
     m_st, m_open = tracker.evaluate_machine_fault(m_st, machine_state="error", fault_code="E01", fault_name="Water Inlet Failure", sample_identity="m:1", sample_at=base)
     assert m_open is not None and m_open["transition_type"] == "opened" and m_open["fault_code"] == "E01"
-    m_st, m_clr = tracker.evaluate_machine_fault(m_st, machine_state="idle", fault_code=None, fault_name=None, sample_identity="m:2", sample_at=base + timedelta(seconds=10))
+    m_st, m_maint = tracker.evaluate_machine_fault(m_st, machine_state="maintenance", fault_code="E01", fault_name="Water Inlet Failure", sample_identity="m:2", sample_at=base + timedelta(seconds=5))
+    assert m_maint is None and m_st.active_episode_id == m_open["episode_id"]
+    m_st, m_clr = tracker.evaluate_machine_fault(m_st, machine_state="idle", fault_code=None, fault_name=None, sample_identity="m:3", sample_at=base + timedelta(seconds=10))
     assert m_clr is not None and m_clr["transition_type"] == "cleared" and m_clr["episode_id"] == m_open["episode_id"]
+
+
+def test_ingest_machine_presence_accepts_maintenance_state():
+    import json
+    from types import SimpleNamespace
+    import ingestion_worker
+
+    executed = []
+
+    class _FakeCursor:
+        def __init__(self):
+            self._last_sql = ""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, sql, params=None):
+            self._last_sql = sql
+            executed.append((sql, params))
+
+        def fetchone(self):
+            if "FROM device_registry" in self._last_sql:
+                return {"source_id": "washer-sim-01"}
+            return None
+
+    class _FakeConn:
+        def __init__(self):
+            self.committed = False
+
+        def cursor(self):
+            return _FakeCursor()
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            pass
+
+    worker = object.__new__(ingestion_worker.EdgeIngestionWorker)
+    worker.is_active = True
+    worker.branch_id = "branch-1"
+    worker.gateway_id = "gw-1"
+    conn = _FakeConn()
+    worker.connection = conn
+    worker.get_db_connection = lambda: conn
+    recorded = []
+    worker._record_machine_condition = lambda _conn, source_id, data, *_args: recorded.append((source_id, data.get("state")))
+
+    msg = SimpleNamespace(
+        topic="branches/branch-1/devices/washer-sim-01/presence",
+        payload=json.dumps(
+            {
+                "device_id": "washer-sim-01",
+                "source_kind": "simulated",
+                "boot_id": "boot-1",
+                "sequence": 42,
+                "data": {"state": "maintenance", "fault_code": "E01", "remaining_seconds": 0},
+            }
+        ).encode("utf-8"),
+    )
+    worker.ingest_machine_presence(msg)
+
+    assert conn.committed is True
+    assert recorded == [("washer-sim-01", "maintenance")]
+    inserts = [params for sql, params in executed if "INSERT INTO machine_presence" in sql]
+    assert len(inserts) == 1 and '"maintenance"' in inserts[0][4]

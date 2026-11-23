@@ -8,6 +8,7 @@ import {
   fetchLpgMaintenanceStatus,
   startBranchLpgTankSwap,
 } from "@/app/branches/[branchId]/lpg/actions";
+import { useActionToast } from "@/components/workspace/common/ActionToastContext";
 import type { LpgSwapStability, SafetyNodeDevice } from "@/lib/auth/business";
 
 export interface LpgTankSwapModalProps {
@@ -66,11 +67,10 @@ export function LpgTankSwapModal({
   const [capacityKgInput, setCapacityKgInput] = useState(
     String(device.lpg_config?.rated_capacity_kg ?? device.capacity_kg ?? 14),
   );
+  const { notify } = useActionToast();
   const [stability, setStability] = useState<LpgSwapStability | null>(null);
   const [loadingStability, setLoadingStability] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [pendingText, setPendingText] = useState<string | null>(null);
-  const [errorText, setErrorText] = useState<string | null>(null);
 
   const requestIdRef = useRef<string>(randomRequestId());
   const dirtyTareRef = useRef(false);
@@ -130,39 +130,68 @@ export function LpgTankSwapModal({
 
   if (!open) return null;
 
-  async function pollUntilTerminal(commandId: string): Promise<boolean> {
+  const toastId = `lpg-swap-${branchId}-${device.source_id}`;
+
+  async function pollUntilTerminal(
+    commandId: string,
+    successTitle: string,
+    successMessage: string,
+  ): Promise<boolean> {
     const deadline = Date.now() + POLL_TIMEOUT_MS;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
       const statusRes = await fetchLpgCommandStatus(branchId, device.source_id, commandId);
       if (!statusRes.ok) {
-        setErrorText(statusRes.message || "Failed to verify command status with gateway.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Tank swap status failed",
+          message: statusRes.message || "Failed to verify command status with gateway.",
+        });
         return false;
       }
       const st = statusRes.value.status;
       if (st === "succeeded") {
         await onConfirmed();
+        notify({
+          id: toastId,
+          kind: "success",
+          title: successTitle,
+          message: successMessage,
+        });
         return true;
       }
       if (st === "failed" || st === "expired" || st === "unknown") {
-        setErrorText(
-          statusRes.value.reason || "Branch gateway could not confirm the tank swap request.",
-        );
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Tank swap failed",
+          message: statusRes.value.reason || "Branch gateway could not confirm the tank swap request.",
+        });
         return false;
       }
     }
-    setErrorText("Timed out waiting for branch gateway confirmation. Retry to check status.");
+    notify({
+      id: toastId,
+      kind: "error",
+      title: "Tank swap timed out",
+      message: "Timed out waiting for branch gateway confirmation. Retry to check status.",
+    });
     return false;
   }
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (submitting) return;
-    setErrorText(null);
 
     if (mode === "start") {
       setSubmitting(true);
-      setPendingText("Sending start tank swap request to branch gateway…");
+      notify({
+        id: toastId,
+        kind: "info",
+        title: "Starting tank swap",
+        message: "Sending start tank swap request to branch gateway…",
+      });
       try {
         const res = await startBranchLpgTankSwap(branchId, device.source_id, {
           request_id: requestIdRef.current,
@@ -170,38 +199,72 @@ export function LpgTankSwapModal({
           service_note: serviceNote.trim() || undefined,
         });
         if (!res.ok) {
-          setErrorText(res.message || "Could not start tank swap.");
+          notify({
+            id: toastId,
+            kind: "error",
+            title: "Tank swap start failed",
+            message: res.message || "Could not start tank swap.",
+          });
           return;
         }
         if (res.value.status === "succeeded") {
           await onConfirmed();
+          notify({
+            id: toastId,
+            kind: "success",
+            title: "Tank swap started",
+            message: `${device.label} is paused for cylinder replacement.`,
+          });
           onClose();
           return;
         }
-        setPendingText("Waiting for branch gateway confirmation…");
-        const ok = await pollUntilTerminal(res.value.command_id);
+        notify({
+          id: toastId,
+          kind: "info",
+          title: "Starting tank swap",
+          message: "Waiting for branch gateway confirmation…",
+        });
+        const ok = await pollUntilTerminal(
+          res.value.command_id,
+          "Tank swap started",
+          `${device.label} is paused for cylinder replacement.`,
+        );
         if (ok) onClose();
       } finally {
         setSubmitting(false);
-        setPendingText(null);
       }
       return;
     }
 
     const parsedTare = tareKgInput.trim() === "" ? null : Number(tareKgInput);
     if (parsedTare !== null && (!Number.isFinite(parsedTare) || parsedTare < 0 || parsedTare > 100)) {
-      setErrorText("Empty cylinder tare weight must be between 0 and 100 kg.");
+      notify({
+        id: toastId,
+        kind: "error",
+        title: "Invalid tare weight",
+        message: "Empty cylinder tare weight must be between 0 and 100 kg.",
+      });
       return;
     }
 
     const parsedCap = capacityKgInput.trim() === "" ? null : Number(capacityKgInput);
     if (parsedCap !== null && (!Number.isFinite(parsedCap) || parsedCap <= 0 || parsedCap > 500)) {
-      setErrorText("Rated LPG capacity must be between 0.1 and 500 kg.");
+      notify({
+        id: toastId,
+        kind: "error",
+        title: "Invalid capacity",
+        message: "Rated LPG capacity must be between 0.1 and 500 kg.",
+      });
       return;
     }
 
     setSubmitting(true);
-    setPendingText("Sending tank swap verification to branch gateway…");
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Completing tank swap",
+      message: "Sending tank swap verification to branch gateway…",
+    });
     try {
       const res = await completeBranchLpgTankSwap(branchId, device.source_id, {
         request_id: requestIdRef.current,
@@ -210,16 +273,36 @@ export function LpgTankSwapModal({
         rated_capacity_kg: parsedCap,
       });
       if (!res.ok) {
-        setErrorText(res.message || "Could not complete tank swap.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Tank swap failed",
+          message: res.message || "Could not complete tank swap.",
+        });
         return;
       }
       if (res.value.status === "succeeded") {
         await onConfirmed();
+        notify({
+          id: toastId,
+          kind: "success",
+          title: "Tank swap completed",
+          message: `${device.label} cylinder swap verified and active.`,
+        });
         onClose();
         return;
       }
-      setPendingText("Verifying 3 consecutive scale readings on branch gateway…");
-      const ok = await pollUntilTerminal(res.value.command_id);
+      notify({
+        id: toastId,
+        kind: "info",
+        title: "Completing tank swap",
+        message: "Verifying 3 consecutive scale readings on branch gateway…",
+      });
+      const ok = await pollUntilTerminal(
+        res.value.command_id,
+        "Tank swap completed",
+        `${device.label} cylinder swap verified and active.`,
+      );
       if (ok) {
         onClose();
       } else {
@@ -228,7 +311,6 @@ export function LpgTankSwapModal({
       }
     } finally {
       setSubmitting(false);
-      setPendingText(null);
     }
   }
 
@@ -437,24 +519,6 @@ export function LpgTankSwapModal({
                 </div>
               </div>
             </>
-          )}
-
-          {pendingText && (
-            <div
-              aria-busy="true"
-              className="rounded-md border-l-2 border-control bg-raised px-4 py-3 text-sm text-muted"
-            >
-              {pendingText}
-            </div>
-          )}
-
-          {errorText && (
-            <div
-              role="alert"
-              className="rounded-md border-l-2 border-negative bg-raised px-4 py-3 text-sm text-ink"
-            >
-              {errorText}
-            </div>
           )}
 
           <div className="mt-6 flex flex-col-reverse gap-3 border-t border-rule pt-4 sm:flex-row sm:justify-end">

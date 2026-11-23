@@ -1,33 +1,19 @@
 "use client";
 
-import { useActionState, useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { LogOut, User } from "lucide-react";
-import { signOut } from "@/app/auth/actions";
-import { unregisterPushSubscription } from "@/app/notifications/actions";
 import { Notice } from "@/components/auth/AuthForm";
-import { clearWorkspaceNotificationsStorage } from "@/components/workspace/notifications/notificationLogic";
-import { cleanupPushOnSignOut } from "@/components/workspace/notifications/pushClient";
+import { useSignOutAction } from "@/components/auth/useSignOutAction";
 import { secondaryButton } from "@/lib/auth/styles";
-import type { AuthFormState } from "@/lib/auth/validation";
 
 interface SignOutButtonProps {
   variant?: "dropdown" | "button";
 }
 
 export function SignOutButton({ variant = "dropdown" }: SignOutButtonProps) {
-  const [state, action, pending] = useActionState<AuthFormState>(signOut, {});
-  const [cleaning, startTransition] = useTransition();
-  const isPending = pending || cleaning;
+  const { state, isPending, handleSignOutAction } = useSignOutAction();
   const [isOpen, setIsOpen] = useState(false);
-
-  function handleSignOutAction() {
-    clearWorkspaceNotificationsStorage();
-    startTransition(async () => {
-      await cleanupPushOnSignOut(unregisterPushSubscription);
-      action();
-    });
-  }
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
@@ -104,7 +90,7 @@ export function SignOutButton({ variant = "dropdown" }: SignOutButtonProps) {
               href="/account"
               role="menuitem"
               onClick={() => setIsOpen(false)}
-              className="flex w-full items-center gap-2.5 rounded px-3 py-2 text-xs font-medium text-ink transition-colors duration-150 hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent"
+              className="flex min-h-11 w-full items-center gap-2.5 rounded px-3 py-2 text-xs font-medium text-ink transition-colors duration-150 hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent"
             >
               <User className="size-4 shrink-0 text-muted" aria-hidden="true" />
               <span>Account</span>
@@ -117,13 +103,12 @@ export function SignOutButton({ variant = "dropdown" }: SignOutButtonProps) {
             <form
               action={handleSignOutAction}
               aria-busy={isPending}
-              role="none"
             >
               <button
                 type="submit"
                 role="menuitem"
                 disabled={isPending}
-                className="flex w-full items-center gap-2.5 rounded px-3 py-2 text-xs font-medium text-negative transition-colors duration-150 hover:bg-negative/15 focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex min-h-11 w-full items-center gap-2.5 rounded px-3 py-2 text-xs font-medium text-negative transition-colors duration-150 hover:bg-negative/15 focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <LogOut className="size-4 shrink-0" aria-hidden="true" />
                 <span>{isPending ? "Signing out…" : "Sign Out"}</span>

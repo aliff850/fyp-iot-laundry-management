@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import { approveDeviceAction } from "@/app/branches/[branchId]/hardware-setup/actions";
+import { useActionToast } from "@/components/workspace/common/ActionToastContext";
 import type { DeviceDiscoveryItem } from "@/lib/auth/business";
 import { inputClass } from "@/lib/auth/styles";
 
@@ -21,19 +22,26 @@ export function DeviceApprovalModal({
   onClose,
   onApproved,
 }: DeviceApprovalModalProps) {
+  const { notify } = useActionToast();
   const [deviceType, setDeviceType] = useState<string>(candidate.proposed_type || "washer");
   const [label, setLabel] = useState<string>(`Device ${candidate.source_id}`);
   const [sourceKind, setSourceKind] = useState<string>("physical");
   const [capacityKg, setCapacityKg] = useState<string>("15");
   const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!isOpen) return null;
+
+  const toastId = `hardware-approve-${branchId}-${candidate.candidate_id}`;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    setErrorMessage(null);
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Commissioning device",
+      message: `Approving ${label.trim() || candidate.source_id}…`,
+    });
 
     const cap = deviceType !== "lpg_edge_node" && capacityKg ? parseFloat(capacityKg) : undefined;
 
@@ -46,13 +54,29 @@ export function DeviceApprovalModal({
       });
 
       if (res.success) {
+        notify({
+          id: toastId,
+          kind: "success",
+          title: "Device commissioned",
+          message: res.message || `${label.trim() || candidate.source_id} approved for branch.`,
+        });
         onApproved?.();
         onClose();
       } else {
-        setErrorMessage(res.message || "Failed to approve device.");
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Device approval failed",
+          message: res.message || "Failed to approve device.",
+        });
       }
     } catch {
-      setErrorMessage("Network error during device approval.");
+      notify({
+        id: toastId,
+        kind: "error",
+        title: "Device approval failed",
+        message: "Network error during device approval.",
+      });
     } finally {
       setLoading(false);
     }
@@ -74,12 +98,6 @@ export function DeviceApprovalModal({
             <X className="h-5 w-5" />
           </button>
         </div>
-
-        {errorMessage && (
-          <div className="mt-4 rounded bg-negative/10 border border-negative/30 p-3 text-xs text-negative" role="alert">
-            {errorMessage}
-          </div>
-        )}
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
           <div>

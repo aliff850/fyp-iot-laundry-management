@@ -448,18 +448,28 @@ export type RemoteMachine = {
   source: "simulated" | "physical" | "vendor";
   label: string;
   capacity_kg: number | null;
-  state: "idle" | "running" | "paused" | "error" | "unknown";
+  state: "idle" | "running" | "paused" | "error" | "maintenance" | "unknown";
   freshness: "fresh" | "stale" | "missing";
   last_update: string | null;
   data: {
     remaining_seconds?: number;
     fault_code?: string | null;
     fault_name?: string | null;
+    maintenance_started_at?: string | null;
     settings?: Record<string, unknown>;
     programs?: Record<string, Record<string, unknown>>;
   } | null;
   diagnosis?: FaultDiagnosis | null;
 };
+
+export type RemoteMachineCommandAction =
+  | "start"
+  | "pause"
+  | "resume"
+  | "stop"
+  | "set_settings"
+  | "clear_fault"
+  | "start_maintenance";
 
 export type RemoteMachineCommand = {
   command_id: string;
@@ -491,7 +501,7 @@ export async function getRemoteMachineCommands(branchId: string, sourceId: strin
 }
 
 export async function issueRemoteMachineCommand(branchId: string, sourceId: string,
-  requestId: string, action: "start" | "pause" | "resume" | "stop" | "set_settings" | "clear_fault",
+  requestId: string, action: RemoteMachineCommandAction,
   args: Record<string, unknown> = {}): Promise<Result<{ command_id: string; status: string }>> {
   return businessRequest(`/branches/${branchId}/machine-commands/${encodeURIComponent(sourceId)}`,
     "POST", { request_id: requestId, action, arguments: args });
@@ -1727,4 +1737,86 @@ export async function updateIncidentTask(
   if (!result.ok) return result;
   if (!result.value?.task?.id) return invalid();
   return { ok: true, value: result.value.task };
+}
+
+export type MaintenanceLogOutcome = "in_progress" | "completed";
+
+export type MaintenanceLogItem = {
+  id: string;
+  reference_code: string;
+  branch_id: string;
+  device_id: string;
+  source_id: string;
+  asset_name: string;
+  incident_id: string | null;
+  error_code: string;
+  fault_name: string | null;
+  technician_name: string;
+  performed_by_user_id: string | null;
+  performed_by_role: string;
+  work_done: string;
+  outcome: MaintenanceLogOutcome;
+  created_at: string;
+};
+
+export type MaintenanceLogsPage = {
+  items: MaintenanceLogItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+};
+
+export type MaintenanceLogCreateInput = {
+  error_code: string;
+  technician_name: string;
+  work_done: string;
+  outcome: MaintenanceLogOutcome;
+  return_to_service?: boolean;
+  command_request_id?: string;
+};
+
+export type MaintenanceLogCreateResponse = {
+  item: MaintenanceLogItem;
+  command: { command_id: string; status: string } | null;
+};
+
+export async function getBranchMaintenanceLogs(
+  branchId: string,
+  options?: {
+    source_id?: string;
+    error_code?: string;
+    search?: string;
+    page?: number;
+    page_size?: number;
+  },
+): Promise<Result<MaintenanceLogsPage>> {
+  const query = new URLSearchParams();
+  if (options?.source_id?.trim()) query.set("source_id", options.source_id.trim());
+  if (options?.error_code?.trim()) query.set("error_code", options.error_code.trim());
+  if (options?.search?.trim()) query.set("search", options.search.trim());
+  if (options?.page) query.set("page", String(options.page));
+  if (options?.page_size) query.set("page_size", String(options.page_size));
+  const qs = query.toString();
+  const result = await businessRequest<MaintenanceLogsPage>(
+    `/branches/${encodeURIComponent(branchId)}/maintenance-logs${qs ? `?${qs}` : ""}`,
+  );
+  if (!result.ok) return result;
+  if (!Array.isArray(result.value?.items)) return invalid();
+  return result;
+}
+
+export async function createMachineMaintenanceLog(
+  branchId: string,
+  sourceId: string,
+  payload: MaintenanceLogCreateInput,
+): Promise<Result<MaintenanceLogCreateResponse>> {
+  const result = await businessRequest<MaintenanceLogCreateResponse>(
+    `/branches/${encodeURIComponent(branchId)}/machines/${encodeURIComponent(sourceId)}/maintenance-logs`,
+    "POST",
+    payload,
+  );
+  if (!result.ok) return result;
+  if (!result.value?.item?.id) return invalid();
+  return result;
 }

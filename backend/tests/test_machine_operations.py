@@ -112,3 +112,87 @@ def test_statistics_requires_financially_authorized_membership(monkeypatch):
         machines.machine_statistics(BRANCH, "washer-sim-01", "week", {"id": uuid4()})
     assert error.value.status_code == 403
     conn.execute.assert_not_called()
+
+
+def test_edge_state_accepts_maintenance_state(monkeypatch):
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = {
+        "id": DEVICE,
+        "gateway_id": GATEWAY,
+        "branch_id": BRANCH,
+        "organization_id": ORG,
+    }
+    monkeypatch.setattr(machines, "_database", mock_db(conn))
+    body = machines.EdgeMachineState(
+        source_id="washer-sim-01",
+        boot_id="boot-1",
+        sequence=3,
+        gateway_seen_at=datetime.now(timezone.utc),
+        state={"state": "maintenance", "fault_code": "E01", "simulation": True},
+    )
+    assert machines.upload_machine_state(body, {"id": GATEWAY, "status": "active"}) == {"accepted": True}
+
+
+def test_machine_maintenance_can_queue_maintenance_and_clear_fault_only(monkeypatch):
+    conn = MagicMock()
+    seen_role_tuples = []
+
+    def fake_authorize(_conn, _user_id, _branch_id, roles):
+        seen_role_tuples.append(roles)
+        if "machine_maintenance" not in roles:
+            raise HTTPException(403, "Insufficient permissions")
+        return {"organization_id": ORG, "role": "machine_maintenance"}, {}
+
+    monkeypatch.setattr(machines, "_database", mock_db(conn))
+    monkeypatch.setattr(machines, "_authorize_branch_access", fake_authorize)
+
+    # Disallowed action for machine_maintenance specialist
+    with pytest.raises(HTTPException) as start_err:
+        machines.create_machine_command(
+            BRANCH,
+            "washer-sim-01",
+            machines.OperatorMachineCommand(request_id=uuid4(), action="start"),
+            {"id": uuid4()},
+        )
+    assert start_err.value.status_code == 403
+
+    # Allowed start_maintenance from idle
+    req_maint = uuid4()
+    conn.execute.return_value.fetchone.side_effect = [
+        {"service_status": "open"},
+        {"id": DEVICE, "gateway_id": GATEWAY, "device_type": "washer"},
+        None,
+        None,
+        {"state_payload": {"state": "idle"}, "cloud_seen_at": datetime.now(timezone.utc)},
+        {"status": "queued", "action": "start_maintenance", "arguments": {}, "device_id": DEVICE},
+    ]
+    res_maint = machines.create_machine_command(
+        BRANCH,
+        "washer-sim-01",
+        machines.OperatorMachineCommand(request_id=req_maint, action="start_maintenance"),
+        {"id": uuid4()},
+    )
+    assert res_maint == {"command_id": str(req_maint), "status": "queued"}
+
+    # Allowed clear_fault from maintenance
+    req_clear = uuid4()
+    conn.execute.return_value.fetchone.side_effect = [
+        {"service_status": "open"},
+        {"id": DEVICE, "gateway_id": GATEWAY, "device_type": "washer"},
+        None,
+        None,
+        {"state_payload": {"state": "maintenance"}, "cloud_seen_at": datetime.now(timezone.utc)},
+        {"status": "queued", "action": "clear_fault", "arguments": {}, "device_id": DEVICE},
+    ]
+    res_clear = machines.create_machine_command(
+        BRANCH,
+        "washer-sim-01",
+        machines.OperatorMachineCommand(request_id=req_clear, action="clear_fault"),
+        {"id": uuid4()},
+    )
+    assert res_clear == {"command_id": str(req_clear), "status": "queued"}
+    assert seen_role_tuples == [
+        ("owner", "branch_manager"),
+        ("owner", "branch_manager", "machine_maintenance"),
+        ("owner", "branch_manager", "machine_maintenance"),
+    ]
