@@ -3,13 +3,55 @@
 import { revalidatePath } from "next/cache";
 import {
   businessRequest,
+  geocodeBranchAddress,
   getBranchOverviewAnalytics,
   getOrganizationAnalytics,
+  type GeocodeResult,
   type OverviewAnalyticsPeriod,
 } from "@/lib/auth/business";
 import type { FetchOverviewAnalyticsResult } from "@/app/branches/[branchId]/overview/actions";
 
 export type DeleteBranchState = { message?: string; success?: boolean };
+export type GeocodeActionResult = {
+  ok: boolean;
+  status?: number;
+  results?: GeocodeResult[];
+  attribution?: string;
+  cached?: boolean;
+  message?: string;
+};
+
+export async function lookupBranchAddressAction(query: string): Promise<GeocodeActionResult> {
+  const cleaned = query.replace(/\s+/g, " ").trim();
+  if (cleaned.length < 3 || cleaned.length > 200) {
+    return {
+      ok: false,
+      status: 422,
+      message: "Enter 3 to 200 characters of a public branch address, street, or city.",
+    };
+  }
+  if (cleaned.includes("@")) {
+    return {
+      ok: false,
+      status: 422,
+      message: "Do not enter email addresses or personal identifiers in map search.",
+    };
+  }
+  const result = await geocodeBranchAddress(cleaned, 5);
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: result.status,
+      message: result.message,
+    };
+  }
+  return {
+    ok: true,
+    results: result.value.results,
+    attribution: result.value.attribution,
+    cached: result.value.cached,
+  };
+}
 
 export async function fetchBranchesAnalytics(
   selectionId: string,

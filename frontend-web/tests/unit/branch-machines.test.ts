@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToString } from "react-dom/server";
 import { MachineCard } from "@/components/workspace/machines/MachineCard";
+import {
+  formatCountdownSeconds,
+  MachineCountdownTimer,
+} from "@/components/workspace/machines/MachineCountdownTimer";
 import { MachineDetailModal } from "@/components/workspace/machines/MachineDetailModal";
 import { RemoteMachineFleet } from "@/components/workspace/machines/RemoteMachineFleet";
 import type { RemoteMachine } from "@/lib/auth/business";
@@ -52,20 +56,34 @@ describe("live branch machine UI", () => {
     expect(text).toContain("Freshness");
     expect(text).toContain("Fresh");
     expect(text).toContain("Details & parameters");
+    expect(html).not.toContain("<span>Start</span>");
+    expect(html).not.toContain("<span>Pause</span>");
+    expect(html).not.toContain("<span>Stop</span>");
     expect(html).not.toContain("Unlock door");
     expect(html).not.toContain("RM 4.00");
   });
 
-  it("keeps stale machines unknown and disables cycle controls", () => {
-    const html = renderToString(React.createElement(MachineCard, {
+  it("keeps stale machines unknown on cards and disables Machine Testing cycle controls in the modal", () => {
+    const staleMachine = { ...washer, freshness: "stale" as const, state: "idle" as const };
+    const cardHtml = renderToString(React.createElement(MachineCard, {
       ...cardProps,
-      machine: { ...washer, freshness: "stale", state: "idle" },
+      machine: staleMachine,
     }));
-    expect(html).toContain("Stale");
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*><svg[^>]*>[\s\S]*?<span>Start<\/span>/);
+    expect(cardHtml).toContain("Stale");
+    expect(cardHtml).not.toContain("<span>Start</span>");
+
+    const modalHtml = renderToString(React.createElement(MachineDetailModal, {
+      machine: staleMachine,
+      branchId: "branch-1",
+      branchOpen: true,
+      role: "owner",
+      onClose: () => {},
+    }));
+    expect(modalHtml).toContain("Machine Testing");
+    expect(modalHtml).toMatch(/<button[^>]*disabled=""[^>]*>START<\/button>/);
   });
 
-  it("does not expose cycle controls or prices to a machine specialist", () => {
+  it("enables Machine Testing cycle controls for machine_maintenance without prices, statistics, or program edits", () => {
     const html = renderToString(React.createElement(MachineDetailModal, {
       machine: washer,
       branchId: "branch-1",
@@ -73,7 +91,11 @@ describe("live branch machine UI", () => {
       role: "machine_maintenance",
       onClose: () => {},
     }));
-    expect(html).not.toContain("Program for START");
+    expect(html).toContain("Machine Testing");
+    expect(html).toContain("Program for START");
+    expect(html).toContain(">START<");
+    expect(html).toContain(">STOP<");
+    expect(html).not.toContain("CLEAR FAULT");
     expect(html).not.toContain("RM 4.00");
     expect(html).not.toContain("Statistics &amp; Revenue");
   });
@@ -156,7 +178,8 @@ describe("live branch machine UI", () => {
     expect(specialistHtml).toContain("Open maintenance form");
     expect(specialistHtml).toContain("Put under maintenance");
     expect(specialistHtml).toContain("Maintenance &amp; Repair Log");
-    expect(specialistHtml).toContain("Log maintenance &amp; return to idle");
+    expect(specialistHtml).toContain("Put this machine into maintenance mode before logging repair work.");
+    expect(specialistHtml).not.toContain("Log maintenance &amp; return to idle");
     expect(specialistHtml).not.toContain("Save service log");
   });
 
@@ -214,7 +237,7 @@ describe("live branch machine UI", () => {
     expect(modalHtml).toContain("value=\"E01\"");
     expect(modalHtml).toContain("value=\"Ali Technician\"");
     expect(modalHtml).toContain("Tasks carried out");
-    expect(modalHtml).not.toContain("Program for START");
+    expect(modalHtml).toContain("Machine Testing");
     expect(modalHtml).not.toContain("Statistics &amp; Revenue");
   });
 
@@ -225,5 +248,104 @@ describe("live branch machine UI", () => {
     }));
     expect(staleUnknownCard).toContain("Offline / Telemetry stale");
     expect(staleUnknownCard).not.toContain("last reported UNKNOWN");
+  });
+
+  it("places Machine status & Remaining estimate inside Machine Testing, removes Source Provenance, and colors active running timer", () => {
+    const runningWasher: RemoteMachine = {
+      ...washer,
+      state: "running",
+      data: {
+        ...washer.data,
+        remaining_seconds: 90,
+      },
+    };
+    const runningHtml = renderToString(React.createElement(MachineDetailModal, {
+      machine: runningWasher,
+      branchId: "branch-1",
+      branchOpen: true,
+      role: "machine_maintenance",
+      onClose: () => {},
+    }));
+    const runningText = runningHtml.replace(/<!--.*?-->/g, "");
+
+    expect(runningText).not.toContain("Source Provenance");
+    const testingIdx = runningText.indexOf("Machine Testing");
+    const statusIdx = runningText.indexOf("Machine status");
+    const estimateIdx = runningText.indexOf("Remaining estimate");
+    expect(testingIdx).toBeGreaterThan(-1);
+    expect(statusIdx).toBeGreaterThan(testingIdx);
+    expect(estimateIdx).toBeGreaterThan(statusIdx);
+    expect(runningText).toContain("border-positive/40 bg-positive/10");
+    expect(runningText).toContain("text-positive");
+    expect(runningText).toContain("01:30 (90 s)");
+
+    const idleHtml = renderToString(React.createElement(MachineDetailModal, {
+      machine: washer,
+      branchId: "branch-1",
+      branchOpen: true,
+      role: "owner",
+      onClose: () => {},
+    }));
+    expect(idleHtml).toContain("border-control/50 bg-navy/70");
+
+    const maintHtml = renderToString(React.createElement(MachineDetailModal, {
+      machine: { ...washer, state: "maintenance" },
+      branchId: "branch-1",
+      branchOpen: true,
+      role: "owner",
+      onClose: () => {},
+    }));
+    expect(maintHtml).toContain("border-warning/40 bg-warning/10");
+
+    const errorHtml = renderToString(React.createElement(MachineDetailModal, {
+      machine: { ...washer, state: "error" },
+      branchId: "branch-1",
+      branchOpen: true,
+      role: "owner",
+      onClose: () => {},
+    }));
+    expect(errorHtml).toContain("border-negative/40 bg-negative/10");
+
+    expect(formatCountdownSeconds(90)).toBe("01:30 (90 s)");
+    expect(
+      renderToString(React.createElement(MachineCountdownTimer, {
+        initialSeconds: 90,
+        isRunning: false,
+        isPaused: false,
+      })),
+    ).toBe("—");
+  });
+
+  it("renders Add program, Edit, and Delete only on custom programs for idle operators", () => {
+    const programsHtml = renderToString(React.createElement(MachineDetailModal, {
+      machine: washer,
+      branchId: "branch-1",
+      branchOpen: true,
+      role: "owner",
+      initialTab: "programs",
+      onClose: () => {},
+    }));
+    const text = programsHtml.replace(/<!--.*?-->/g, "");
+    expect(text).toContain("Saved programs");
+    expect(text).toContain("Add program");
+    expect(text).toContain("Quick");
+    expect(text).toContain("ECODEMO");
+
+    // One Delete button (custom p_fe20185dc7ed only, never Quick) and two Edit buttons
+    expect(programsHtml.match(/>Delete</g)?.length).toBe(1);
+    expect(programsHtml.match(/>Edit</g)?.length).toBe(2);
+
+    // Maintenance technician sees read-only list without Add/Edit/Delete controls
+    const techHtml = renderToString(React.createElement(MachineDetailModal, {
+      machine: washer,
+      branchId: "branch-1",
+      branchOpen: true,
+      role: "machine_maintenance",
+      initialTab: "programs",
+      onClose: () => {},
+    }));
+    expect(techHtml).not.toContain(">Add program<");
+    expect(techHtml).not.toContain(">Edit<");
+    expect(techHtml).not.toContain(">Delete<");
   });
 });

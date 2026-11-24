@@ -62,8 +62,52 @@ def test_owner_directory_is_organization_scoped(monkeypatch):
     monkeypatch.setattr(branches, "_database", db)
     result = branches.list_branches({"id": USER})
     assert result["summary"] == {"branch_count": 0, "personnel_count": 0, "pending_request_count": 0}
-    directory_call = next(c for c in conn.execute.call_args_list if "select * from public.branches" in c.args[0])
+    directory_call = next(
+        c for c in conn.execute.call_args_list
+        if "from public.branches b" in c.args[0] and "left join public.profiles p" in c.args[0]
+    )
     assert directory_call.args[1] == (ORG,)
+
+
+def test_directory_serializes_primary_manager_name_for_owner_and_staff(monkeypatch):
+    base_row = {
+        "id": UUID("55555555-5555-5555-5555-555555555555"),
+        "name": "MSU Shah Alam",
+        "address": "Jalan Universiti 1",
+        "city": "Shah Alam",
+        "region": "Selangor",
+        "postal_code": "40100",
+        "contact_phone": "+603-5510-1234",
+        "opening_hours": "24 hours",
+        "latitude": 3.07,
+        "longitude": 101.51,
+        "service_status": "open",
+        "is_published": True,
+        "weekly_hours": None,
+        "primary_manager_user_id": UUID(USER),
+        "created_at": "2026-10-27T00:00:00Z",
+    }
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.side_effect = [
+        member(),
+        {"personnel_count": 1, "pending_request_count": 0},
+        member("branch_manager", "active"),
+    ]
+    conn.execute.return_value.fetchall.side_effect = [
+        [{**base_row, "primary_manager_name": "  Aisyah Rahman  "}, {**base_row, "id": UUID("66666666-6666-6666-6666-666666666666"), "primary_manager_name": "   "}],
+        [{**base_row, "primary_manager_name": "Aisyah Rahman"}],
+    ]
+    @contextmanager
+    def db(**_kwargs):
+        yield conn
+    monkeypatch.setattr(branches, "_database", db)
+    owner_res = branches.list_branches({"id": USER})
+    assert owner_res["branches"][0]["primary_manager_name"] == "Aisyah Rahman"
+    assert owner_res["branches"][1]["primary_manager_name"] is None
+    staff_res = branches.list_branches({"id": USER})
+    assert staff_res["branches"][0]["primary_manager_name"] == "Aisyah Rahman"
+    staff_sql = conn.execute.call_args_list[-1].args[0]
+    assert "left join public.profiles p on p.user_id = b.primary_manager_user_id" in staff_sql
 
 
 def test_approved_unassigned_has_no_branch_access_even_if_assignment_exists(monkeypatch):
@@ -523,16 +567,30 @@ def test_get_branch_overview_owner_success(monkeypatch):
             "primary_manager_phone": "+60123456789",
         },
     ]
-    conn.execute.return_value.fetchall.side_effect = [[
-        {
-            "user_id": UUID(USER),
-            "full_name": "Dr. Owner",
-            "phone": "+60123456789",
-            "role": "owner",
-            "state": "active",
-            "is_primary_manager": True,
-        }
-    ], [], [], [], []]
+    conn.execute.return_value.fetchall.side_effect = [
+        [
+            {
+                "user_id": UUID(USER),
+                "full_name": "Dr. Owner",
+                "phone": "+60123456789",
+                "role": "owner",
+                "state": "active",
+                "is_primary_manager": True,
+            }
+        ],
+        [
+            {
+                "id": UUID("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+                "image_url": "https://proj.supabase.co/storage/v1/object/public/branch-images/hero.jpg",
+                "sort_order": 0,
+                "created_at": "2026-10-27T00:00:00Z",
+            }
+        ],
+        [],
+        [],
+        [],
+        [],
+    ]
     @contextmanager
     def db(**_kwargs):
         yield conn
@@ -540,6 +598,8 @@ def test_get_branch_overview_owner_success(monkeypatch):
 
     res = branches.get_branch_overview(branch_id, {"id": USER})
     assert "branch" in res
+    assert len(res["branch"]["images"]) == 1
+    assert res["branch"]["images"][0]["image_url"].endswith("/hero.jpg")
     assert "personnel" in res
     assert res["personnel"]["total_assigned"] == 1
     assert "fleet" in res

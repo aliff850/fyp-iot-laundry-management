@@ -18,6 +18,7 @@ from push_notifications import router as push_notifications_router
 from public_customer import router as public_customer_router
 from incidents import router as incidents_router
 from maintenance_logs import router as maintenance_logs_router
+from geocoding import router as geocoding_router
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -50,12 +51,13 @@ app.include_router(push_notifications_router)
 app.include_router(public_customer_router)
 app.include_router(incidents_router)
 app.include_router(maintenance_logs_router)
+app.include_router(geocoding_router)
 
 @app.middleware("http")
 async def retire_unsecured_prototype(request, call_next):
     path = request.url.path
     allowed = (
-        path in {"/api", "/api/status", "/public/organizations", "/public/branches", "/public/registration-email-check", "/me", "/onboarding", "/join-requests", "/branches", "/branches/manager-options", "/organization", "/organization/analytics", "/organization/logo", "/personnel", "/notifications", "/push/public-key", "/push/subscriptions", "/incidents", "/maintenance-tasks"}
+        path in {"/api", "/api/status", "/public/organizations", "/public/branches", "/public/registration-email-check", "/me", "/onboarding", "/join-requests", "/branches", "/branches/manager-options", "/organization", "/organization/analytics", "/organization/logo", "/personnel", "/notifications", "/push/public-key", "/push/subscriptions", "/incidents", "/maintenance-tasks", "/maps/geocode"}
         or path.startswith("/public/branches/")
         or path.startswith("/join-requests/")
         or path.startswith("/branches/")

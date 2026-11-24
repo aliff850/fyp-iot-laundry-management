@@ -64,24 +64,166 @@ def test_manager_cannot_send_when_branch_closed(monkeypatch):
     assert not any("insert into public.machine_commands" in call.args[0] for call in conn.execute.call_args_list)
 
 
-def test_non_washer_settings_are_rejected_before_queueing(monkeypatch):
+def test_dryer_rejects_wash_fields_and_accepts_dry_only_settings(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.side_effect = [
         {"service_status": "open"},
         {"id": DEVICE, "gateway_id": GATEWAY, "device_type": "dryer"},
         None,
         None,
-        {"state_payload": {"state": "idle"}, "cloud_seen_at": datetime.now(timezone.utc)},
+        {
+            "state_payload": {"state": "idle", "programs": {"quick": {"duration_seconds": 30}}},
+            "cloud_seen_at": datetime.now(timezone.utc),
+        },
     ]
     monkeypatch.setattr(machines, "_database", mock_db(conn))
     monkeypatch.setattr(machines, "_authorize_branch_access",
         lambda *_args: ({"organization_id": ORG, "role": "owner"}, {}))
-    body = machines.OperatorMachineCommand(request_id=uuid4(), action="set_settings",
-        arguments={"program_id": "quick"})
+    bad_body = machines.OperatorMachineCommand(request_id=uuid4(), action="set_settings",
+        arguments={
+            "program_id": "quick",
+            "price_myr": "4.00",
+            "duration_seconds": 30,
+            "target_temperature_c": 55,
+            "water_level": "medium",
+            "spin_rpm": 800,
+        })
     with pytest.raises(HTTPException) as error:
-        machines.create_machine_command(BRANCH, "dryer-sim-01", body, {"id": uuid4()})
+        machines.create_machine_command(BRANCH, "dryer-sim-01", bad_body, {"id": uuid4()})
     assert error.value.status_code == 422
     assert not any("insert into public.machine_commands" in call.args[0] for call in conn.execute.call_args_list)
+
+    req_ok = uuid4()
+    expected_dryer_args = {
+        "program_id": "quick",
+        "price_myr": "5.00",
+        "duration_seconds": 45,
+        "target_temperature_c": 60,
+        "water_level": None,
+        "spin_rpm": None,
+    }
+    conn.execute.return_value.fetchone.side_effect = [
+        {"service_status": "open"},
+        {"id": DEVICE, "gateway_id": GATEWAY, "device_type": "dryer"},
+        None,
+        None,
+        {
+            "state_payload": {"state": "idle", "programs": {"quick": {"duration_seconds": 30}}},
+            "cloud_seen_at": datetime.now(timezone.utc),
+        },
+        {"status": "queued", "action": "set_settings", "arguments": expected_dryer_args, "device_id": DEVICE},
+    ]
+    ok_body = machines.OperatorMachineCommand(request_id=req_ok, action="set_settings",
+        arguments={
+            "program_id": "quick",
+            "price_myr": "5.00",
+            "duration_seconds": 45,
+            "target_temperature_c": 60,
+        })
+    res = machines.create_machine_command(BRANCH, "dryer-sim-01", ok_body, {"id": uuid4()})
+    assert res == {"command_id": str(req_ok), "status": "queued"}
+    insert_call = next(c for c in conn.execute.call_args_list if "insert into public.machine_commands" in c.args[0])
+    saved_args = insert_call.args[1][6].obj
+    assert saved_args == expected_dryer_args
+
+
+def test_custom_program_creation_and_deletion_boundaries(monkeypatch):
+    conn = MagicMock()
+    monkeypatch.setattr(machines, "_database", mock_db(conn))
+    monkeypatch.setattr(machines, "_authorize_branch_access",
+        lambda *_args: ({"organization_id": ORG, "role": "owner"}, {}))
+
+    custom_id = "p_abcdef012345"
+    req_create = uuid4()
+    expected_create_args = {
+        "program_id": custom_id,
+        "create": True,
+        "name": "EcoWash",
+        "price_myr": "4.50",
+        "duration_seconds": 40,
+        "target_temperature_c": 35,
+        "water_level": "low",
+        "spin_rpm": 800,
+    }
+    conn.execute.return_value.fetchone.side_effect = [
+        {"service_status": "open"},
+        {"id": DEVICE, "gateway_id": GATEWAY, "device_type": "washer_dryer"},
+        None,
+        None,
+        {
+            "state_payload": {
+                "state": "idle",
+                "programs": {"quick": {"duration_seconds": 30}, "standard": {"duration_seconds": 60}},
+            },
+            "cloud_seen_at": datetime.now(timezone.utc),
+        },
+        {"status": "queued", "action": "set_settings", "arguments": expected_create_args, "device_id": DEVICE},
+    ]
+    create_body = machines.OperatorMachineCommand(
+        request_id=req_create,
+        action="set_settings",
+        arguments={
+            "program_id": custom_id,
+            "create": True,
+            "name": "EcoWash",
+            "price_myr": "4.50",
+            "duration_seconds": 40,
+            "target_temperature_c": 35,
+            "water_level": "low",
+            "spin_rpm": 800,
+        },
+    )
+    res_create = machines.create_machine_command(BRANCH, "combo-sim-01", create_body, {"id": uuid4()})
+    assert res_create == {"command_id": str(req_create), "status": "queued"}
+
+    # Reject deleting built-in quick/standard programs
+    conn.execute.return_value.fetchone.side_effect = [
+        {"service_status": "open"},
+        {"id": DEVICE, "gateway_id": GATEWAY, "device_type": "washer"},
+        None,
+        None,
+        {
+            "state_payload": {"state": "idle", "programs": {"quick": {}, custom_id: {"name": "EcoWash"}}},
+            "cloud_seen_at": datetime.now(timezone.utc),
+        },
+    ]
+    with pytest.raises(HTTPException) as del_builtin:
+        machines.create_machine_command(
+            BRANCH,
+            "washer-sim-01",
+            machines.OperatorMachineCommand(
+                request_id=uuid4(),
+                action="delete_program",
+                arguments={"program_id": "quick"},
+            ),
+            {"id": uuid4()},
+        )
+    assert del_builtin.value.status_code == 422
+
+    # Allow deleting custom program
+    req_del = uuid4()
+    conn.execute.return_value.fetchone.side_effect = [
+        {"service_status": "open"},
+        {"id": DEVICE, "gateway_id": GATEWAY, "device_type": "washer"},
+        None,
+        None,
+        {
+            "state_payload": {"state": "idle", "programs": {"quick": {}, custom_id: {"name": "EcoWash"}}},
+            "cloud_seen_at": datetime.now(timezone.utc),
+        },
+        {"status": "queued", "action": "delete_program", "arguments": {"program_id": custom_id}, "device_id": DEVICE},
+    ]
+    res_del = machines.create_machine_command(
+        BRANCH,
+        "washer-sim-01",
+        machines.OperatorMachineCommand(
+            request_id=req_del,
+            action="delete_program",
+            arguments={"program_id": custom_id},
+        ),
+        {"id": uuid4()},
+    )
+    assert res_del == {"command_id": str(req_del), "status": "queued"}
 
 
 def test_cycle_batch_rejects_inconsistent_running_time_without_writing(monkeypatch):
@@ -133,7 +275,7 @@ def test_edge_state_accepts_maintenance_state(monkeypatch):
     assert machines.upload_machine_state(body, {"id": GATEWAY, "status": "active"}) == {"accepted": True}
 
 
-def test_machine_maintenance_can_queue_maintenance_and_clear_fault_only(monkeypatch):
+def test_machine_maintenance_can_test_cycles_and_service_but_cannot_edit_settings(monkeypatch):
     conn = MagicMock()
     seen_role_tuples = []
 
@@ -146,15 +288,48 @@ def test_machine_maintenance_can_queue_maintenance_and_clear_fault_only(monkeypa
     monkeypatch.setattr(machines, "_database", mock_db(conn))
     monkeypatch.setattr(machines, "_authorize_branch_access", fake_authorize)
 
-    # Disallowed action for machine_maintenance specialist
-    with pytest.raises(HTTPException) as start_err:
+    # Disallowed pricing/program settings mutation for machine_maintenance specialist
+    with pytest.raises(HTTPException) as settings_err:
         machines.create_machine_command(
             BRANCH,
             "washer-sim-01",
-            machines.OperatorMachineCommand(request_id=uuid4(), action="start"),
+            machines.OperatorMachineCommand(request_id=uuid4(), action="set_settings"),
             {"id": uuid4()},
         )
-    assert start_err.value.status_code == 403
+    assert settings_err.value.status_code == 403
+
+    # Allowed remote test start from idle for machine_maintenance
+    req_start = uuid4()
+    conn.execute.return_value.fetchone.side_effect = [
+        {"service_status": "open"},
+        {"id": DEVICE, "gateway_id": GATEWAY, "device_type": "washer"},
+        None,
+        None,
+        {
+            "state_payload": {"state": "idle", "programs": {"standard": {"duration_seconds": 1800}}},
+            "cloud_seen_at": datetime.now(timezone.utc),
+        },
+        {
+            "status": "queued",
+            "action": "start",
+            "arguments": {
+                "program_id": "standard",
+                "settings_hash": machines.hashlib.sha256(b'{"duration_seconds":1800}').hexdigest(),
+            },
+            "device_id": DEVICE,
+        },
+    ]
+    res_start = machines.create_machine_command(
+        BRANCH,
+        "washer-sim-01",
+        machines.OperatorMachineCommand(
+            request_id=req_start,
+            action="start",
+            arguments={"program_id": "standard"},
+        ),
+        {"id": uuid4()},
+    )
+    assert res_start == {"command_id": str(req_start), "status": "queued"}
 
     # Allowed start_maintenance from idle
     req_maint = uuid4()
@@ -193,6 +368,7 @@ def test_machine_maintenance_can_queue_maintenance_and_clear_fault_only(monkeypa
     assert res_clear == {"command_id": str(req_clear), "status": "queued"}
     assert seen_role_tuples == [
         ("owner", "branch_manager"),
+        ("owner", "branch_manager", "machine_maintenance"),
         ("owner", "branch_manager", "machine_maintenance"),
         ("owner", "branch_manager", "machine_maintenance"),
     ]

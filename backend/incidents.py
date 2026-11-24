@@ -273,6 +273,10 @@ def load_branch_active_incidents(
             {
                 "id": str(row["id"]),
                 "reference_code": row["reference_code"],
+                "asset_name": row["asset_name"],
+                "domain": row.get("domain"),
+                "fault_code": row.get("fault_code"),
+                "fault_name": row.get("fault_name"),
                 "severity": row["severity"],
                 "title": f"{row['asset_name']}{code_suffix}",
                 "description": row["summary"],
@@ -537,7 +541,7 @@ def ingest_edge_incidents(batch: EdgeIncidentBatch, gateway=Depends(_gateway)):
                                 "incident_id": str(item["incident_id"]),
                                 "kind": tr_obj.condition_key,
                                 "severity": "negative" if tr_obj.severity == "critical" else "warning",
-                                "title": f"{dev_obj['label'] or tr_obj.source_id} · {tr_obj.fault_code or tr_obj.condition_key}",
+                                "title": f"{dev_obj['label'] or tr_obj.source_id} ({tr_obj.fault_code or tr_obj.condition_key})",
                                 "detail": tr_obj.summary,
                                 "occurred_at": _iso(item["occurred_at"]) or "",
                             }

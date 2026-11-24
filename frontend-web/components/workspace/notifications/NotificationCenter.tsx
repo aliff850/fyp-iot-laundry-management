@@ -7,6 +7,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -53,9 +54,11 @@ export interface NotificationCenterProps {
 
 function NotificationKindIcon({
   kind,
+  severity,
   className = "size-4 shrink-0",
 }: {
   kind: string;
+  severity?: string;
   className?: string;
 }) {
   if (kind === "machine_running") {
@@ -67,7 +70,11 @@ function NotificationKindIcon({
   if (kind === "machine_completed") {
     return <CheckCircle2 className={`${className} text-positive`} aria-hidden="true" />;
   }
-  if (kind === "lpg_maintenance") {
+  if (kind === "machine_maintenance_logged" || kind === "lpg_maintenance_completed") {
+    const tone = severity === "positive" ? "text-positive" : "text-warning";
+    return <Wrench className={`${className} ${tone}`} aria-hidden="true" />;
+  }
+  if (kind === "lpg_maintenance" || kind === "machine_maintenance") {
     return <Wrench className={`${className} text-warning`} aria-hidden="true" />;
   }
   if (kind === "lpg_critical" || kind === "lpg_gas_critical") {
@@ -77,6 +84,24 @@ function NotificationKindIcon({
     return <Flame className={`${className} text-warning`} aria-hidden="true" />;
   }
   return <Bell className={`${className} text-muted`} aria-hidden="true" />;
+}
+
+function splitNotificationDetail(item: WorkspaceNotificationEvent): {
+  detailText: string;
+  referenceCode: string | null;
+} {
+  const raw = item.detail || item.device_label || item.source_id;
+  if (item.reference_code) {
+    return {
+      detailText: raw.replace(/\s*·\s*/g, " ").trim(),
+      referenceCode: item.reference_code,
+    };
+  }
+  const parts = raw.split(/\s*·\s*/);
+  if (parts.length === 2 && /^MNT-/i.test(parts[1].trim())) {
+    return { detailText: parts[0].trim(), referenceCode: parts[1].trim() };
+  }
+  return { detailText: raw.replace(/\s*·\s*/g, " ").trim(), referenceCode: null };
 }
 
 function BranchTag({
@@ -415,7 +440,7 @@ export function NotificationCenter({
           aria-label="Notifications"
           title="Notifications"
           onClick={() => setIsDropdownOpen((prev) => !prev)}
-          className="relative inline-flex min-h-11 min-w-11 items-center justify-center rounded-md border border-control bg-navy text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="relative inline-flex min-h-11 min-w-11 items-center justify-center rounded-full border border-control/40 bg-raised/40 text-ink transition-colors duration-150 hover:border-control hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent motion-reduce:transition-none"
         >
           <Bell className="size-5 shrink-0" aria-hidden="true" />
           {unreadCount > 0 && (
@@ -464,6 +489,7 @@ export function NotificationCenter({
               ) : (
                 previewItems.map((item) => {
                   const visuals = notificationVisuals(item);
+                  const { detailText } = splitNotificationDetail(item);
                   const isCurrentBranch = Boolean(
                     currentBranchId && currentBranchId === item.branch_id,
                   );
@@ -478,7 +504,7 @@ export function NotificationCenter({
                       >
                         <div className="flex items-start gap-3">
                           <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-rule bg-raised/60">
-                            <NotificationKindIcon kind={item.kind} />
+                            <NotificationKindIcon kind={item.kind} severity={item.severity} />
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -497,7 +523,7 @@ export function NotificationCenter({
                               </span>
                             </div>
                             <p className="mt-1 break-words text-xs text-muted">
-                              {item.detail || item.device_label || item.source_id}
+                              {detailText}
                             </p>
                             <BranchTag
                               branchId={item.branch_id}
@@ -527,16 +553,18 @@ export function NotificationCenter({
         )}
       </div>
 
-      {isModalOpen && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="allNotificationsTitle"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) closeModal();
-          }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-canvas/80 p-3 sm:p-4"
-        >
+      {isModalOpen &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="allNotificationsTitle"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) closeModal();
+            }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-canvas/80 p-3 sm:p-4"
+          >
           <div className="flex h-[calc(100dvh-1.5rem)] w-[calc(100vw-1.5rem)] max-w-none flex-col overflow-hidden rounded-md border border-control bg-surface text-ink shadow-2xl sm:h-11/12 sm:w-11/12">
             <div className="flex items-center justify-between gap-3 border-b border-rule px-4 py-3.5 sm:px-5">
               <div className="flex min-w-0 items-center gap-2.5">
@@ -635,6 +663,7 @@ export function NotificationCenter({
                 ) : (
                   modalPageItems.map((item) => {
                     const visuals = notificationVisuals(item);
+                    const { detailText, referenceCode } = splitNotificationDetail(item);
                     const categoryLabel = item.category === "lpg" ? "LPG & Safety" : "Machine";
                     const isCurrentBranch = Boolean(
                       currentBranchId && currentBranchId === item.branch_id,
@@ -650,7 +679,7 @@ export function NotificationCenter({
                         >
                           <div className="flex items-start gap-3">
                             <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-rule bg-raised/60">
-                              <NotificationKindIcon kind={item.kind} />
+                              <NotificationKindIcon kind={item.kind} severity={item.severity} />
                             </div>
                             <div className="min-w-0 flex-1">
                               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -672,7 +701,7 @@ export function NotificationCenter({
                                 </span>
                               </div>
                               <p className="mt-1 break-words text-xs text-muted">
-                                {item.detail || item.device_label || item.source_id}
+                                {detailText}
                               </p>
                               <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
                                 <span
@@ -685,6 +714,11 @@ export function NotificationCenter({
                                   <Building2 className="size-3 shrink-0" aria-hidden="true" />
                                   <span className="truncate">{item.branch_name || "Branch"}</span>
                                 </span>
+                                {referenceCode && (
+                                  <span className="rounded border border-rule bg-raised/40 px-2 py-0.5 text-[11px] font-medium tabular-nums text-muted">
+                                    {`Ref: ${referenceCode}`}
+                                  </span>
+                                )}
                                 {item.source_id && (
                                   <span className="text-[11px] tabular-nums text-faint">
                                     {`Device: ${item.device_label || item.source_id} (${item.source_id})`}
@@ -736,15 +770,18 @@ export function NotificationCenter({
               </div>
             )}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
-      {toasts.length > 0 && (
-        <div
-          id="toastRegion"
-          aria-live="polite"
-          className="pointer-events-none fixed bottom-20 right-4 z-50 flex w-[calc(100vw-2rem)] max-w-sm flex-col gap-2 md:bottom-4"
-        >
+      {toasts.length > 0 &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            id="toastRegion"
+            aria-live="polite"
+            className="pointer-events-none fixed bottom-20 right-4 z-50 flex w-[calc(100vw-2rem)] max-w-sm flex-col gap-2 md:bottom-4"
+          >
           {toasts.map(({ toastKey, event }) => {
             const visuals = notificationVisuals(event);
             const isSticky = event.severity === "negative";
@@ -755,7 +792,7 @@ export function NotificationCenter({
                 className={`pointer-events-auto flex w-full items-start gap-3 rounded-md border ${visuals.borderClass} bg-surface p-3.5 text-ink shadow-xl`}
               >
                 <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-rule bg-raised/60">
-                  <NotificationKindIcon kind={event.kind} />
+                  <NotificationKindIcon kind={event.kind} severity={event.severity} />
                 </div>
                 <Link
                   href={notificationHref(event)}
@@ -771,7 +808,7 @@ export function NotificationCenter({
                     </span>
                   </div>
                   <p className="mt-0.5 break-words text-xs text-muted">
-                    {event.detail || event.device_label || event.source_id}
+                    {splitNotificationDetail(event).detailText}
                   </p>
                   <BranchTag
                     branchId={event.branch_id}
@@ -794,7 +831,8 @@ export function NotificationCenter({
               </div>
             );
           })}
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );

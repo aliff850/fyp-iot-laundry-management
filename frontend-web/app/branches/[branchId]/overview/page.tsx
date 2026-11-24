@@ -4,7 +4,6 @@ import { redirect } from "next/navigation";
 import {
   Activity,
   AlertCircle,
-  AlertTriangle,
   Flame,
   MessageSquareWarning,
   ShieldCheck,
@@ -13,6 +12,7 @@ import {
 } from "lucide-react";
 import { Notice } from "@/components/auth/AuthForm";
 import { BranchWorkspaceShell } from "@/components/workspace/layout/BranchWorkspaceShell";
+import { ActiveIncidentsBanner } from "@/components/workspace/overview/ActiveIncidentsBanner";
 import { PerformanceChart } from "@/components/workspace/branches/PerformanceChart";
 import { LpgTankLevelsChart } from "@/components/workspace/branches/LpgTankLevelsChart";
 import { BranchRecordsTable } from "@/components/workspace/records/BranchRecordsTable";
@@ -90,39 +90,7 @@ export default async function BranchOverviewPage({ params }: BranchOverviewPageP
       <div className="space-y-6">
         {/* Scoped Incidents Banner */}
         {overview.incidents.length > 0 ? (
-          <div
-            className="rounded-md border border-negative/40 bg-negative/10 p-4"
-            role="alert"
-            aria-label="Active branch incidents"
-          >
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="size-5 shrink-0 text-negative" aria-hidden="true" />
-              <div className="space-y-1">
-                <h2 className="text-sm font-semibold text-ink">
-                  {overview.incidents.length}{" "}
-                  {overview.incidents.length === 1 ? "Active Incident" : "Active Incidents"} Requiring
-                  Attention
-                </h2>
-                <div className="space-y-2 pt-1">
-                  {overview.incidents.map((inc) => (
-                    <Link
-                      key={inc.id}
-                      href={`/branches/${branchId}/incidents/${inc.id}`}
-                      className="flex min-h-11 flex-col gap-1 rounded-md border border-negative/30 bg-surface/80 px-3 py-2 text-xs transition-colors hover:border-negative focus-visible:outline-2 focus-visible:outline-accent sm:flex-row sm:items-center sm:justify-between"
-                    >
-                      <span className="min-w-0 text-muted">
-                        <span className="font-semibold text-ink">{inc.title}:</span>{" "}
-                        {inc.description}
-                      </span>
-                      <span className="shrink-0 font-semibold text-accent">
-                        Inspect &rarr;
-                      </span>
-                    </Link>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
+          <ActiveIncidentsBanner branchId={branchId} incidents={overview.incidents} />
         ) : (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface p-4">
             <div className="flex items-center gap-2.5">

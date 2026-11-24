@@ -307,7 +307,7 @@ export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
               <div>
                 <h2 className="text-base font-semibold text-ink">Branch Map Location</h2>
                 <p className="mt-1 text-xs text-muted">
-                  Use the interactive map to pin coordinates for customer navigation and overview. Map defaults to Malaysia.
+                  Search for an address or click the map to pin coordinates for customer navigation and overview.
                 </p>
               </div>
 
@@ -315,6 +315,8 @@ export function BranchCreateForm({ managers }: { managers: ManagerOption[] }) {
                 latitude={values.latitude}
                 longitude={values.longitude}
                 onChange={(lat, lng) => setValues(v => ({ ...v, latitude: lat, longitude: lng }))}
+                allowAddressSearch
+                addressContext={[values.address, values.city, values.region].filter(Boolean).join(", ")}
               />
               <input type="hidden" name="latitude" value={values.latitude} />
               <input type="hidden" name="longitude" value={values.longitude} />

@@ -113,6 +113,7 @@ describe("BranchDetailsForm component", () => {
     expect(text).toContain("MSU Shah Alam");
     expect(text).toContain("Operating Hours");
     expect(text).toContain("Address &amp; Location");
+    expect(text).toContain("Branch Map Location");
     expect(text).toContain("Siti Manager");
     expect(text).toContain("Unpublished (owner only)");
     expect(text).not.toContain("Delete Branch");

@@ -142,7 +142,7 @@ class EdgeSyncWorker:
                     arguments = command["arguments"]
                     expires_at = datetime.fromisoformat(command["expires_at"].replace("Z", "+00:00"))
                     if (expires_at.tzinfo is None or expires_at <= datetime.now(timezone.utc)
-                            or action not in {"start", "pause", "resume", "stop", "set_settings", "clear_fault", "start_maintenance"}
+                            or action not in {"start", "pause", "resume", "stop", "set_settings", "delete_program", "clear_fault", "start_maintenance"}
                             or not isinstance(arguments, dict)):
                         continue
                     with self.get_db_connection().cursor() as cursor:

@@ -257,7 +257,11 @@ def test_create_maintenance_log_with_return_to_service_queues_clear_fault(monkey
     )
 
 
-def test_create_maintenance_log_return_to_service_rejects_running_machine(monkeypatch):
+@pytest.mark.parametrize("state_value", ["idle", "running", "error"])
+@pytest.mark.parametrize("return_to_service", [False, True])
+def test_create_maintenance_log_rejects_non_maintenance_states(
+    monkeypatch, state_value, return_to_service
+):
     conn = MagicMock()
     conn.execute.return_value.fetchone.side_effect = [
         {
@@ -269,11 +273,9 @@ def test_create_maintenance_log_return_to_service_rejects_running_machine(monkey
             "gateway_status": "active",
         },
         {
-            "state_payload": {"state": "running"},
+            "state_payload": {"state": state_value},
             "cloud_seen_at": datetime.now(timezone.utc),
         },
-        {"service_status": "open"},
-        None,
     ]
 
     monkeypatch.setattr(maintenance_logs, "_database", _mock_db(conn))
@@ -288,7 +290,7 @@ def test_create_maintenance_log_return_to_service_rejects_running_machine(monkey
         technician_name="Ali Technician",
         work_done="Checked valve.",
         outcome="completed",
-        return_to_service=True,
+        return_to_service=return_to_service,
     )
     with pytest.raises(HTTPException) as err:
         maintenance_logs.create_machine_maintenance_log(

@@ -55,6 +55,7 @@ export function MachineMaintenancePanel({
   }, []);
 
   const isFresh = machine.freshness === "fresh";
+  const isMaintenanceMode = effectiveStatus === "MAINTENANCE";
   const canIssueCommand =
     branchOpen &&
     !serviceError &&
@@ -65,10 +66,8 @@ export function MachineMaintenancePanel({
 
   const canStartMaintenance =
     canIssueCommand && (effectiveStatus === "ERROR" || effectiveStatus === "IDLE");
-  const canReturnToIdle = canIssueCommand && effectiveStatus === "MAINTENANCE";
-  const canReturnToService =
-    canIssueCommand &&
-    (effectiveStatus === "ERROR" || effectiveStatus === "MAINTENANCE");
+  const canReturnToIdle = canIssueCommand && isMaintenanceMode;
+  const canReturnToService = canIssueCommand && isMaintenanceMode;
 
   const cmdToastId = `machine-maint-${machine.source_id}`;
   const logToastId = `machine-log-${machine.source_id}`;
@@ -182,6 +181,16 @@ export function MachineMaintenancePanel({
   };
 
   const submitLog = async (returnToService: boolean) => {
+    if (!isMaintenanceMode) {
+      notify({
+        id: logToastId,
+        kind: "error",
+        title: "Maintenance mode required",
+        message: "Put the machine into maintenance mode before saving a maintenance log.",
+      });
+      return;
+    }
+
     const trimmedCode = errorCode.trim();
     const trimmedTech = technicianName.trim();
     const trimmedWork = workDone.trim();
@@ -290,7 +299,7 @@ export function MachineMaintenancePanel({
   };
 
   const shouldReturnToIdleOnSubmit =
-    machine.source === "simulated" && effectiveStatus !== "IDLE";
+    machine.source === "simulated" && isMaintenanceMode;
 
   const handleFormSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -301,7 +310,7 @@ export function MachineMaintenancePanel({
     <section className="space-y-4 rounded-md border border-line bg-surface p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-2">
-          <h3 className="text-sm font-semibold text-ink">
+          <h3 className="text-base font-semibold tracking-tight text-ink sm:text-lg">
             Maintenance &amp; Repair Log
           </h3>
           {effectiveStatus === "MAINTENANCE" && (
@@ -341,90 +350,104 @@ export function MachineMaintenancePanel({
         )}
       </div>
 
-      <form
-        noValidate
-        onSubmit={handleFormSubmit}
-        className="space-y-4 rounded-md border border-rule bg-raised/40 p-3.5 sm:p-4"
-      >
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <label className="flex min-w-0 flex-col gap-1.5 text-xs font-medium text-ink">
-            <span>Error code</span>
-            <input
-              type="text"
-              name="error_code"
-              value={errorCode}
-              onChange={(e) => {
-                setCustomErrorCode(e.target.value);
-              }}
-              required
-              minLength={1}
-              maxLength={64}
-              placeholder="e.g. E01 or MAINT"
-              className="min-h-11 w-full rounded-md border border-control bg-canvas px-3 py-2 font-mono text-sm text-ink placeholder:text-faint focus-visible:outline-2 focus-visible:outline-accent"
-            />
-          </label>
-
-          <label className="flex min-w-0 flex-col gap-1.5 text-xs font-medium text-ink">
-            <span>Employee name</span>
-            <input
-              type="text"
-              name="technician_name"
-              value={technicianName}
-              onChange={(e) => setTechnicianName(e.target.value)}
-              required
-              minLength={2}
-              maxLength={120}
-              placeholder="Technician or staff full name"
-              className="min-h-11 w-full rounded-md border border-control bg-canvas px-3 py-2 text-sm text-ink placeholder:text-faint focus-visible:outline-2 focus-visible:outline-accent"
-            />
-          </label>
-        </div>
-
-        <label className="flex flex-col gap-1.5 text-xs font-medium text-ink">
-          <span>Tasks carried out</span>
-          <textarea
-            name="work_done"
-            rows={5}
-            value={workDone}
-            onChange={(e) => setWorkDone(e.target.value)}
-            data-maint-primary-focus={!canStartMaintenance ? "true" : undefined}
-            required
-            minLength={3}
-            maxLength={4000}
-            placeholder="Record inspection steps, parts cleaned or replaced, and verification results."
-            className="w-full rounded-md border border-control bg-canvas px-3 py-2.5 text-sm leading-relaxed text-ink placeholder:text-faint focus-visible:outline-2 focus-visible:outline-accent"
-          />
-        </label>
-
-        <div className="flex flex-col gap-2.5 sm:flex-row sm:flex-wrap sm:items-center">
-          {shouldReturnToIdleOnSubmit ? (
-            <button
-              type="submit"
-              disabled={isSavingLog || isCommandPending || !canReturnToService}
-              className="inline-flex min-h-11 min-w-11 w-full items-center justify-center rounded-md border border-ink bg-ink px-4 py-2 text-xs font-semibold text-surface transition-colors enabled:hover:border-muted enabled:hover:bg-muted focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted sm:w-auto"
-            >
-              {isSavingLog
-                ? "Completing..."
-                : "Log maintenance & return to idle"}
-            </button>
-          ) : (
-            <button
-              type="submit"
-              disabled={isSavingLog || isCommandPending}
-              className="inline-flex min-h-11 min-w-11 w-full items-center justify-center rounded-md border border-ink bg-ink px-4 py-2 text-xs font-semibold text-surface transition-colors enabled:hover:border-muted enabled:hover:bg-muted focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted sm:w-auto"
-            >
-              {isSavingLog ? "Saving..." : "Save maintenance log"}
-            </button>
-          )}
-
+      {!isMaintenanceMode ? (
+        <div className="flex flex-col gap-3 rounded-md border border-rule bg-raised/40 p-3.5 sm:flex-row sm:items-center sm:justify-between sm:p-4">
+          <p className="text-xs leading-relaxed text-muted">
+            Put this machine into maintenance mode before logging repair work.
+          </p>
           <Link
             href={historyHref}
-            className="inline-flex min-h-11 items-center justify-center text-xs font-medium text-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent sm:ml-auto"
+            className="inline-flex min-h-11 shrink-0 items-center justify-center text-xs font-medium text-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
           >
             View maintenance history →
           </Link>
         </div>
-      </form>
+      ) : (
+        <form
+          noValidate
+          onSubmit={handleFormSubmit}
+          className="space-y-4 rounded-md border border-rule bg-raised/40 p-3.5 sm:p-4"
+        >
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <label className="flex min-w-0 flex-col gap-1.5 text-xs font-medium text-ink">
+              <span>Error code</span>
+              <input
+                type="text"
+                name="error_code"
+                value={errorCode}
+                onChange={(e) => {
+                  setCustomErrorCode(e.target.value);
+                }}
+                required
+                minLength={1}
+                maxLength={64}
+                placeholder="e.g. E01 or MAINT"
+                className="min-h-11 w-full rounded-md border border-control bg-canvas px-3 py-2 font-mono text-sm text-ink placeholder:text-faint focus-visible:outline-2 focus-visible:outline-accent"
+              />
+            </label>
+
+            <label className="flex min-w-0 flex-col gap-1.5 text-xs font-medium text-ink">
+              <span>Employee name</span>
+              <input
+                type="text"
+                name="technician_name"
+                value={technicianName}
+                onChange={(e) => setTechnicianName(e.target.value)}
+                required
+                minLength={2}
+                maxLength={120}
+                placeholder="Technician or staff full name"
+                className="min-h-11 w-full rounded-md border border-control bg-canvas px-3 py-2 text-sm text-ink placeholder:text-faint focus-visible:outline-2 focus-visible:outline-accent"
+              />
+            </label>
+          </div>
+
+          <label className="flex flex-col gap-1.5 text-xs font-medium text-ink">
+            <span>Tasks carried out</span>
+            <textarea
+              name="work_done"
+              rows={5}
+              value={workDone}
+              onChange={(e) => setWorkDone(e.target.value)}
+              data-maint-primary-focus={!canStartMaintenance ? "true" : undefined}
+              required
+              minLength={3}
+              maxLength={4000}
+              placeholder="Record inspection steps, parts cleaned or replaced, and verification results."
+              className="w-full rounded-md border border-control bg-canvas px-3 py-2.5 text-sm leading-relaxed text-ink placeholder:text-faint focus-visible:outline-2 focus-visible:outline-accent"
+            />
+          </label>
+
+          <div className="flex flex-col gap-2.5 sm:flex-row sm:flex-wrap sm:items-center">
+            {shouldReturnToIdleOnSubmit ? (
+              <button
+                type="submit"
+                disabled={isSavingLog || isCommandPending || !canReturnToService}
+                className="inline-flex min-h-11 min-w-11 w-full items-center justify-center rounded-md border border-ink bg-ink px-4 py-2 text-xs font-semibold text-surface transition-colors enabled:hover:border-muted enabled:hover:bg-muted focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted sm:w-auto"
+              >
+                {isSavingLog
+                  ? "Completing..."
+                  : "Log maintenance & return to idle"}
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={isSavingLog || isCommandPending}
+                className="inline-flex min-h-11 min-w-11 w-full items-center justify-center rounded-md border border-ink bg-ink px-4 py-2 text-xs font-semibold text-surface transition-colors enabled:hover:border-muted enabled:hover:bg-muted focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted sm:w-auto"
+              >
+                {isSavingLog ? "Saving..." : "Save maintenance log"}
+              </button>
+            )}
+
+            <Link
+              href={historyHref}
+              className="inline-flex min-h-11 items-center justify-center text-xs font-medium text-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent sm:ml-auto"
+            >
+              View maintenance history →
+            </Link>
+          </div>
+        </form>
+      )}
     </section>
   );
 }

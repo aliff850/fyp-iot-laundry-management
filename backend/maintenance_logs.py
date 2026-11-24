@@ -184,6 +184,21 @@ def create_machine_maintenance_log(
             if latest and isinstance(latest.get("state_payload"), dict)
             else None
         )
+        seen_at = _utc(latest.get("cloud_seen_at")) if latest else None
+        if (
+            not latest_payload
+            or not seen_at
+            or datetime.now(timezone.utc) - seen_at > timedelta(seconds=45)
+        ):
+            raise HTTPException(
+                409,
+                "Machine must be online and in maintenance mode before logging work",
+            )
+        if latest_payload.get("state") != "maintenance":
+            raise HTTPException(
+                409,
+                "Put machine into maintenance mode before saving a maintenance log",
+            )
 
         command_result: dict[str, Any] | None = None
         if body.return_to_service:
@@ -205,16 +220,6 @@ def create_machine_maintenance_log(
             ).fetchone()
             if pending:
                 raise HTTPException(409, "Another machine command is pending")
-            seen_at = _utc(latest.get("cloud_seen_at")) if latest else None
-            if (
-                not latest_payload
-                or not seen_at
-                or datetime.now(timezone.utc) - seen_at > timedelta(seconds=45)
-            ):
-                raise HTTPException(409, "Machine is unavailable")
-            current_state = latest_payload.get("state")
-            if current_state not in {"error", "maintenance"}:
-                raise HTTPException(409, "Machine state does not allow returning to service")
 
             cmd_id = body.command_request_id or uuid4()
             conn.execute(

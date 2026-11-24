@@ -1,17 +1,8 @@
 "use client";
 
-import React, { useTransition } from "react";
-import {
-  Play,
-  Pause,
-  Square,
-  SlidersHorizontal,
-} from "lucide-react";
-import {
-  requestRemoteMachineCommand,
-  type RemoteMachine,
-} from "@/app/branches/[branchId]/machines/actions";
-import { useActionToast } from "@/components/workspace/common/ActionToastContext";
+import React from "react";
+import { SlidersHorizontal } from "lucide-react";
+import type { RemoteMachine } from "@/app/branches/[branchId]/machines/actions";
 
 export type MachineModalTab = "diagnostics" | "statistics" | "programs" | "parameters";
 
@@ -205,34 +196,12 @@ export function getMachineStatusBadge(machine: RemoteMachine): {
 
 export function MachineCard({
   machine,
-  branchId,
-  branchOpen,
-  role,
-  serviceError,
   onOpenDetails,
-  onCommandSent,
 }: MachineCardProps) {
-  const { notify } = useActionToast();
-  const [isPending, startTransition] = useTransition();
-
   const isFresh = machine.freshness === "fresh";
   const badge = getMachineStatusBadge(machine);
   const effectiveStatus = badge.effectiveStatus;
   const isWasher = machine.type !== "dryer";
-
-  const canControl =
-    branchOpen &&
-    !serviceError &&
-    !isPending &&
-    role !== "machine_maintenance" &&
-    machine.source === "simulated" &&
-    isFresh;
-
-  const canStart =
-    canControl && (effectiveStatus === "IDLE" || effectiveStatus === "PAUSED");
-  const canPause = canControl && effectiveStatus === "RUNNING";
-  const canStop =
-    canControl && (effectiveStatus === "RUNNING" || effectiveStatus === "PAUSED");
 
   const remainingSecs =
     isFresh && typeof machine.data?.remaining_seconds === "number"
@@ -274,9 +243,6 @@ export function MachineCard({
         ? "Washer"
         : "Dryer";
 
-  const showCycleControls =
-    machine.source === "simulated" && role !== "machine_maintenance";
-
   const renderRowBox = (rows: readonly [string, string][]) => (
     <dl className="flex flex-col justify-between gap-2.5 rounded-md border border-line bg-raised/40 p-3.5 md:p-4">
       {rows.map(([label, valText], idx) => (
@@ -295,51 +261,6 @@ export function MachineCard({
       ))}
     </dl>
   );
-
-  const handleCardCommand = (action: "pause" | "resume" | "stop") => {
-    if (!canControl) return;
-    if (
-      action === "stop" &&
-      !window.confirm(`Request stop for ${machine.label}?`)
-    ) {
-      return;
-    }
-    const toastId = `machine-card-${machine.source_id}`;
-    const verb =
-      action === "resume" ? "Resuming" : action === "pause" ? "Pausing" : "Stopping";
-    notify({
-      id: toastId,
-      kind: "info",
-      title: `${verb} ${machine.label}`,
-      message: "Sending command to gateway...",
-    });
-    startTransition(async () => {
-      const requestId = crypto.randomUUID();
-      const result = await requestRemoteMachineCommand(
-        branchId,
-        machine.source_id,
-        requestId,
-        action,
-        {},
-      );
-      if (!result.ok) {
-        notify({
-          id: toastId,
-          kind: "error",
-          title: `Failed to ${action} ${machine.label}`,
-          message: result.message || `Failed to execute ${action}`,
-        });
-        return;
-      }
-      notify({
-        id: toastId,
-        kind: "success",
-        title: `${action.charAt(0).toUpperCase() + action.slice(1)} queued`,
-        message: `${machine.label} command status: ${result.value.status}.`,
-      });
-      onCommandSent?.();
-    });
-  };
 
   return (
     <article
@@ -399,52 +320,8 @@ export function MachineCard({
         ])}
       </div>
 
-      {/* Tier 3: Action Controls & Modal Trigger Footer */}
-      <div className="flex flex-col gap-3 border-t border-rule pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-        {showCycleControls && (
-          <div
-            role="group"
-            aria-label="Cycle controls"
-            className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center"
-          >
-            <button
-              type="button"
-              disabled={!canStart}
-              onClick={() => {
-                if (effectiveStatus === "PAUSED") {
-                  handleCardCommand("resume");
-                } else {
-                  onOpenDetails(machine, "diagnostics");
-                }
-              }}
-              className="inline-flex min-h-11 min-w-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-3.5 py-2 text-xs font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted"
-            >
-              <Play className="size-3.5 shrink-0" aria-hidden="true" />
-              <span>{effectiveStatus === "PAUSED" ? "Resume" : "Start"}</span>
-            </button>
-
-            <button
-              type="button"
-              disabled={!canPause}
-              onClick={() => handleCardCommand("pause")}
-              className="inline-flex min-h-11 min-w-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-xs font-medium text-ink transition-colors duration-150 enabled:hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted"
-            >
-              <Pause className="size-3.5 shrink-0" aria-hidden="true" />
-              <span>Pause</span>
-            </button>
-
-            <button
-              type="button"
-              disabled={!canStop}
-              onClick={() => handleCardCommand("stop")}
-              className="inline-flex min-h-11 min-w-11 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-negative bg-negative px-3.5 py-2 text-xs font-semibold text-surface transition-colors duration-150 enabled:hover:border-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted"
-            >
-              <Square className="size-3.5 shrink-0" aria-hidden="true" />
-              <span>Stop</span>
-            </button>
-          </div>
-        )}
-
+      {/* Tier 3: Modal Trigger Footer */}
+      <div className="flex flex-col gap-3 border-t border-rule pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
           <button
             type="button"

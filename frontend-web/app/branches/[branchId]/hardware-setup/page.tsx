@@ -12,7 +12,7 @@ import {
 } from "@/lib/auth/business";
 import { Notice } from "@/components/auth/AuthForm";
 
-export const metadata: Metadata = { title: "Hardware Setup · SpinSense" };
+export const metadata: Metadata = { title: "Hardware Setup" };
 export const dynamic = "force-dynamic";
 
 interface HardwareSetupPageProps {

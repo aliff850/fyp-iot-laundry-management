@@ -1,7 +1,7 @@
 """Protected cloud machine state and command boundary for approved simulators."""
 
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import re
@@ -31,7 +31,16 @@ class EdgeMachineState(BaseModel):
 
 class OperatorMachineCommand(BaseModel):
     request_id: UUID
-    action: Literal["start", "pause", "resume", "stop", "set_settings", "clear_fault", "start_maintenance"]
+    action: Literal[
+        "start",
+        "pause",
+        "resume",
+        "stop",
+        "set_settings",
+        "delete_program",
+        "clear_fault",
+        "start_maintenance",
+    ]
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -328,9 +337,9 @@ def create_machine_command(branch_id: UUID, source_id: str, body: OperatorMachin
                            user=Depends(_user)):
     with _database() as conn:
         allowed_roles = (
-            ("owner", "branch_manager", "machine_maintenance")
-            if body.action in {"start_maintenance", "clear_fault"}
-            else ("owner", "branch_manager")
+            ("owner", "branch_manager")
+            if body.action in {"set_settings", "delete_program"}
+            else ("owner", "branch_manager", "machine_maintenance")
         )
         member, _ = _authorize_branch_access(conn, user["id"], branch_id, allowed_roles)
         branch_state = conn.execute("select service_status from public.branches where id=%s", (branch_id,)).fetchone()
@@ -367,45 +376,119 @@ def create_machine_command(branch_id: UUID, source_id: str, body: OperatorMachin
         state = latest["state_payload"].get("state")
         allowed = {"start": {"idle"}, "pause": {"running"}, "resume": {"paused"},
             "stop": {"running", "paused"}, "set_settings": {"idle"},
+            "delete_program": {"idle"},
             "start_maintenance": {"error", "idle"}, "clear_fault": {"error", "maintenance"}}
         if state not in allowed[body.action]:
             raise HTTPException(409, "Machine state does not allow this action")
-        if body.action not in {"set_settings", "start"} and body.arguments:
+        if body.action not in {"set_settings", "start", "delete_program"} and body.arguments:
             raise HTTPException(422, "Unexpected command arguments")
         if body.action == "set_settings":
-            if device["device_type"] != "washer":
+            device_type = device["device_type"]
+            if device_type not in {"washer", "dryer", "washer_dryer"}:
                 raise HTTPException(422, "Settings are not supported for this machine type")
             try:
                 settings = body.arguments
-                required = {"program_id", "price_myr", "duration_seconds",
-                            "target_temperature_c", "water_level", "spin_rpm"}
-                if set(settings) not in (required, required | {"name"}):
-                    raise ValueError("Incomplete program settings")
-                if not isinstance(settings["program_id"], str) or not re.fullmatch(r"(?:quick|standard|p_[a-f0-9]{12})", settings["program_id"]):
+                if not isinstance(settings, dict):
+                    raise ValueError("Invalid program payload")
+                is_create = settings.get("create", False)
+                if type(is_create) is not bool:
+                    raise ValueError("Invalid program creation flag")
+
+                base_required = {"program_id", "price_myr", "duration_seconds", "target_temperature_c"}
+                wash_fields = {"water_level", "spin_rpm"}
+                if device_type == "dryer":
+                    if (
+                        ("water_level" in settings and settings["water_level"] is not None)
+                        or ("spin_rpm" in settings and settings["spin_rpm"] is not None)
+                    ):
+                        raise ValueError("Dry-only machine has no wash settings")
+                    allowed_keys = {
+                        k for k, v in settings.items()
+                        if not (k in wash_fields and v is None)
+                    }
+                    valid_sets = (
+                        base_required,
+                        base_required | {"name"},
+                        base_required | {"create"},
+                        base_required | {"name", "create"},
+                    )
+                    if allowed_keys not in valid_sets:
+                        raise ValueError("Incomplete dryer program settings")
+                else:
+                    required = base_required | wash_fields
+                    valid_sets = (
+                        required,
+                        required | {"name"},
+                        required | {"create"},
+                        required | {"name", "create"},
+                    )
+                    if set(settings) not in valid_sets:
+                        raise ValueError("Incomplete program settings")
+
+                program_id = settings["program_id"]
+                if not isinstance(program_id, str) or not re.fullmatch(r"(?:quick|standard|p_[a-f0-9]{12})", program_id):
                     raise ValueError("Unsupported program")
+                if is_create and not program_id.startswith("p_"):
+                    raise ValueError("Custom program ID required when creating a program")
                 if "name" in settings and (not isinstance(settings["name"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 -]{0,17}", settings["name"])):
                     raise ValueError("Invalid program name")
-                if settings["program_id"].startswith("p_") and not settings.get("name"):
+                if program_id.startswith("p_") and not settings.get("name"):
                     raise ValueError("Custom program name required")
+
                 programs = latest["state_payload"].get("programs")
-                if not isinstance(programs, dict) or (settings["program_id"] not in programs and len(programs) >= 6):
-                    raise ValueError("Program catalog unavailable or full")
-                if settings["program_id"] not in programs:
-                    raise ValueError("Program not found")
-                from decimal import Decimal, InvalidOperation
+                if not isinstance(programs, dict):
+                    raise ValueError("Program catalog unavailable")
+                if is_create:
+                    if program_id in programs:
+                        raise HTTPException(409, "Program already exists")
+                    if len(programs) >= 6:
+                        raise HTTPException(409, "Program catalog limit of 6 reached")
+                elif program_id not in programs:
+                    raise HTTPException(409, "Program not found")
+
                 price = Decimal(str(settings["price_myr"]))
                 if (not price.is_finite() or not 0 <= price <= 999
                     or type(settings["duration_seconds"]) is not int
                     or not 1 <= settings["duration_seconds"] <= 7200
                     or type(settings["target_temperature_c"]) is not int
-                    or not 0 <= settings["target_temperature_c"] <= 90
-                    or settings["water_level"] not in {"low", "medium", "high"}
-                    or type(settings["spin_rpm"]) is not int
-                    or not 0 <= settings["spin_rpm"] <= 1200):
+                    or not 0 <= settings["target_temperature_c"] <= 90):
                     raise ValueError("Program setting out of range")
-                arguments = {**settings, "price_myr": str(price.quantize(Decimal("0.01")))}
+
+                normalized: dict[str, Any] = {
+                    "program_id": program_id,
+                    "price_myr": str(price.quantize(Decimal("0.01"))),
+                    "duration_seconds": settings["duration_seconds"],
+                    "target_temperature_c": settings["target_temperature_c"],
+                }
+                if "name" in settings:
+                    normalized["name"] = settings["name"]
+                if device_type == "dryer":
+                    normalized["water_level"] = None
+                    normalized["spin_rpm"] = None
+                else:
+                    if settings["water_level"] not in {"low", "medium", "high"}:
+                        raise ValueError("Invalid water level")
+                    if type(settings["spin_rpm"]) is not int or not 0 <= settings["spin_rpm"] <= 1200:
+                        raise ValueError("Invalid spin speed")
+                    normalized["water_level"] = settings["water_level"]
+                    normalized["spin_rpm"] = settings["spin_rpm"]
+                if is_create:
+                    normalized["create"] = True
+                arguments = normalized
+            except HTTPException:
+                raise
             except (ValueError, KeyError, TypeError, InvalidOperation) as exc:
                 raise HTTPException(422, "Invalid program settings") from exc
+        elif body.action == "delete_program":
+            if not isinstance(body.arguments, dict) or set(body.arguments) != {"program_id"}:
+                raise HTTPException(422, "Provide the custom program ID to delete")
+            program_id = body.arguments.get("program_id")
+            if not isinstance(program_id, str) or not re.fullmatch(r"p_[a-f0-9]{12}", program_id):
+                raise HTTPException(422, "Only custom programs can be deleted")
+            programs = latest["state_payload"].get("programs")
+            if not isinstance(programs, dict) or program_id not in programs:
+                raise HTTPException(409, "Program not found")
+            arguments = {"program_id": program_id}
         elif body.action == "start":
             program_id = body.arguments.get("program_id", "standard")
             if set(body.arguments) - {"program_id"} or not isinstance(program_id, str):

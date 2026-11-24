@@ -114,7 +114,7 @@ describe("branch maintenance history page UI", () => {
     expect(errHtml).toContain("Maintenance logs are temporarily unavailable.");
   });
 
-  it("shows Maintenance tab in BranchWorkspaceShell for machine roles and hides it for lpg_maintenance", () => {
+  it("shows Maintenance Logs tab in BranchWorkspaceShell for machine roles and hides it for lpg_maintenance", () => {
     const techHtml = renderToString(
       React.createElement(BranchWorkspaceShell, {
         branch: sampleBranch,
@@ -122,8 +122,9 @@ describe("branch maintenance history page UI", () => {
         userRole: "machine_maintenance",
       }),
     );
-    expect(techHtml).toContain("Maintenance");
+    expect(techHtml).toContain("Maintenance Logs");
     expect(techHtml).toContain("/branches/branch-1/maintenance");
+    expect(techHtml).not.toContain("·");
 
     const lpgHtml = renderToString(
       React.createElement(BranchWorkspaceShell, {

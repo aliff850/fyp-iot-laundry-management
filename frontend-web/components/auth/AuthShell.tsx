@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
+import Image from "next/image";
 import Link from "next/link";
-import { ArrowLeft, WashingMachine } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { textLink } from "@/lib/auth/styles";
 
 export function PublicShell({ children }: { children: ReactNode }) {
@@ -10,7 +11,15 @@ export function PublicShell({ children }: { children: ReactNode }) {
       <header className="border-b border-line bg-navy">
         <div className="mx-auto flex min-h-18 w-full max-w-360 items-center justify-between gap-4 px-4 md:px-6 xl:px-10">
           <Link href="/" aria-label="SpinSense home" className="inline-flex min-h-11 items-center gap-2.5 rounded-sm text-base font-semibold tracking-tight focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent">
-            <WashingMachine className="size-5 text-accent" aria-hidden="true" />
+            <Image
+              src="/spinsense.svg"
+              alt=""
+              width={24}
+              height={24}
+              unoptimized
+              aria-hidden="true"
+              className="size-6 shrink-0 rounded-full"
+            />
             SpinSense
           </Link>
           <span className="text-xs text-muted">Operator workspace</span>

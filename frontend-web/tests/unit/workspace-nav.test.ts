@@ -18,7 +18,7 @@ describe("WorkspaceNav component", () => {
     },
     {
       id: "personnel",
-      label: "Personnel",
+      label: "Organization",
       href: "/personnel",
       icon: Users,
       visible: true,
@@ -48,7 +48,7 @@ describe("WorkspaceNav component", () => {
 
     // Validates visible items and icons
     expect(text).toContain("Branches");
-    expect(text).toContain("Personnel");
+    expect(text).toContain("Organization");
     expect(text).not.toContain("Secret Admin");
 
     // Validates active vs inactive attributes and classes
@@ -120,7 +120,7 @@ describe("WorkspaceNav component", () => {
 
     // Validates the 4 major buttons
     expect(text).toContain("Branches");
-    expect(text).toContain("Personnel");
+    expect(text).toContain("Organization");
     expect(text).toContain("Account");
     expect(text).toContain("Sign Out");
   });
@@ -136,7 +136,7 @@ describe("WorkspaceNav component", () => {
       },
       {
         id: "personnel",
-        label: "Personnel",
+        label: "Organization",
         href: "/personnel",
         icon: Users,
         visible: false,
@@ -155,7 +155,7 @@ describe("WorkspaceNav component", () => {
     // 3 columns when personnel is hidden
     expect(text).toContain("grid-cols-3");
     expect(text).toContain("Branches");
-    expect(text).not.toContain("Personnel");
+    expect(text).not.toContain("Organization");
     expect(text).toContain("Account");
     expect(text).toContain("Sign Out");
 

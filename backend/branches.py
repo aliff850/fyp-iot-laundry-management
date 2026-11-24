@@ -113,6 +113,7 @@ def _membership(conn, user_id):
 
 
 def _branch(row):
+    manager_name = row.get("primary_manager_name")
     return {
         "id": str(row["id"]), "name": row["name"], "address": row["address"],
         "city": row["city"], "region": row["region"], "postal_code": row["postal_code"],
@@ -122,6 +123,7 @@ def _branch(row):
         "is_published": bool(row.get("is_published", False)),
         "weekly_hours": row.get("weekly_hours"),
         "primary_manager_user_id": str(row["primary_manager_user_id"]),
+        "primary_manager_name": manager_name.strip() or None if isinstance(manager_name, str) else None,
         "created_at": row["created_at"],
     }
 
@@ -137,7 +139,10 @@ def list_branches(user=Depends(_user)):
             raise HTTPException(403, "Branch access is unavailable")
         if owner:
             rows = conn.execute(
-                "select * from public.branches where organization_id=%s order by name, id",
+                """select b.*, p.full_name as primary_manager_name
+                   from public.branches b
+                   left join public.profiles p on p.user_id = b.primary_manager_user_id
+                   where b.organization_id=%s order by b.name, b.id""",
                 (member["organization_id"],),
             ).fetchall()
             counts = conn.execute(
@@ -152,8 +157,11 @@ def list_branches(user=Depends(_user)):
                        "pending_request_count": counts["pending_request_count"]}
         else:
             rows = conn.execute(
-                """select b.* from public.branches b join public.branch_assignments a
+                """select b.*, p.full_name as primary_manager_name
+                   from public.branches b
+                   join public.branch_assignments a
                      on a.branch_id=b.id and a.organization_id=b.organization_id
+                   left join public.profiles p on p.user_id = b.primary_manager_user_id
                    where b.organization_id=%s and a.user_id=%s order by b.name, b.id""",
                 (member["organization_id"], user["id"]),
             ).fetchall()
@@ -471,6 +479,7 @@ def get_branch_overview(branch_id: UUID, user=Depends(_user)):
         ]
 
         b_data = _branch(branch)
+        b_data["images"] = _fetch_branch_images(conn, branch_id, organization)
         b_data["primary_manager"] = {
             "user_id": str(branch["primary_manager_user_id"]),
             "full_name": branch["primary_manager_name"] or "Unknown",

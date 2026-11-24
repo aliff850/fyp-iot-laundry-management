@@ -492,7 +492,8 @@ export function BranchDetailsForm({
             </label>
           </div>
 
-          <div className="space-y-2 pt-2">
+          <div className="space-y-2.5 pt-2">
+            <h3 className="text-sm font-semibold text-ink">Branch Map Location</h3>
             <BranchLocationPicker
               latitude={latitude}
               longitude={longitude}
@@ -500,6 +501,8 @@ export function BranchDetailsForm({
                 setLatitude(lat);
                 setLongitude(lng);
               }}
+              allowAddressSearch={isOwner}
+              addressContext={[branch.address, branch.city, branch.region].filter(Boolean).join(", ")}
             />
             <input type="hidden" name="latitude" value={latitude} />
             <input type="hidden" name="longitude" value={longitude} />

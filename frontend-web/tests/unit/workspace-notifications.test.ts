@@ -178,6 +178,92 @@ describe("notificationLogic multi-branch transitions and merging", () => {
     expect(unread.unreadCount).toBe(1);
     expect(notificationVisuals(txEvent).kindLabel).toBe("Running");
   });
+
+  it("normalizes lowercase states, detects machine maintenance transitions, upgrades tx faults with incident_id, and compares timestamps by epoch", () => {
+    const seeded = detectNotificationTransitions(
+      null,
+      [makeDevice({ state: "error" as never, fault_code: "E01" })],
+      "2026-11-24T00:00:00Z",
+    );
+    expect(seeded.nextMap[`${BRANCH_A}:washer-01`].state).toBe("ERROR");
+
+    const maintStep = detectNotificationTransitions(
+      seeded.nextMap,
+      [makeDevice({ state: "maintenance" as never, fault_code: "E01", sample_at: "2026-11-24T00:00:10Z" })],
+      "2026-11-24T00:00:10Z",
+    );
+    expect(maintStep.triggeredEvents).toHaveLength(1);
+    expect(maintStep.triggeredEvents[0].kind).toBe("machine_maintenance");
+    expect(notificationVisuals(maintStep.triggeredEvents[0]).kindLabel).toBe("Maintenance");
+
+    const txFault: WorkspaceNotificationEvent = {
+      id: `tx:${BRANCH_A}:machine:washer-01:error:2026-11-24T00:00:00Z`,
+      branch_id: BRANCH_A,
+      branch_name: "MSU Shah Alam",
+      category: "machine",
+      kind: "machine_fault",
+      severity: "negative",
+      title: "Machine fault",
+      detail: "Washer 01 reported fault E01",
+      source_id: "washer-01",
+      device_label: "Washer 01",
+      occurred_at: "2026-11-24T00:00:00Z",
+      active: true,
+    };
+    const durableIncidentFault: WorkspaceNotificationEvent = {
+      ...txFault,
+      id: "incident:inc-e01",
+      incident_id: "inc-e01",
+      occurred_at: "2026-11-24T00:00:01.250000Z",
+    };
+
+    const merged = mergeNotificationEvents([durableIncidentFault], [txFault]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].id).toBe("incident:inc-e01");
+    expect(notificationHref(merged[0])).toBe(`/branches/${BRANCH_A}/incidents/inc-e01`);
+
+    // Ensure "12Z" is NOT falsely counted unread against "12.500Z" (ASCII 'Z' > '.')
+    const epochCheck = computeUnreadNotifications(
+      [{ ...txFault, occurred_at: "2026-11-24T00:00:12Z" }],
+      "2026-11-24T00:00:12.500Z",
+    );
+    expect(epochCheck.unreadCount).toBe(0);
+
+    // Durable maintcmd replaces transient tx maintenance notice, and maintlog routes to /maintenance
+    const txMaint: WorkspaceNotificationEvent = {
+      ...txFault,
+      id: `tx:${BRANCH_A}:machine:washer-01:maintenance:2026-11-24T00:01:00Z`,
+      kind: "machine_maintenance",
+      severity: "warning",
+      title: "Machine under maintenance",
+      occurred_at: "2026-11-24T00:01:00Z",
+    };
+    const durableMaintCmd: WorkspaceNotificationEvent = {
+      ...txMaint,
+      id: "maintcmd:cmd-1",
+      title: "Machine set to maintenance",
+      occurred_at: "2026-11-24T00:01:02Z",
+    };
+    const completedMaintLog: WorkspaceNotificationEvent = {
+      ...txFault,
+      id: "maintlog:log-1",
+      kind: "machine_maintenance_logged",
+      severity: "positive",
+      title: "Maintenance completed",
+      detail: "Washer 01 (E01) serviced by Ali Tech",
+      reference_code: "MNT-123456",
+      occurred_at: "2026-11-24T00:05:00Z",
+      active: false,
+    };
+
+    const mergedMaint = mergeNotificationEvents(
+      [durableMaintCmd, completedMaintLog],
+      [txMaint],
+    );
+    expect(mergedMaint.map((m) => m.id)).toEqual(["maintlog:log-1", "maintcmd:cmd-1"]);
+    expect(notificationVisuals(completedMaintLog).kindLabel).toBe("Serviced");
+    expect(notificationHref(completedMaintLog)).toBe(`/branches/${BRANCH_A}/maintenance`);
+  });
 });
 
 describe("WorkspaceShell header notification placement", () => {
@@ -203,6 +289,15 @@ describe("WorkspaceShell header notification placement", () => {
     expect(bellPos).toBeGreaterThan(navPos);
     expect(profilePos).toBeGreaterThan(bellPos);
     expect(html).toContain("min-h-11 min-w-11");
+    expect(html).toContain("rounded-full");
+    expect(html).toContain("fixed inset-x-0 top-0");
+    expect(html).not.toContain("<header className=\"fixed inset-x-0 top-0 z-30 border-b border-line bg-navy/95 backdrop-blur-md\"");
+    expect(html).not.toContain("bg-navy/95 backdrop-blur-md\"><div className=\"mx-auto flex min-h-16");
+    expect(html).toContain("hidden border-t border-line bg-canvas md:block");
+    expect(html).not.toContain("fixed inset-x-0 bottom-0");
+    expect(html).toContain("/spinsense.svg");
+    expect(html).not.toContain("lucide-washing-machine");
+    expect(html).toContain("© 2026 SpinSense");
   });
 
   it("hides notification bell when organization is missing or notificationsEnabled is false", () => {

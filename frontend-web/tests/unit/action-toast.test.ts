@@ -171,7 +171,7 @@ describe("Bottom-left floating ActionToast system", () => {
   });
 
   it("renders MachineMaintenancePanel safely without inline feedback banners", () => {
-    const html = renderToString(
+    const idleHtml = renderToString(
       React.createElement(MachineMaintenancePanel, {
         machine: washerFixture,
         effectiveStatus: "IDLE",
@@ -180,9 +180,24 @@ describe("Bottom-left floating ActionToast system", () => {
         defaultTechnicianName: "Ali Tech",
       }),
     );
-    expect(html).toContain("Put under maintenance");
-    expect(html).toContain("Save maintenance log");
-    expect(html).not.toContain('role="status"');
-    expect(html).not.toContain('role="alert"');
+    expect(idleHtml).toContain("Put under maintenance");
+    expect(idleHtml).toContain("Put this machine into maintenance mode before logging repair work.");
+    expect(idleHtml).not.toContain("Save maintenance log");
+    expect(idleHtml).not.toContain("Log maintenance &amp; return to idle");
+    expect(idleHtml).not.toContain('role="status"');
+    expect(idleHtml).not.toContain('role="alert"');
+
+    const maintHtml = renderToString(
+      React.createElement(MachineMaintenancePanel, {
+        machine: { ...washerFixture, state: "maintenance" },
+        effectiveStatus: "MAINTENANCE",
+        branchId: "branch-1",
+        branchOpen: true,
+        defaultTechnicianName: "Ali Tech",
+      }),
+    );
+    expect(maintHtml).toContain("Log maintenance &amp; return to idle");
+    expect(maintHtml).not.toContain('role="status"');
+    expect(maintHtml).not.toContain('role="alert"');
   });
 });

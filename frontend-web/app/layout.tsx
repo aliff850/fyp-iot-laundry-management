@@ -4,7 +4,7 @@ import { SessionCleanup } from "@/components/auth/SessionCleanup";
 import { ActionToastProvider } from "@/components/workspace/common/ActionToastContext";
 
 export const metadata: Metadata = {
-  title: { default: "SpinSense", template: "%s · SpinSense" },
+  title: { default: "SpinSense", template: "SpinSense | %s" },
   description: "Laundry operations, fuel monitoring and incident response for your team.",
   referrer: "strict-origin-when-cross-origin",
 };

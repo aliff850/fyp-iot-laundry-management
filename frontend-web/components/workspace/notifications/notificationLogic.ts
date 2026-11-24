@@ -106,8 +106,10 @@ export function notificationVisuals(item: Pick<WorkspaceNotificationEvent, "seve
           ? "Completed"
           : item.kind === "machine_stopped"
             ? "Stopped"
-            : item.kind === "lpg_maintenance"
+            : item.kind === "lpg_maintenance" || item.kind === "machine_maintenance"
               ? "Maintenance"
+              : item.kind === "machine_maintenance_logged" || item.kind === "lpg_maintenance_completed"
+                ? "Serviced"
               : item.kind === "lpg_gas_critical"
                 ? "Gas Leak"
                 : item.kind === "lpg_gas_warning"
@@ -135,8 +137,13 @@ export function formatNotificationTimestamp(iso: string | null | undefined): str
 }
 
 export function notificationHref(
-  item: Pick<WorkspaceNotificationEvent, "branch_id" | "category" | "incident_id">,
+  item: Pick<WorkspaceNotificationEvent, "branch_id" | "category" | "incident_id"> & {
+    kind?: string;
+  },
 ): string {
+  if (item.kind === "machine_maintenance_logged") {
+    return `/branches/${item.branch_id}/maintenance`;
+  }
   if (item.incident_id) {
     return `/branches/${item.branch_id}/incidents/${item.incident_id}`;
   }
@@ -173,18 +180,21 @@ export function detectNotificationTransitions(
     const label = dev.label || dev.source_id;
     const branchName = dev.branch_name || "Branch";
 
+    const stateUpper = String(dev.state || "UNKNOWN").trim().toUpperCase();
+    const isMaintMode = Boolean(dev.maintenance_mode) || stateUpper === "MAINTENANCE";
+
     nextMap[stateKey] = {
-      state: dev.state || "UNKNOWN",
+      state: stateUpper,
       fault_code: dev.fault_code || null,
       lpg_band: currBand,
       gas_condition: currGasCond,
-      maintenance_mode: Boolean(dev.maintenance_mode),
+      maintenance_mode: isMaintMode,
     };
 
     if (!seeded) continue;
 
     if (isMachine) {
-      if (dev.state === "RUNNING" && prev?.state !== "RUNNING") {
+      if (stateUpper === "RUNNING" && prev?.state !== "RUNNING") {
         const prog = formatNotificationProgram(dev.program_id);
         triggeredEvents.push({
           id: `tx:${dev.branch_id}:machine:${dev.source_id}:running:${occurredAt}`,
@@ -202,7 +212,7 @@ export function detectNotificationTransitions(
         });
       }
       if (
-        dev.state === "ERROR" &&
+        stateUpper === "ERROR" &&
         (prev?.state !== "ERROR" || (dev.fault_code && dev.fault_code !== prev?.fault_code))
       ) {
         triggeredEvents.push({
@@ -216,6 +226,24 @@ export function detectNotificationTransitions(
           detail: dev.fault_code
             ? `${label} reported fault ${dev.fault_code}`
             : `${label} broke down`,
+          source_id: dev.source_id,
+          device_label: label,
+          occurred_at: occurredAt,
+          active: true,
+        });
+      }
+      if (isMaintMode && !prev?.maintenance_mode && prev?.state !== "MAINTENANCE") {
+        triggeredEvents.push({
+          id: `tx:${dev.branch_id}:machine:${dev.source_id}:maintenance:${occurredAt}`,
+          branch_id: dev.branch_id,
+          branch_name: branchName,
+          category: "machine",
+          kind: "machine_maintenance",
+          severity: "warning",
+          title: "Machine under maintenance",
+          detail: dev.fault_code
+            ? `${label} under maintenance (${dev.fault_code})`
+            : `${label} is undergoing maintenance`,
           source_id: dev.source_id,
           device_label: label,
           occurred_at: occurredAt,
@@ -334,13 +362,18 @@ export function mergeNotificationEvents(
   const txList = (localEvents || []).filter(
     (item) => item && typeof item.id === "string" && item.id.startsWith("tx:"),
   );
+  const suppressedTxIds = new Set<string>();
   const byId = new Map<string, WorkspaceNotificationEvent>();
 
   for (const item of serverEvents || []) {
     if (!item || !item.id) continue;
-    if (item.id.startsWith("live:")) {
-      const liveMs = Date.parse(item.occurred_at || "");
-      const coveredByRecentTx = txList.some((tx) => {
+    const isLive = item.id.startsWith("live:");
+    const isIncident = item.id.startsWith("incident:");
+    const isMaintDurable =
+      item.id.startsWith("maintcmd:") || item.id.startsWith("lpgmaint:");
+    if (isLive || isIncident || isMaintDurable) {
+      const itemMs = Date.parse(item.occurred_at || "");
+      const matchingTx = txList.find((tx) => {
         if (
           tx.branch_id !== item.branch_id ||
           tx.source_id !== item.source_id ||
@@ -349,32 +382,54 @@ export function mergeNotificationEvents(
           return false;
         }
         const txMs = Date.parse(tx.occurred_at || "");
-        return Number.isFinite(liveMs) && Number.isFinite(txMs)
-          ? Math.abs(liveMs - txMs) <= 180_000
+        return Number.isFinite(itemMs) && Number.isFinite(txMs)
+          ? Math.abs(itemMs - txMs) <= 180_000
           : true;
       });
-      if (coveredByRecentTx) continue;
+      if (matchingTx) {
+        if ((isIncident && item.incident_id) || isMaintDurable) {
+          suppressedTxIds.add(matchingTx.id);
+        } else {
+          continue;
+        }
+      }
     }
     byId.set(item.id, item);
   }
 
   for (const item of localEvents || []) {
-    if (!item || !item.id || byId.has(item.id)) continue;
+    if (!item || !item.id || byId.has(item.id) || suppressedTxIds.has(item.id)) continue;
     byId.set(item.id, item);
   }
 
   return [...byId.values()]
-    .sort((a, b) => String(b.occurred_at || "").localeCompare(String(a.occurred_at || "")))
+    .sort((a, b) => {
+      const bMs = Date.parse(b.occurred_at || "");
+      const aMs = Date.parse(a.occurred_at || "");
+      if (Number.isFinite(bMs) && Number.isFinite(aMs) && bMs !== aMs) {
+        return bMs - aMs;
+      }
+      return String(b.occurred_at || "").localeCompare(String(a.occurred_at || ""));
+    })
     .slice(0, 200);
+}
+
+function isNewerThan(occurredAt: string | null | undefined, lastReadAt: string): boolean {
+  if (!occurredAt) return false;
+  if (!lastReadAt) return true;
+  const itemMs = Date.parse(occurredAt);
+  const readMs = Date.parse(lastReadAt);
+  if (Number.isFinite(itemMs) && Number.isFinite(readMs)) {
+    return itemMs > readMs;
+  }
+  return String(occurredAt) > String(lastReadAt);
 }
 
 export function computeUnreadNotifications(
   events: WorkspaceNotificationEvent[],
   lastReadAt: string,
 ) {
-  const unread = (events || []).filter(
-    (item) => !lastReadAt || (item.occurred_at && String(item.occurred_at) > String(lastReadAt)),
-  );
+  const unread = (events || []).filter((item) => isNewerThan(item.occurred_at, lastReadAt));
   return {
     unreadCount: unread.length,
     hasCriticalUnread: unread.some((item) => item.severity === "negative"),

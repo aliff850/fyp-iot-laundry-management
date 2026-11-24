@@ -13,7 +13,7 @@ import {
   getOrganizationPersonnel,
 } from "@/lib/auth/business";
 
-export const metadata: Metadata = { title: "Organization & Personnel" };
+export const metadata: Metadata = { title: "Organization" };
 export const dynamic = "force-dynamic";
 
 export default async function PersonnelPage() {
@@ -27,7 +27,7 @@ export default async function PersonnelPage() {
   if (!current.ok && current.status === 401) redirect("/login?next=%2Fpersonnel");
   if (!current.ok) {
     return (
-      <WorkspaceShell title="Personnel">
+      <WorkspaceShell title="Organization">
         <Notice>{current.message}</Notice>
       </WorkspaceShell>
     );
@@ -52,7 +52,7 @@ export default async function PersonnelPage() {
 
   return (
     <WorkspaceShell
-      title="Personnel"
+      title="Organization"
       organization={orgName}
       owner={owner}
       notificationsEnabled

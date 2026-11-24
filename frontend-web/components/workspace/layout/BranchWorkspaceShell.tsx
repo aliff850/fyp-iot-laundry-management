@@ -1,4 +1,5 @@
 import React, { type ReactNode } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { ArrowLeft, Clock, Phone } from "lucide-react";
 import { WorkspaceShell } from "@/components/workspace/layout/WorkspaceShell";
@@ -55,18 +56,18 @@ export function BranchWorkspaceShell({
       visible: isOwner || isManager || isMachineTech,
     },
     {
-      id: "maintenance",
-      label: "Maintenance",
-      href: `/branches/${branch.id}/maintenance`,
-      icon: "maintenance",
-      visible: isOwner || isManager || isMachineTech,
-    },
-    {
       id: "lpg",
       label: "LPG & Safety",
       href: `/branches/${branch.id}/lpg`,
       icon: "lpg",
       visible: isOwner || isManager || isLpgTech,
+    },
+    {
+      id: "maintenance",
+      label: "Maintenance Logs",
+      href: `/branches/${branch.id}/maintenance`,
+      icon: "maintenance",
+      visible: isOwner || isManager || isMachineTech,
     },
     {
       id: "customer-reports",
@@ -97,6 +98,8 @@ export function BranchWorkspaceShell({
       visible: isOwner || isManager,
     },
   ];
+
+  const headerImage = branch.images?.[0] ?? null;
 
   return (
     <WorkspaceShell
@@ -133,40 +136,55 @@ export function BranchWorkspaceShell({
           {/* Right Column: Hero Card & Active Tab Content */}
           <div className="min-w-0 flex-1 space-y-6 md:space-y-8">
             {/* Branch Identity & Meta Hero Card */}
-            <div className="rounded-md border border-line bg-surface p-5 md:p-6">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                <div className="space-y-1.5">
-                  <div className="flex flex-wrap items-center gap-2.5">
-                    <h1 className="text-2xl font-semibold tracking-tight text-ink">
-                      {branch.name}
-                    </h1>
-                    <span
-                      className={`rounded border px-2 py-0.5 text-xs font-medium ${
-                        branch.service_status === "open"
-                          ? "border-positive/30 bg-positive/10 text-positive"
-                          : "border-warning/30 bg-warning/10 text-warning"
-                      }`}
-                    >
-                      {branch.service_status === "open"
-                        ? "Open to customers"
-                        : "Closed to customers"}
-                    </span>
-                  </div>
-                  <p className="text-xs text-muted">
-                    {branch.address}, {branch.city}, {branch.region} {branch.postal_code}
-                  </p>
+            <div className="overflow-hidden rounded-md border border-line bg-surface">
+              {headerImage?.image_url && (
+                <div className="relative h-28 w-full overflow-hidden border-b border-rule bg-raised sm:h-36 md:h-40">
+                  <Image
+                    src={headerImage.image_url}
+                    alt={`${branch.name} cover photo`}
+                    fill
+                    unoptimized
+                    sizes="(max-width: 768px) 100vw, 1024px"
+                    className="object-cover"
+                  />
                 </div>
+              )}
 
-                {/* Quick Metadata Badge Group */}
-                <div className="flex flex-wrap items-center gap-3 text-xs text-muted sm:justify-end">
-                  <div className="flex items-center gap-1.5">
-                    <Clock className="size-3.5 text-faint" aria-hidden="true" />
-                    <span>{branch.opening_hours}</span>
+              <div className="p-5 md:p-6">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <h1 className="text-2xl font-semibold tracking-tight text-ink">
+                        {branch.name}
+                      </h1>
+                      <span
+                        className={`rounded border px-2 py-0.5 text-xs font-medium ${
+                          branch.service_status === "open"
+                            ? "border-positive/30 bg-positive/10 text-positive"
+                            : "border-warning/30 bg-warning/10 text-warning"
+                        }`}
+                      >
+                        {branch.service_status === "open"
+                          ? "Open to customers"
+                          : "Closed to customers"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted">
+                      {branch.address}, {branch.city}, {branch.region} {branch.postal_code}
+                    </p>
                   </div>
-                  <span className="text-line">·</span>
-                  <div className="flex items-center gap-1.5">
-                    <Phone className="size-3.5 text-faint" aria-hidden="true" />
-                    <span>{branch.contact_phone}</span>
+
+                  {/* Quick Metadata Badge Group */}
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted sm:justify-end">
+                    <div className="flex items-center gap-1.5">
+                      <Clock className="size-3.5 text-faint" aria-hidden="true" />
+                      <span>{branch.opening_hours}</span>
+                    </div>
+                    {/* Phone info */}
+                    <div className="flex items-center gap-1.5">
+                      <Phone className="size-3.5 text-faint" aria-hidden="true" />
+                      <span>{branch.contact_phone}</span>
+                    </div>
                   </div>
                 </div>
               </div>

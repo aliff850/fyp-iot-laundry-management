@@ -42,8 +42,14 @@ describe("BranchCreateForm component", () => {
 
     const text = raw.replace(/<!--.*?-->/g, "");
 
-    // 1. Centered layout
+    // 1. Centered layout & separated address + Branch Map Location section
     expect(raw).toContain("mx-auto max-w-3xl");
+    expect(text).toContain("Street address");
+    expect(text).toContain("City");
+    expect(text).toContain("State or region");
+    expect(text).toContain("Postal code");
+    expect(text).toContain("Branch Map Location");
+    expect(text).toContain("Search");
 
     // 2. Step indicators without middle-dots
     expect(raw).not.toContain("·");

@@ -114,6 +114,7 @@ export async function updateWorkspaceBranch(
   }
 
   revalidatePath("/branches");
+  revalidatePath(`/branches/${branchId}`, "layout");
   revalidatePath(`/branches/${branchId}`);
   revalidatePath(`/branches/${branchId}/details`);
   return {
@@ -153,6 +154,7 @@ export async function uploadBranchImageAction(
   }
 
   revalidatePath("/branches");
+  revalidatePath(`/branches/${branchId}`, "layout");
   revalidatePath(`/branches/${branchId}`);
   revalidatePath(`/branches/${branchId}/details`);
   return {
@@ -177,6 +179,7 @@ export async function setBranchCoverImageAction(
   }
 
   revalidatePath("/branches");
+  revalidatePath(`/branches/${branchId}`, "layout");
   revalidatePath(`/branches/${branchId}`);
   revalidatePath(`/branches/${branchId}/details`);
   return {
@@ -201,6 +204,7 @@ export async function deleteBranchImageAction(
   }
 
   revalidatePath("/branches");
+  revalidatePath(`/branches/${branchId}`, "layout");
   revalidatePath(`/branches/${branchId}`);
   revalidatePath(`/branches/${branchId}/details`);
   return {

@@ -5,6 +5,7 @@ import {
   BranchWorkspaceShell,
   type BranchWorkspaceTab,
 } from "@/components/workspace/layout/BranchWorkspaceShell";
+import { ActiveIncidentsBanner } from "@/components/workspace/overview/ActiveIncidentsBanner";
 import type { BranchDetail } from "@/lib/auth/business";
 
 const mockBranch: BranchDetail = {
@@ -134,5 +135,82 @@ describe("BranchWorkspaceShell component", () => {
     expect(text).not.toContain("Machines");
     expect(text).not.toContain("Analytics");
     expect(text).not.toContain("Branch Personnel");
+  });
+
+  it("renders branch header cover image when set and omits image box when absent", () => {
+    const withPhoto: BranchDetail = {
+      ...mockBranch,
+      images: [
+        {
+          id: "img-1",
+          image_url: "https://proj.supabase.co/storage/v1/object/public/branch-images/hero.jpg",
+          sort_order: 0,
+          created_at: "2026-10-27T00:00:00Z",
+        },
+      ],
+    };
+
+    const withPhotoHtml = renderToString(
+      React.createElement(BranchWorkspaceShell, {
+        branch: withPhoto,
+        activeTab: "overview",
+        userRole: "owner",
+      }),
+    );
+    expect(withPhotoHtml).toContain("https://proj.supabase.co/storage/v1/object/public/branch-images/hero.jpg");
+    expect(withPhotoHtml).toContain("MSU Shah Alam cover photo");
+
+    const withoutPhotoHtml = renderToString(
+      React.createElement(BranchWorkspaceShell, {
+        branch: mockBranch,
+        activeTab: "overview",
+        userRole: "owner",
+      }),
+    );
+    expect(withoutPhotoHtml).not.toContain("cover photo");
+  });
+
+  it("places Maintenance Logs navigation item beneath LPG & Safety", () => {
+    const html = renderToString(
+      React.createElement(BranchWorkspaceShell, {
+        branch: mockBranch,
+        activeTab: "overview",
+        userRole: "owner",
+      }),
+    );
+    const lpgPos = html.indexOf("LPG &amp; Safety");
+    const maintPos = html.indexOf("Maintenance Logs");
+    expect(lpgPos).toBeGreaterThan(-1);
+    expect(maintPos).toBeGreaterThan(lpgPos);
+  });
+
+  it("renders full-width sleek ActiveIncidentsBanner cards with Inspect Incident button and zero middle dots", () => {
+    const html = renderToString(
+      React.createElement(ActiveIncidentsBanner, {
+        branchId: mockBranch.id,
+        incidents: [
+          {
+            id: "inc-1",
+            reference_code: "INC-9001",
+            domain: "machine",
+            severity: "critical",
+            workflow_state: "open",
+            title: "Washer 01 (E01)",
+            description: "Water inlet failure detected during fill stage.",
+            created_at: "2026-11-23T10:00:00Z",
+          },
+        ],
+      }),
+    );
+    const text = html.replace(/<!--.*?-->/g, "");
+    expect(text).toContain("1 Active Incident Requiring Attention");
+    expect(text).toContain("Washer 01 (E01)");
+    expect(text).toContain("Water inlet failure detected during fill stage.");
+    expect(text).toContain("INC-9001");
+    expect(text).toContain("Critical");
+    expect(text).toContain("Inspect Incident");
+    expect(text).toContain(`/branches/${mockBranch.id}/incidents/inc-1`);
+    expect(text).toContain("w-full");
+    expect(text).not.toContain("·");
   });
 });

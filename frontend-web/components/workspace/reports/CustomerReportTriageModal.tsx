@@ -231,17 +231,14 @@ export function CustomerReportTriageModal({
                 Acting as: {formatActorRole(userRole)}
               </span>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
               <h2
                 id="triage-modal-title"
                 className="text-base font-semibold text-ink"
               >
                 {report.asset_name}
               </h2>
-              <span className="text-faint font-normal" aria-hidden="true">
-                ·
-              </span>
-              <span className="inline-flex items-center gap-1 text-xs font-semibold text-warning">
+              <span className="inline-flex items-center gap-1 rounded border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-semibold text-warning">
                 <AlertCircle className="size-3 text-warning shrink-0" aria-hidden="true" />
                 <span>{report.category}</span>
               </span>
@@ -490,12 +487,14 @@ export function CustomerReportTriageModal({
               {report.history.map(item => (
                 <li key={item.id} className="space-y-0.5 text-xs">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-semibold capitalize text-ink">
-                      {item.action} ·{" "}
-                      <span className="font-normal text-muted">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold capitalize text-ink">
+                        {item.action}
+                      </span>
+                      <span className="rounded border border-rule bg-surface px-1.5 py-0.5 text-[11px] font-normal text-muted">
                         {formatActorRole(item.actor_role)}
                       </span>
-                    </span>
+                    </div>
                     <span className="text-[11px] text-faint tabular-nums">
                       {formatTimestamp(item.timestamp)}
                     </span>

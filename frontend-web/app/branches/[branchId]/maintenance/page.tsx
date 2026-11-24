@@ -11,7 +11,7 @@ import {
   getRemoteMachines,
 } from "@/lib/auth/business";
 
-export const metadata: Metadata = { title: "Maintenance History" };
+export const metadata: Metadata = { title: "Maintenance Logs" };
 export const dynamic = "force-dynamic";
 
 interface BranchMaintenancePageProps {
@@ -107,7 +107,7 @@ export default async function BranchMaintenancePage({
     >
       <div className="space-y-6">
         <h2 className="text-2xl font-semibold tracking-tight text-ink">
-          Maintenance history
+          Maintenance logs
         </h2>
         <MaintenanceHistoryView
           branchId={branchId}

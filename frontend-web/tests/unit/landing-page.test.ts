@@ -28,7 +28,9 @@ describe("LandingPage component", () => {
     expect(raw).toMatch(/<a[^>]*min-h-11[^>]*href="\/login"/);
     expect(raw).toMatch(/<a[^>]*min-h-11[^>]*href="\/register"/);
 
-    // 4. No prohibited middle dots
+    // 4. Custom SVG brand logo and no prohibited middle dots
+    expect(raw).toContain("/spinsense.svg");
+    expect(raw).not.toContain("lucide-washing-machine");
     expect(raw).not.toContain("·");
   });
 });

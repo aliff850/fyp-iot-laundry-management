@@ -187,7 +187,7 @@ def _dispatch_alerts_for_device(
         )
         payload_json = json.dumps(
             {
-                "title": f"{alert['title']} · {branch_name}",
+                "title": f"{alert['title']} | {branch_name}",
                 "body": alert["detail"],
                 "branch_id": str(branch_id),
                 "branch_name": branch_name,

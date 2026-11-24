@@ -94,8 +94,8 @@ export function BranchMap({ branches, selectedId, onSelect }: { branches: Worksp
           <h3 id="branch-map-title" className="text-base font-semibold">Location Map</h3>
           <p className="mt-0.5 text-xs text-muted">
             {located.length > 0
-              ? `${located.length} of ${branches.length} locations mapped · OpenStreetMap`
-              : "Malaysia overview · OpenStreetMap"}
+              ? `${located.length} of ${branches.length} locations mapped on OpenStreetMap`
+              : "Malaysia overview on OpenStreetMap"}
           </p>
         </div>
         {located.length > 0 && (

@@ -26,6 +26,7 @@ const mockBranchOpen: WorkspaceBranch = {
   longitude: 101.5183,
   service_status: "open",
   primary_manager_user_id: "u-123",
+  primary_manager_name: "Aisyah Rahman",
   created_at: "2026-01-01T00:00:00Z",
 };
 
@@ -42,11 +43,12 @@ const mockBranchClosed: WorkspaceBranch = {
   longitude: null,
   service_status: "closed",
   primary_manager_user_id: "u-456",
+  primary_manager_name: null,
   created_at: "2026-01-02T00:00:00Z",
 };
 
 describe("BranchDirectoryCard component", () => {
-  it("renders branch name, address, hours, phone, and positive status badge for open branch", () => {
+  it("renders branch name, address, hours, branch manager, and positive status badge for open branch", () => {
     const raw = renderToString(
       React.createElement(BranchDirectoryCard, {
         branch: mockBranchOpen,
@@ -65,8 +67,9 @@ describe("BranchDirectoryCard component", () => {
     expect(text).toContain("Map pin active");
     expect(text).toContain("Working hours");
     expect(text).toContain("24 Hours");
-    expect(text).toContain("Contact phone");
-    expect(text).toContain("+603-5510-1234");
+    expect(text).toContain("Branch manager");
+    expect(text).toContain("Aisyah Rahman");
+    expect(text).not.toContain("Contact phone");
     expect(text).toContain("Dashboard");
 
     // Positive status badge styles
@@ -77,8 +80,10 @@ describe("BranchDirectoryCard component", () => {
     expect(raw).not.toContain("·");
     expect(raw).not.toContain("rounded-full bg-");
 
-    // Clear separation with structured responsive grid (grid-cols-1 sm:grid-cols-3)
-    expect(raw).toContain("grid-cols-1 gap-2 sm:grid-cols-3");
+    // Clear separation with stacked horizontal row layout and flex-row status badges
+    expect(raw).toContain("flex flex-row flex-wrap items-center gap-2");
+    expect(raw).toContain("mt-3.5 flex flex-col gap-2 border-t border-rule/70 pt-3");
+    expect(raw).toContain("sm:flex-row sm:items-center sm:justify-between");
     expect(raw).toContain("text-ink");
     expect(raw).toContain("text-muted");
 
@@ -105,6 +110,8 @@ describe("BranchDirectoryCard component", () => {
     expect(text).toContain("Subang Jaya Hub");
     expect(text).toContain("Closed to customers");
     expect(text).toContain("Location not set");
+    expect(text).toContain("Branch manager");
+    expect(text).toContain("Unassigned");
 
     // Selected state styling
     expect(raw).toContain("bg-navy");
@@ -151,6 +158,9 @@ describe("BranchDirectoryView component", () => {
     expect(text).toContain("Add branch");
     expect(text).toContain("MSU Shah Alam Prime");
     expect(text).toContain("Subang Jaya Hub");
+
+    // Equal 50/50 split between map and branch directory list on desktop
+    expect(raw.match(/lg:col-span-6/g)?.length).toBe(2);
 
     // Add branch link enforces min-h-11 touch target
     expect(raw).toMatch(/<a[^>]*min-h-11[^>]*href="\/branches\/new"/);

@@ -59,7 +59,7 @@ export function BranchDirectoryView({
   return (
     <div className="grid gap-6 lg:grid-cols-12">
       {/* Left Column: Interactive Map (always rendered) */}
-      <div className="relative z-0 flex flex-col lg:col-span-7 xl:col-span-7">
+      <div className="relative z-0 flex flex-col lg:col-span-6">
         <BranchMap
           branches={branches}
           selectedId={selectedId}
@@ -68,7 +68,7 @@ export function BranchDirectoryView({
       </div>
 
       {/* Right Column: Branch Directory List or Empty State */}
-      <div className="relative flex flex-col lg:col-span-5 xl:col-span-5">
+      <div className="relative flex flex-col lg:col-span-6">
         {branches.length === 0 ? (
           <section
             className="flex h-auto flex-col justify-between rounded-md border border-line bg-surface p-6 md:p-8 lg:absolute lg:inset-0"

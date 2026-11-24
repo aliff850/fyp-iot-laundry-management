@@ -126,7 +126,7 @@ export function CustomerReportCard({
                 <span>
                   Linked: {report.linked_incident.reference_code}
                   {report.linked_incident.fault_code
-                    ? ` · ${report.linked_incident.fault_code}`
+                    ? ` (${report.linked_incident.fault_code})`
                     : ""}
                 </span>
               </Link>
@@ -203,7 +203,6 @@ export function CustomerReportCard({
               <span>Reporter:</span>
               <span className="font-medium text-ink">{report.reporter_name}</span>
             </div>
-            <span className="hidden text-line sm:inline" aria-hidden="true">·</span>
             <div className="flex items-center gap-1.5">
               <Phone className="size-3 text-faint" aria-hidden="true" />
               <span>Phone:</span>

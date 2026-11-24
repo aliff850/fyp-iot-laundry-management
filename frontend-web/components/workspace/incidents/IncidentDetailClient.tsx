@@ -557,10 +557,18 @@ export function IncidentDetailClient({
                     </div>
                     <p className="mt-1 text-ink">{rep.description}</p>
                     {rep.contact_value && (
-                      <p className="mt-1 text-muted">
-                        Reporter contact: {rep.reporter_name ? `${rep.reporter_name} · ` : ""}
-                        {rep.contact_value}
-                      </p>
+                      <div className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 border-t border-rule/60 pt-2 text-muted sm:grid-cols-2">
+                        {rep.reporter_name && (
+                          <div className="min-w-0">
+                            <span className="text-faint">Reporter: </span>
+                            <span className="font-medium text-ink">{rep.reporter_name}</span>
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <span className="text-faint">Contact: </span>
+                          <span className="font-medium text-ink">{rep.contact_value}</span>
+                        </div>
+                      </div>
                     )}
                   </div>
                 ))}

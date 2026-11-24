@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { X, WashingMachine, Wind, ShieldAlert, Wrench } from "lucide-react";
+import { AlertTriangle, X, WashingMachine, Wind, ShieldAlert, Wrench } from "lucide-react";
 import {
   refreshRemoteMachineCommands,
   requestRemoteMachineCommand,
@@ -13,9 +13,9 @@ import {
   freshnessText,
   getMachineStatusBadge,
   programDisplayName,
-  sourceText,
   type MachineModalTab,
 } from "@/components/workspace/machines/MachineCard";
+import { MachineCountdownTimer } from "@/components/workspace/machines/MachineCountdownTimer";
 import { useActionToast } from "@/components/workspace/common/ActionToastContext";
 import { MachineMaintenancePanel } from "@/components/workspace/machines/MachineMaintenancePanel";
 import {
@@ -109,6 +109,77 @@ const CHART_PALETTE: ChartTokenName[] = [
   "control",
 ];
 
+function machineStatusTileTheme(
+  status: "RUNNING" | "IDLE" | "PAUSED" | "ERROR" | "MAINTENANCE" | "OFFLINE",
+): {
+  cardClass: string;
+  valueClass: string;
+  dotClass: string;
+} {
+  switch (status) {
+    case "RUNNING":
+      return {
+        cardClass: "border-positive/40 bg-positive/10",
+        valueClass: "text-positive",
+        dotClass: "bg-positive",
+      };
+    case "IDLE":
+      return {
+        cardClass: "border-control/50 bg-navy/70",
+        valueClass: "text-ink",
+        dotClass: "bg-control",
+      };
+    case "PAUSED":
+      return {
+        cardClass: "border-control/50 bg-navy-selected/50",
+        valueClass: "text-ink",
+        dotClass: "bg-control",
+      };
+    case "MAINTENANCE":
+      return {
+        cardClass: "border-warning/40 bg-warning/10",
+        valueClass: "text-warning",
+        dotClass: "bg-warning",
+      };
+    case "ERROR":
+      return {
+        cardClass: "border-negative/40 bg-negative/10",
+        valueClass: "text-negative",
+        dotClass: "bg-negative",
+      };
+    default:
+      return {
+        cardClass: "border-line bg-raised/40",
+        valueClass: "text-muted",
+        dotClass: "bg-muted",
+      };
+  }
+}
+
+function remainingEstimateTileTheme(
+  status: "RUNNING" | "IDLE" | "PAUSED" | "ERROR" | "MAINTENANCE" | "OFFLINE",
+): {
+  cardClass: string;
+  valueClass: string;
+} {
+  if (status === "RUNNING") {
+    return {
+      cardClass: "border-positive/40 bg-positive/10",
+      valueClass: "text-positive",
+    };
+  }
+  if (status === "PAUSED") {
+    return {
+      cardClass: "border-control/50 bg-navy-selected/50",
+      valueClass: "text-ink",
+    };
+  }
+  return {
+    cardClass: "border-line bg-raised/40",
+    valueClass: "text-muted",
+  };
+}
+
 function filterCommandsByPeriod(
   commands: RemoteMachineCommand[],
   period: HistoryPeriod,
@@ -162,6 +233,7 @@ export function MachineDetailModal({
   const { notify } = useActionToast();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const maintenanceSectionRef = useRef<HTMLDivElement>(null);
+  const postCommandTimersRef = useRef<number[]>([]);
   const [tab, setTab] = useState<MachineModalTab>(initialTab);
   const [selectedStartProgram, setSelectedStartProgram] = useState("");
   const [commands, setCommands] = useState<RemoteMachineCommand[]>([]);
@@ -169,6 +241,7 @@ export function MachineDetailModal({
   const [commandsError, setCommandsError] = useState(false);
   const [historyPeriod, setHistoryPeriod] = useState<HistoryPeriod>("week");
   const [historyPage, setHistoryPage] = useState(1);
+  const [confirmStartOpen, setConfirmStartOpen] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   // Statistics tab state
@@ -226,6 +299,15 @@ export function MachineDetailModal({
     };
   }, [branchId, machineId]);
 
+  useEffect(() => {
+    return () => {
+      for (const timerId of postCommandTimersRef.current) {
+        window.clearTimeout(timerId);
+      }
+      postCommandTimersRef.current = [];
+    };
+  }, []);
+
   const loadStatistics = async (period: StatsPeriod) => {
     if (!machine) return;
     if (!onFetchStatistics) {
@@ -257,6 +339,7 @@ export function MachineDetailModal({
   };
 
   const handleClose = () => {
+    setConfirmStartOpen(false);
     setCommands([]);
     onClose();
   };
@@ -275,14 +358,19 @@ export function MachineDetailModal({
   const badge = machine ? getMachineStatusBadge(machine) : null;
   const effectiveStatus = badge?.effectiveStatus ?? "OFFLINE";
   const isOperator = role !== "machine_maintenance";
-  const enabled =
+  const canTestMachine =
+    role === "owner" ||
+    role === "branch_manager" ||
+    role === "machine_maintenance";
+  const testEnabled =
     Boolean(machine) &&
     branchOpen &&
     !serviceError &&
-    isOperator &&
+    canTestMachine &&
     machine?.source === "simulated";
+  const enabled = testEnabled && isOperator;
 
-  const canControl = enabled && isFresh && !isPending;
+  const canControl = testEnabled && isFresh && !isPending;
 
   const programsMap = useMemo(
     () => machine?.data?.programs ?? {},
@@ -328,22 +416,11 @@ export function MachineDetailModal({
     clampedPage * pageSize,
   );
 
-  const sendCommand = (
+  const executeCommand = (
     action: "start" | "pause" | "resume" | "stop" | "clear_fault",
     args: Record<string, unknown> = {},
   ) => {
     if (!machine || !canControl) return;
-    const progName = programDisplayName(
-      selectedStartProgram,
-      programsMap[selectedStartProgram],
-    );
-    const confirmation =
-      action === "start"
-        ? `Start ${progName} on ${machine.label}?`
-        : `Request ${action.replaceAll("_", " ")} for ${machine.label}?`;
-    if (typeof window.confirm === "function" && !window.confirm(confirmation)) {
-      return;
-    }
     const toastId = `machine-modal-cmd-${machine.source_id}`;
     const actionLabel = action.replaceAll("_", " ");
     notify({
@@ -379,7 +456,28 @@ export function MachineDetailModal({
       const history = await refreshRemoteMachineCommands(branchId, machine.source_id);
       if (history.ok) setCommands(history.value);
       onCommandSent?.();
+      if (action === "start" || action === "stop" || action === "pause" || action === "resume") {
+        const t1 = window.setTimeout(() => onCommandSent?.(), 800);
+        const t2 = window.setTimeout(() => onCommandSent?.(), 1800);
+        postCommandTimersRef.current.push(t1, t2);
+      }
     });
+  };
+
+  const sendCommand = (
+    action: "start" | "pause" | "resume" | "stop" | "clear_fault",
+    args: Record<string, unknown> = {},
+  ) => {
+    if (!machine || !canControl) return;
+    if (action === "start") {
+      setConfirmStartOpen(true);
+      return;
+    }
+    const confirmation = `Request ${action.replaceAll("_", " ")} for ${machine.label}?`;
+    if (typeof window.confirm === "function" && !window.confirm(confirmation)) {
+      return;
+    }
+    executeCommand(action, args);
   };
 
   const openProgramForm = (id: string | null) => {
@@ -472,6 +570,7 @@ export function MachineDetailModal({
           title: "Program saved",
           message: `${machine.label} confirmed updated program settings.`,
         });
+        setEditorOpen(false);
         setSavingProgram(false);
         return;
       }
@@ -493,6 +592,98 @@ export function MachineDetailModal({
     }
   };
 
+  const handleDeleteProgram = async (programId: string, programLabel: string) => {
+    if (!machine || !/^p_[a-f0-9]{12}$/.test(programId) || savingProgram) return;
+    if (
+      typeof window.confirm === "function" &&
+      !window.confirm(`Delete custom program "${programLabel}" from ${machine.label}?`)
+    ) {
+      return;
+    }
+
+    const toastId = `machine-program-delete-${machine.source_id}`;
+    setSavingProgram(true);
+    notify({
+      id: toastId,
+      kind: "info",
+      title: "Deleting program",
+      message: `Removing ${programLabel} from ${machine.label}...`,
+    });
+    try {
+      const requestId = crypto.randomUUID();
+      const submitted = await requestRemoteMachineCommand(
+        branchId,
+        machine.source_id,
+        requestId,
+        "delete_program",
+        { program_id: programId },
+      );
+      if (!submitted.ok) {
+        notify({
+          id: toastId,
+          kind: "error",
+          title: "Program delete rejected",
+          message: submitted.message || "Failed to queue delete request.",
+        });
+        setSavingProgram(false);
+        return;
+      }
+      for (let attempt = 0; attempt < 15; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (!dialogRef.current?.open) return;
+        const history = await refreshRemoteMachineCommands(
+          branchId,
+          machine.source_id,
+        );
+        if (!history.ok) continue;
+        setCommands(history.value);
+        const record = history.value.find(
+          (item) => item.command_id === submitted.value.command_id,
+        );
+        if (!record || ["queued", "dispatched"].includes(record.status)) {
+          continue;
+        }
+        if (record.status !== "succeeded") {
+          notify({
+            id: toastId,
+            kind: "error",
+            title: `Delete ${record.status}`,
+            message: record.reason || "Machine did not delete custom program.",
+          });
+          setSavingProgram(record.status === "unknown");
+          return;
+        }
+        if (editingProgramId === programId) {
+          setEditorOpen(false);
+        }
+        onCommandSent?.();
+        notify({
+          id: toastId,
+          kind: "success",
+          title: "Program deleted",
+          message: `${programLabel} removed from ${machine.label}.`,
+        });
+        setSavingProgram(false);
+        return;
+      }
+      notify({
+        id: toastId,
+        kind: "error",
+        title: "Delete status unknown",
+        message: "Check command history before trying again.",
+      });
+    } catch {
+      notify({
+        id: toastId,
+        kind: "error",
+        title: "Program delete failed",
+        message: "Could not delete custom program.",
+      });
+    } finally {
+      setSavingProgram(false);
+    }
+  };
+
   if (!machine || !badge) {
     return <dialog ref={dialogRef} className="hidden" />;
   }
@@ -505,14 +696,21 @@ export function MachineDetailModal({
     isFresh && typeof machine.data?.remaining_seconds === "number"
       ? machine.data.remaining_seconds
       : null;
-  const remainingMins =
-    remainingSecs !== null ? Math.max(0, Math.ceil(remainingSecs / 60)) : null;
-  const remainingDisplay =
-    isFresh &&
-      remainingSecs !== null &&
-      ["RUNNING", "PAUSED"].includes(effectiveStatus)
-      ? `${remainingSecs} s (${remainingMins} min)`
-      : "—";
+  const activeProgramDuration =
+    typeof settings.duration_seconds === "number"
+      ? settings.duration_seconds
+      : selectedStartProgram &&
+          typeof programsMap[selectedStartProgram]?.duration_seconds === "number"
+        ? Number(programsMap[selectedStartProgram]?.duration_seconds)
+        : null;
+  const countdownInitialSeconds =
+    remainingSecs ??
+    (effectiveStatus === "RUNNING" ? activeProgramDuration : null);
+  const countdownKey = `${machine.source_id}:${
+    effectiveStatus === "RUNNING" || effectiveStatus === "PAUSED" ? "active" : "inactive"
+  }:${countdownInitialSeconds !== null ? "has" : "none"}`;
+  const statusTheme = machineStatusTileTheme(effectiveStatus);
+  const estimateTheme = remainingEstimateTileTheme(effectiveStatus);
 
   const selectedProgramRecord =
     editingProgramId && !creatingProgram
@@ -592,6 +790,12 @@ export function MachineDetailModal({
   return (
     <dialog
       ref={dialogRef}
+      onCancel={(event) => {
+        if (confirmStartOpen) {
+          event.preventDefault();
+          setConfirmStartOpen(false);
+        }
+      }}
       onClose={handleClose}
       aria-labelledby={`parameters-title-${machine.source_id}`}
       className="fixed inset-0 z-50 m-auto hidden h-11/12 w-11/12 max-w-none flex-col overflow-hidden rounded-md border border-control bg-surface p-4 text-ink shadow-2xl backdrop:bg-canvas/80 open:flex sm:p-6"
@@ -680,7 +884,7 @@ export function MachineDetailModal({
                     aria-hidden="true"
                   />
                   <div className="min-w-0 space-y-1">
-                    <h3 className="text-sm font-semibold text-ink">
+                    <h3 className="text-base font-semibold tracking-tight text-ink sm:text-lg">
                       Machine under maintenance
                     </h3>
                     <p className="text-xs text-muted">
@@ -716,7 +920,7 @@ export function MachineDetailModal({
                             machine.data?.fault_code ??
                             "FAULT"}
                         </span>
-                        <h3 className="text-sm font-semibold text-ink">
+                        <h3 className="text-base font-semibold tracking-tight text-ink sm:text-lg">
                           {machine.diagnosis?.title ??
                             machine.data?.fault_name ??
                             "Active Machine Fault"}
@@ -804,8 +1008,8 @@ export function MachineDetailModal({
               </div>
             )}
 
-            {/* Hardware Registration & Provenance Metadata Grid */}
-            <div className="grid grid-cols-2 gap-4 rounded-md border border-line bg-raised/30 p-4 sm:grid-cols-4">
+            {/* Hardware Registration & Freshness Metadata Grid */}
+            <div className="grid grid-cols-1 gap-4 rounded-md border border-line bg-raised/30 p-4 sm:grid-cols-3">
               <div className="min-w-0">
                 <span className="text-xs text-muted">Hardware Identity</span>
                 <p className="mt-1 break-all text-sm font-semibold text-ink">
@@ -819,12 +1023,6 @@ export function MachineDetailModal({
                 </p>
               </div>
               <div className="min-w-0">
-                <span className="text-xs text-muted">Source Provenance</span>
-                <p className="mt-1 break-words text-sm font-semibold text-ink">
-                  {sourceText(machine.source)}
-                </p>
-              </div>
-              <div className="min-w-0">
                 <span className="text-xs text-muted">Freshness &amp; Sample</span>
                 <p className="mt-1 break-words text-sm font-semibold text-ink">
                   {freshnessText(machine.freshness)} —{" "}
@@ -832,22 +1030,6 @@ export function MachineDetailModal({
                 </p>
               </div>
             </div>
-
-            {/* State Summary */}
-            <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div className="min-w-0 rounded-md border border-line bg-raised/40 p-3.5">
-                <dt className="text-sm text-muted">Machine status</dt>
-                <dd className="mt-1 break-words text-base font-medium text-ink">
-                  {badge.label}
-                </dd>
-              </div>
-              <div className="min-w-0 rounded-md border border-line bg-raised/40 p-3.5">
-                <dt className="text-sm text-muted">Remaining estimate</dt>
-                <dd className="mt-1 text-base font-medium tabular-nums text-ink">
-                  {remainingDisplay}
-                </dd>
-              </div>
-            </dl>
 
             {/* Sensor Grid (Unavailable until provider supplies verified readings) */}
             <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -881,19 +1063,44 @@ export function MachineDetailModal({
               </div>
             </dl>
 
-            {/* Operator Diagnostics & Controls */}
-            {isOperator && (
-              <div className="space-y-4 rounded-md border border-line bg-surface p-4">
-                <h3 className="text-xs font-semibold text-ink">
-                  Operator Diagnostics &amp; Controls
+            {/* Machine Testing */}
+            {canTestMachine && (
+              <section className="space-y-4 rounded-md border border-line bg-surface p-4">
+                <h3 className="text-base font-semibold tracking-tight text-ink sm:text-lg">
+                  Machine Testing
                 </h3>
+
+                {/* Live State & Countdown Summary inside Machine Testing */}
+                <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className={`min-w-0 rounded-md border p-3.5 ${statusTheme.cardClass}`}>
+                    <dt className="text-xs font-medium text-muted">Machine status</dt>
+                    <dd className={`mt-1.5 flex items-center gap-2 break-words text-base font-semibold ${statusTheme.valueClass}`}>
+                      <span
+                        className={`size-2 shrink-0 rounded-full ${statusTheme.dotClass}`}
+                        aria-hidden="true"
+                      />
+                      <span>{badge.label}</span>
+                    </dd>
+                  </div>
+                  <div className={`min-w-0 rounded-md border p-3.5 ${estimateTheme.cardClass}`}>
+                    <dt className="text-xs font-medium text-muted">Remaining estimate</dt>
+                    <dd className={`mt-1.5 text-base font-semibold tabular-nums ${estimateTheme.valueClass}`}>
+                      <MachineCountdownTimer
+                        key={countdownKey}
+                        initialSeconds={countdownInitialSeconds}
+                        isRunning={effectiveStatus === "RUNNING"}
+                        isPaused={effectiveStatus === "PAUSED"}
+                      />
+                    </dd>
+                  </div>
+                </dl>
 
                 <label className="flex w-full max-w-sm flex-col gap-2 text-sm font-medium text-ink">
                   Program for START
                   <select
                     value={selectedStartProgram}
                     disabled={
-                      !enabled ||
+                      !testEnabled ||
                       !isFresh ||
                       effectiveStatus !== "IDLE" ||
                       availablePrograms.length === 0
@@ -915,7 +1122,9 @@ export function MachineDetailModal({
                 </label>
 
                 <div className="flex flex-wrap items-center gap-2.5">
-                  {COMMAND_ACTIONS.map((action) => {
+                  {COMMAND_ACTIONS.filter(
+                    (action) => action !== "clear_fault" || isOperator,
+                  ).map((action) => {
                     const labelText = action.replaceAll("_", " ").toUpperCase();
                     const valid =
                       action === "start"
@@ -961,7 +1170,7 @@ export function MachineDetailModal({
                     );
                   })}
                 </div>
-              </div>
+              </section>
             )}
 
             <div ref={maintenanceSectionRef}>
@@ -985,7 +1194,7 @@ export function MachineDetailModal({
 
             {/* Recent commands (inside Tab 1 matching Pi 5) */}
             <section className="space-y-4 rounded-md border border-line bg-surface p-4">
-              <h3 className="text-base font-semibold text-ink">
+              <h3 className="text-base font-semibold tracking-tight text-ink sm:text-lg">
                 Recent commands
               </h3>
 
@@ -1271,16 +1480,32 @@ export function MachineDetailModal({
                         {programDisplayName(id, saved)}
                       </h4>
                       {isOperator && (
-                        <button
-                          type="button"
-                          disabled={
-                            !enabled || !isFresh || effectiveStatus !== "IDLE"
-                          }
-                          onClick={() => openProgramForm(id)}
-                          className="min-h-11 min-w-11 rounded-md border border-control bg-navy px-4 text-sm font-semibold text-ink hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent disabled:bg-raised disabled:text-muted"
-                        >
-                          Edit
-                        </button>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={
+                              !enabled || !isFresh || effectiveStatus !== "IDLE" || savingProgram
+                            }
+                            onClick={() => openProgramForm(id)}
+                            className="min-h-11 min-w-11 rounded-md border border-control bg-navy px-4 text-sm font-semibold text-ink hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent disabled:bg-raised disabled:text-muted"
+                          >
+                            Edit
+                          </button>
+                          {/^p_[a-f0-9]{12}$/.test(id) && (
+                            <button
+                              type="button"
+                              disabled={
+                                !enabled || !isFresh || effectiveStatus !== "IDLE" || savingProgram
+                              }
+                              onClick={() =>
+                                void handleDeleteProgram(id, programDisplayName(id, saved))
+                              }
+                              className="min-h-11 min-w-11 rounded-md border border-negative/40 bg-negative/10 px-4 text-sm font-semibold text-negative hover:bg-negative/20 focus-visible:outline-2 focus-visible:outline-accent disabled:border-line disabled:bg-raised disabled:text-muted"
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
 
@@ -1600,6 +1825,65 @@ export function MachineDetailModal({
           </div>
         )}
       </div>
+
+      {confirmStartOpen && (
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby={`confirm-start-title-${machine.source_id}`}
+          aria-describedby={`confirm-start-desc-${machine.source_id}`}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setConfirmStartOpen(false);
+          }}
+          className="fixed inset-0 z-20 flex items-center justify-center bg-canvas/85 p-4"
+        >
+          <div className="w-full max-w-md space-y-4 rounded-md border border-warning/40 bg-surface p-5 text-ink shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-md border border-warning/40 bg-warning/10">
+                <AlertTriangle className="size-5 text-warning" aria-hidden="true" />
+              </div>
+              <div className="min-w-0 space-y-1.5">
+                <h3
+                  id={`confirm-start-title-${machine.source_id}`}
+                  className="text-base font-semibold tracking-tight text-ink"
+                >
+                  Confirm Machine Start
+                </h3>
+                <p
+                  id={`confirm-start-desc-${machine.source_id}`}
+                  className="text-xs leading-relaxed text-muted sm:text-sm"
+                >
+                  Ensure <span className="font-semibold text-ink">{machine.label}</span> is completely clear, no items or hands obstruct the drum, and the door is securely closed before starting{" "}
+                  <span className="font-semibold text-ink">
+                    {programDisplayName(selectedStartProgram, programsMap[selectedStartProgram])}
+                  </span>.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col-reverse gap-2.5 border-t border-rule pt-4 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setConfirmStartOpen(false)}
+                className="inline-flex min-h-11 min-w-11 w-full items-center justify-center rounded-md border border-control bg-raised px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:w-auto"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!canControl || !selectedStartProgram}
+                onClick={() => {
+                  setConfirmStartOpen(false);
+                  executeCommand("start", { program_id: selectedStartProgram });
+                }}
+                className="inline-flex min-h-11 min-w-11 w-full items-center justify-center rounded-md border border-ink bg-ink px-4 py-2 text-xs font-semibold text-surface transition-colors enabled:hover:border-muted enabled:hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted sm:w-auto"
+              >
+                Confirm &amp; Start
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </dialog>
   );
 }

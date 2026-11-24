@@ -17,7 +17,7 @@ export type JoinRequest = { id: string; user_id: string; state: string; full_nam
 export type WeekdayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type WeeklyHoursInterval = { open: string; close: string };
 export type WeeklyHoursSchedule = Record<WeekdayKey, WeeklyHoursInterval[]>;
-export type WorkspaceBranch = { id: string; name: string; address: string; city: string; region: string; postal_code: string; contact_phone: string; opening_hours: string; latitude: number | null; longitude: number | null; service_status: "open" | "closed"; is_published?: boolean; weekly_hours?: WeeklyHoursSchedule | null; primary_manager_user_id: string; created_at: string };
+export type WorkspaceBranch = { id: string; name: string; address: string; city: string; region: string; postal_code: string; contact_phone: string; opening_hours: string; latitude: number | null; longitude: number | null; service_status: "open" | "closed"; is_published?: boolean; weekly_hours?: WeeklyHoursSchedule | null; primary_manager_user_id: string; primary_manager_name?: string | null; created_at: string };
 export type ManagerOption = { user_id: string; full_name: string; role: "owner" | "branch_manager" | null };
 export type OrganizationPersonnel = { user_id: string; full_name: string; phone: string; role: "owner" | "branch_manager" | "machine_maintenance" | "lpg_maintenance" | null; state: "active" | "approved_unassigned"; created_at: string; assigned_branches: string[]; assigned_branch_ids?: string[]; is_primary_manager?: boolean };
 export type BranchDirectory = { branches: WorkspaceBranch[]; summary: { branch_count: number; personnel_count: number; pending_request_count: number } | null };
@@ -214,6 +214,7 @@ function validBranch(value: unknown): value is WorkspaceBranch {
   const b = value as Record<string, unknown>;
   return ["id", "name", "address", "city", "region", "postal_code", "contact_phone", "opening_hours", "primary_manager_user_id", "created_at"].every(key => typeof b[key] === "string") &&
     (b.latitude === null || typeof b.latitude === "number") && (b.longitude === null || typeof b.longitude === "number") &&
+    (b.primary_manager_name === undefined || b.primary_manager_name === null || typeof b.primary_manager_name === "string") &&
     (b.service_status === "open" || b.service_status === "closed");
 }
 
@@ -311,15 +312,24 @@ export type BranchPersonnelMember = {
   is_primary_manager: boolean;
 };
 
+export type BranchOverviewIncident = {
+  id: string;
+  reference_code?: string;
+  asset_name?: string;
+  domain?: "machine" | "lpg" | string | null;
+  fault_code?: string | null;
+  fault_name?: string | null;
+  severity: "critical" | "warning" | "info";
+  title: string;
+  description: string;
+  workflow_state?: string;
+  edge_condition_state?: string;
+  created_at: string;
+};
+
 export type BranchOverviewData = {
   branch: BranchDetail;
-  incidents: Array<{
-    id: string;
-    severity: "critical" | "warning" | "info";
-    title: string;
-    description: string;
-    created_at: string;
-  }>;
+  incidents: BranchOverviewIncident[];
   personnel: {
     total_assigned: number;
     branch_managers: number;
@@ -468,6 +478,7 @@ export type RemoteMachineCommandAction =
   | "resume"
   | "stop"
   | "set_settings"
+  | "delete_program"
   | "clear_fault"
   | "start_maintenance";
 
@@ -1404,6 +1415,7 @@ export interface WorkspaceNotificationEvent {
   severity: "negative" | "warning" | "positive" | "info" | "neutral";
   title: string;
   detail: string;
+  reference_code?: string | null;
   source_id: string;
   device_label: string;
   incident_id?: string | null;
@@ -1819,4 +1831,109 @@ export async function createMachineMaintenanceLog(
   if (!result.ok) return result;
   if (!result.value?.item?.id) return invalid();
   return result;
+}
+
+export type GeocodeResult = {
+  display_name: string;
+  latitude: number;
+  longitude: number;
+  address_line?: string | null;
+  city?: string | null;
+  region?: string | null;
+  postal_code?: string | null;
+};
+
+export type GeocodeProvider = "photon" | "locationiq" | "geoapify" | "nominatim";
+
+export type GeocodeResponse = {
+  query: string;
+  cached: boolean;
+  provider: GeocodeProvider;
+  attribution: string;
+  results: GeocodeResult[];
+};
+
+const VALID_GEOCODE_PROVIDERS = new Set<GeocodeProvider>([
+  "photon",
+  "locationiq",
+  "geoapify",
+  "nominatim",
+]);
+
+export async function geocodeBranchAddress(
+  query: string,
+  limit = 5,
+): Promise<Result<GeocodeResponse>> {
+  const cleaned = query.replace(/\s+/g, " ").trim();
+  if (cleaned.length < 3 || cleaned.length > 200) {
+    return {
+      ok: false,
+      status: 422,
+      message: "Enter 3 to 200 characters of a public branch address, street, or city.",
+    };
+  }
+  if (cleaned.includes("@")) {
+    return {
+      ok: false,
+      status: 422,
+      message: "Do not enter email addresses or personal identifiers in map search.",
+    };
+  }
+  const safeLimit = Math.min(5, Math.max(1, Math.trunc(limit) || 5));
+  const params = new URLSearchParams({ q: cleaned, limit: String(safeLimit) });
+  const result = await businessRequest<unknown>(`/maps/geocode?${params.toString()}`);
+  if (!result.ok) return result;
+
+  const body = result.value as Record<string, unknown> | null;
+  if (
+    !body ||
+    typeof body !== "object" ||
+    typeof body.query !== "string" ||
+    typeof body.cached !== "boolean" ||
+    typeof body.provider !== "string" ||
+    !VALID_GEOCODE_PROVIDERS.has(body.provider as GeocodeProvider) ||
+    typeof body.attribution !== "string" ||
+    !Array.isArray(body.results)
+  ) {
+    return invalid();
+  }
+
+  const parsedResults: GeocodeResult[] = [];
+  for (const row of body.results) {
+    if (!row || typeof row !== "object") return invalid();
+    const item = row as Record<string, unknown>;
+    if (
+      typeof item.display_name !== "string" ||
+      typeof item.latitude !== "number" ||
+      !Number.isFinite(item.latitude) ||
+      item.latitude < -90 ||
+      item.latitude > 90 ||
+      typeof item.longitude !== "number" ||
+      !Number.isFinite(item.longitude) ||
+      item.longitude < -180 ||
+      item.longitude > 180
+    ) {
+      return invalid();
+    }
+    parsedResults.push({
+      display_name: item.display_name,
+      latitude: item.latitude,
+      longitude: item.longitude,
+      address_line: typeof item.address_line === "string" ? item.address_line : null,
+      city: typeof item.city === "string" ? item.city : null,
+      region: typeof item.region === "string" ? item.region : null,
+      postal_code: typeof item.postal_code === "string" ? item.postal_code : null,
+    });
+  }
+
+  return {
+    ok: true,
+    value: {
+      query: body.query,
+      cached: body.cached,
+      provider: body.provider as GeocodeProvider,
+      attribution: body.attribution,
+      results: parsedResults,
+    },
+  };
 }

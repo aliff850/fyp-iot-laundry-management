@@ -121,7 +121,8 @@ def _build_machine_summaries_and_events(
 
         raw_payload = row.get("state_payload")
         payload = raw_payload if (fresh and isinstance(raw_payload, dict)) else None
-        state = str(payload.get("state") or "UNKNOWN") if payload else "UNKNOWN"
+        raw_state = payload.get("state") if payload else None
+        state = str(raw_state).strip().upper() if raw_state else "UNKNOWN"
         fault_code = payload.get("fault_code") if payload else None
         settings = payload.get("settings") if (payload and isinstance(payload.get("settings"), dict)) else {}
         programs = payload.get("programs") if (payload and isinstance(payload.get("programs"), dict)) else {}
@@ -136,7 +137,7 @@ def _build_machine_summaries_and_events(
             "label": label,
             "type": row["device_type"],
             "status": str(row.get("status") or "active"),
-            "maintenance_mode": False,
+            "maintenance_mode": state == "MAINTENANCE",
             "freshness": freshness,
             "state": state,
             "fault_code": fault_code,
@@ -151,6 +152,8 @@ def _build_machine_summaries_and_events(
         if not fresh:
             continue
 
+        active_inc_id = str(row["active_incident_id"]) if row.get("active_incident_id") else None
+
         if state == "ERROR":
             detail = f"{label} reported fault {fault_code}" if fault_code else f"{label} entered fault state"
             events.append({
@@ -164,7 +167,28 @@ def _build_machine_summaries_and_events(
                 "detail": detail,
                 "source_id": source_id,
                 "device_label": label,
-                "incident_id": str(row["active_incident_id"]) if row.get("active_incident_id") else None,
+                "incident_id": active_inc_id,
+                "occurred_at": sample_at_iso,
+                "active": True,
+            })
+        elif state == "MAINTENANCE":
+            detail = (
+                f"{label} under maintenance ({fault_code})"
+                if fault_code
+                else f"{label} is undergoing maintenance"
+            )
+            events.append({
+                "id": f"live:{branch_id_str}:machine:{source_id}:maintenance",
+                "branch_id": branch_id_str,
+                "branch_name": branch_name,
+                "category": "machine",
+                "kind": "machine_maintenance",
+                "severity": "warning",
+                "title": "Machine under maintenance",
+                "detail": detail,
+                "source_id": source_id,
+                "device_label": label,
+                "incident_id": active_inc_id,
                 "occurred_at": sample_at_iso,
                 "active": True,
             })
@@ -378,6 +402,231 @@ def _build_cycle_events(
     return events
 
 
+def _build_incident_events(
+    rows: list[dict[str, Any]],
+    branch_names: dict[UUID, str],
+    checked_at_iso: str,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for row in rows:
+        inc_id = str(row["id"])
+        branch_id = row["branch_id"]
+        branch_id_str = str(branch_id)
+        branch_name = branch_names.get(branch_id, "Branch")
+        domain = str(row.get("domain") or "machine").strip().lower()
+        condition_key = str(row.get("condition_key") or "").strip().lower()
+        sev_raw = str(row.get("severity") or "critical").strip().lower()
+        fault_code = row.get("fault_code")
+        asset_name = row.get("asset_name") or row.get("source_id") or "Device"
+        summary = str(row.get("summary") or "").strip()
+        is_active = (
+            row.get("edge_condition_state") == "active"
+            and row.get("workflow_state") != "resolved"
+        )
+        occurred_at = (
+            _utc_iso(_utc_dt(row.get("opened_at")))
+            or _utc_iso(_utc_dt(row.get("last_sample_at")))
+            or checked_at_iso
+        )
+
+        if domain == "machine":
+            kind = "machine_fault"
+            category = "machine"
+            severity = "negative" if sev_raw == "critical" else "warning"
+            title = "Machine fault"
+            if fault_code and summary and str(fault_code) not in summary:
+                detail = f"{asset_name} ({fault_code}) — {summary}"
+            elif summary:
+                detail = f"{asset_name} — {summary}"
+            elif fault_code:
+                detail = f"{asset_name} reported fault {fault_code}"
+            else:
+                detail = f"{asset_name} entered fault state"
+        else:
+            category = "lpg"
+            severity = "negative" if sev_raw == "critical" else "warning"
+            if condition_key == "gas_concentration":
+                kind = "lpg_gas_critical" if sev_raw == "critical" else "lpg_gas_warning"
+                title = "LPG gas leak critical" if sev_raw == "critical" else "LPG gas elevated"
+            else:
+                kind = "lpg_critical" if sev_raw == "critical" else "lpg_low"
+                title = "LPG gas critically low" if sev_raw == "critical" else "LPG gas level low"
+            detail = f"{asset_name} — {summary}" if summary else asset_name
+
+        events.append({
+            "id": f"incident:{inc_id}",
+            "branch_id": branch_id_str,
+            "branch_name": branch_name,
+            "category": category,
+            "kind": kind,
+            "severity": severity,
+            "title": title,
+            "detail": detail,
+            "source_id": row.get("source_id"),
+            "device_label": asset_name,
+            "incident_id": inc_id,
+            "occurred_at": occurred_at,
+            "active": is_active,
+        })
+    return events
+
+
+def _build_machine_maintenance_command_events(
+    rows: list[dict[str, Any]],
+    branch_names: dict[UUID, str],
+    machine_devs: list[dict[str, Any]],
+    checked_at_iso: str,
+) -> tuple[list[dict[str, Any]], set[tuple[str, str]]]:
+    live_maint_keys = {
+        (d["branch_id"], d["source_id"])
+        for d in machine_devs
+        if d.get("state") == "MAINTENANCE"
+    }
+    covered_active_keys: set[tuple[str, str]] = set()
+    events: list[dict[str, Any]] = []
+
+    for row in rows:
+        cmd_id = str(row["id"])
+        branch_id = row["branch_id"]
+        branch_id_str = str(branch_id)
+        branch_name = branch_names.get(branch_id, "Branch")
+        source_id = row["source_id"]
+        label = row.get("label") or source_id
+        actor_name = str(row.get("actor_name") or "").strip()
+        occurred_at = (
+            _utc_iso(_utc_dt(row.get("result_at")))
+            or _utc_iso(_utc_dt(row.get("issued_at")))
+            or checked_at_iso
+        )
+        key = (branch_id_str, source_id)
+        is_active = key in live_maint_keys and key not in covered_active_keys
+        if is_active:
+            covered_active_keys.add(key)
+
+        detail = (
+            f"{label} set to maintenance mode by {actor_name}"
+            if actor_name
+            else f"{label} set to maintenance mode"
+        )
+        events.append({
+            "id": f"maintcmd:{cmd_id}",
+            "branch_id": branch_id_str,
+            "branch_name": branch_name,
+            "category": "machine",
+            "kind": "machine_maintenance",
+            "severity": "warning",
+            "title": "Machine set to maintenance",
+            "detail": detail,
+            "source_id": source_id,
+            "device_label": label,
+            "incident_id": str(row["active_incident_id"]) if row.get("active_incident_id") else None,
+            "occurred_at": occurred_at,
+            "active": is_active,
+        })
+    return events, covered_active_keys
+
+
+def _build_machine_maintenance_log_events(
+    rows: list[dict[str, Any]],
+    branch_names: dict[UUID, str],
+    checked_at_iso: str,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for row in rows:
+        log_id = str(row["id"])
+        branch_id = row["branch_id"]
+        branch_id_str = str(branch_id)
+        branch_name = branch_names.get(branch_id, "Branch")
+        source_id = row["source_id"]
+        asset_name = row.get("asset_name") or source_id
+        error_code = str(row.get("error_code") or "MAINT").strip()
+        tech_name = str(row.get("technician_name") or "Technician").strip()
+        ref_code = str(row.get("reference_code") or "").strip()
+        outcome = str(row.get("outcome") or "completed").strip().lower()
+        is_completed = outcome == "completed"
+        occurred_at = _utc_iso(_utc_dt(row.get("created_at"))) or checked_at_iso
+
+        events.append({
+            "id": f"maintlog:{log_id}",
+            "branch_id": branch_id_str,
+            "branch_name": branch_name,
+            "category": "machine",
+            "kind": "machine_maintenance_logged",
+            "severity": "positive" if is_completed else "warning",
+            "title": "Maintenance completed" if is_completed else "Maintenance logged",
+            "detail": f"{asset_name} ({error_code}) serviced by {tech_name}",
+            "reference_code": ref_code or None,
+            "source_id": source_id,
+            "device_label": asset_name,
+            "incident_id": str(row["incident_id"]) if row.get("incident_id") else None,
+            "occurred_at": occurred_at,
+            "active": False,
+        })
+    return events
+
+
+def _build_lpg_maintenance_session_events(
+    rows: list[dict[str, Any]],
+    branch_names: dict[UUID, str],
+    checked_at_iso: str,
+) -> tuple[list[dict[str, Any]], set[tuple[str, str]]]:
+    events: list[dict[str, Any]] = []
+    covered_active_keys: set[tuple[str, str]] = set()
+    for row in rows:
+        sess_id = str(row["id"])
+        branch_id = row["branch_id"]
+        branch_id_str = str(branch_id)
+        branch_name = branch_names.get(branch_id, "Branch")
+        source_id = row["source_id"]
+        label = row.get("label") or source_id
+        status = str(row.get("status") or "").strip().lower()
+        started_by = str(row.get("started_by_label") or "Staff").strip()
+        completed_by = str(row.get("completed_by_label") or started_by).strip()
+        note = str(row.get("service_note") or "").strip()
+
+        if status == "active":
+            covered_active_keys.add((branch_id_str, source_id))
+            occurred_at = _utc_iso(_utc_dt(row.get("started_at"))) or checked_at_iso
+            detail = f"{label} tank swap started by {started_by}"
+            if note:
+                detail = f"{detail} ({note})"
+            events.append({
+                "id": f"lpgmaint:{sess_id}:active",
+                "branch_id": branch_id_str,
+                "branch_name": branch_name,
+                "category": "lpg",
+                "kind": "lpg_maintenance",
+                "severity": "warning",
+                "title": "LPG undergoing maintenance",
+                "detail": detail,
+                "source_id": source_id,
+                "device_label": label,
+                "occurred_at": occurred_at,
+                "active": True,
+            })
+        elif status == "completed":
+            occurred_at = (
+                _utc_iso(_utc_dt(row.get("completed_at")))
+                or _utc_iso(_utc_dt(row.get("started_at")))
+                or checked_at_iso
+            )
+            events.append({
+                "id": f"lpgmaint:{sess_id}:completed",
+                "branch_id": branch_id_str,
+                "branch_name": branch_name,
+                "category": "lpg",
+                "kind": "lpg_maintenance_completed",
+                "severity": "positive",
+                "title": "LPG maintenance completed",
+                "detail": f"{label} tank swap completed by {completed_by}",
+                "source_id": source_id,
+                "device_label": label,
+                "occurred_at": occurred_at,
+                "active": False,
+            })
+    return events, covered_active_keys
+
+
 @router.get("/notifications")
 def get_notifications(
     category: Literal["all", "machine", "lpg"] = "all",
@@ -414,6 +663,9 @@ def get_notifications(
 
         devices: list[dict[str, Any]] = []
         events: list[dict[str, Any]] = []
+        live_events: list[dict[str, Any]] = []
+        covered_active_machine_maint: set[tuple[str, str]] = set()
+        covered_active_lpg_maint: set[tuple[str, str]] = set()
         labels_by_device: dict[tuple[UUID, str], str] = {}
 
         if "machine" in allowed_categories:
@@ -441,7 +693,7 @@ def get_notifications(
                 machine_rows, branch_names, now, checked_at_iso
             )
             devices.extend(machine_devs)
-            events.extend(machine_live_events)
+            live_events.extend(machine_live_events)
 
             cycle_rows = conn.execute(
                 """select c.cycle_id, c.branch_id, d.source_id, d.label, c.program_id,
@@ -455,6 +707,44 @@ def get_notifications(
                 (organization_id, target_branch_ids, limit),
             ).fetchall()
             events.extend(_build_cycle_events(cycle_rows, branch_names, labels_by_device, checked_at_iso))
+
+            maint_cmd_rows = conn.execute(
+                """select c.id, c.branch_id, d.source_id, d.label, c.issued_at, c.result_at,
+                          p.full_name as actor_name, inc.id as active_incident_id
+                   from public.machine_commands c
+                   join public.devices d on d.id = c.device_id
+                   left join public.profiles p on p.user_id = c.actor_user_id
+                   left join lateral (
+                       select id from public.incidents inc
+                       where inc.device_id = d.id
+                         and (inc.edge_condition_state = 'active' or inc.workflow_state <> 'resolved')
+                       order by inc.opened_at desc
+                       limit 1
+                   ) inc on true
+                   where c.organization_id = %s
+                     and c.branch_id = any(%s)
+                     and c.action = 'start_maintenance'
+                     and c.status = 'succeeded'
+                   order by coalesce(c.result_at, c.issued_at) desc, c.id desc
+                   limit %s""",
+                (organization_id, target_branch_ids, limit),
+            ).fetchall()
+            maint_cmd_events, covered_active_machine_maint = _build_machine_maintenance_command_events(
+                maint_cmd_rows, branch_names, machine_devs, checked_at_iso
+            )
+            events.extend(maint_cmd_events)
+
+            maint_log_rows = conn.execute(
+                """select id, reference_code, branch_id, source_id, asset_name,
+                          incident_id, error_code, technician_name, outcome, created_at
+                   from public.machine_maintenance_logs
+                   where organization_id = %s
+                     and branch_id = any(%s)
+                   order by created_at desc, id desc
+                   limit %s""",
+                (organization_id, target_branch_ids, limit),
+            ).fetchall()
+            events.extend(_build_machine_maintenance_log_events(maint_log_rows, branch_names, checked_at_iso))
 
         if "lpg" in allowed_categories:
             lpg_rows = conn.execute(
@@ -499,7 +789,58 @@ def get_notifications(
                 lpg_rows, branch_names, now, checked_at_iso
             )
             devices.extend(lpg_devs)
-            events.extend(lpg_events)
+            live_events.extend(lpg_events)
+
+            lpg_maint_rows = conn.execute(
+                """select s.id, s.branch_id, s.source_id, d.label, s.status,
+                          s.started_by_label, s.completed_by_label, s.service_note,
+                          s.started_at, s.completed_at
+                   from public.lpg_maintenance_sessions s
+                   join public.devices d on d.id = s.device_id
+                   where s.organization_id = %s
+                     and s.branch_id = any(%s)
+                     and s.status in ('active', 'completed')
+                   order by coalesce(s.completed_at, s.started_at) desc, s.id desc
+                   limit %s""",
+                (organization_id, target_branch_ids, limit),
+            ).fetchall()
+            lpg_maint_events, covered_active_lpg_maint = _build_lpg_maintenance_session_events(
+                lpg_maint_rows, branch_names, checked_at_iso
+            )
+            events.extend(lpg_maint_events)
+
+        incident_rows = conn.execute(
+            """select id, branch_id, source_id, asset_name, domain, condition_key,
+                      severity, edge_condition_state, workflow_state, fault_code,
+                      summary, opened_at, last_sample_at
+               from public.incidents
+               where organization_id = %s
+                 and branch_id = any(%s)
+                 and domain = any(%s)
+               order by opened_at desc, id desc
+               limit %s""",
+            (organization_id, target_branch_ids, allowed_categories, limit),
+        ).fetchall()
+        incident_events = _build_incident_events(incident_rows, branch_names, checked_at_iso)
+        covered_incident_ids = {
+            ev["incident_id"] for ev in incident_events if ev.get("incident_id")
+        }
+        events.extend(incident_events)
+        for ev in live_events:
+            inc_id = ev.get("incident_id")
+            ev_kind = ev.get("kind")
+            ev_key = (ev.get("branch_id") or "", ev.get("source_id") or "")
+            if (
+                inc_id
+                and inc_id in covered_incident_ids
+                and ev_kind not in ("machine_maintenance", "lpg_maintenance")
+            ):
+                continue
+            if ev_kind == "machine_maintenance" and ev_key in covered_active_machine_maint:
+                continue
+            if ev_kind == "lpg_maintenance" and ev_key in covered_active_lpg_maint:
+                continue
+            events.append(ev)
 
     events.sort(
         key=lambda item: (item.get("occurred_at") or "", 1 if item.get("active") else 0),
