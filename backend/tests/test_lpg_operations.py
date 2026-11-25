@@ -434,3 +434,88 @@ def test_sync_edge_lpg_state_reconciles_gateway_sessions(monkeypatch):
     sql_log = "\n".join(call.args[0] for call in conn.execute.call_args_list)
     assert "insert into public.lpg_node_config" in sql_log
     assert "insert into public.lpg_maintenance_sessions" in sql_log
+
+
+def test_lpg_operating_mode_projects_online_low_and_maintenance(monkeypatch):
+    now = datetime.now(timezone.utc)
+    sample_time = now - timedelta(seconds=5)
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.side_effect = [
+        _member("owner", "active"),
+        {"id": BRANCH, "name": "MSU Shah Alam", "organization_id": ORG},
+    ]
+    conn.execute.return_value.fetchall.return_value = [
+        {
+            "id": DEVICE,
+            "source_id": "esp32-lpg-low",
+            "source_kind": "physical",
+            "label": "Low Fuel Cylinder",
+            "capacity_kg": 14.0,
+            "status": "active",
+            "record_id": REC,
+            "gateway_receipt_at": sample_time + timedelta(seconds=1),
+            "source_recorded_at": sample_time,
+            "cloud_received_at": sample_time + timedelta(seconds=2),
+            "payload": {
+                "lpg_percent": 11.2,
+                "gross_weight_kg": 16.77,
+                "lpg_weight_kg": 1.57,
+                "estimated_ppm": 12.0,
+            },
+            "quality": {
+                "source_time_quality": "device_reported",
+                "ppm_calibrated": True,
+                "gas_condition": "normal",
+                "maintenance_mode": False,
+            },
+        }
+    ]
+    monkeypatch.setattr(lpg, "_database", _mock_db(conn))
+
+    res = lpg.get_branch_lpg_safety(BRANCH, {"id": USER})
+    dev = res["devices"][0]
+    assert dev["operating_mode"] == "low"
+    assert dev["low_fuel_reminder"] is True
+    assert dev["maintenance_mode"] is False
+
+
+def test_lpg_maintenance_status_uses_lpg_latest_recent_samples_when_history_suppressed(monkeypatch):
+    now = datetime.now(timezone.utc)
+    conn = MagicMock()
+    recent = [
+        {"sample_at": (now - timedelta(seconds=3)).isoformat(), "gross_weight_kg": 30.50, "weight_valid": True},
+        {"sample_at": (now - timedelta(seconds=8)).isoformat(), "gross_weight_kg": 30.48, "weight_valid": True},
+        {"sample_at": (now - timedelta(seconds=13)).isoformat(), "gross_weight_kg": 30.52, "weight_valid": True},
+    ]
+    conn.execute.return_value.fetchone.side_effect = [
+        _member("lpg_maintenance", "active"),
+        {"id": BRANCH, "name": "MSU Shah Alam", "organization_id": ORG},
+        {"?column?": 1},
+        {
+            "id": DEVICE,
+            "gateway_id": GW,
+            "source_id": "lpg-01",
+            "label": "Tank 01",
+            "capacity_kg": 14.0,
+            "status": "active",
+            "gateway_status": "active",
+            "latest_gateway_receipt_at": now - timedelta(seconds=3),
+            "latest_source_recorded_at": None,
+            "latest_cloud_received_at": now - timedelta(seconds=2),
+            "latest_payload": {"gross_weight_kg": 30.50},
+            "latest_quality": {"maintenance_mode": True, "recent_samples": recent},
+        },
+        {"cylinder_tare_kg": 16.5, "cfg_rated_capacity_kg": 14.0, "stability_tolerance_kg": 0.25},
+        {"id": SESS_1, "started_by_label": "Aziz", "service_note": "Swap", "started_at": now - timedelta(seconds=20)},
+    ]
+    # Simulate deadband-suppressed telemetry_observations returning older single row only
+    conn.execute.return_value.fetchall.return_value = [
+        {"gateway_receipt_at": now - timedelta(minutes=14), "source_recorded_at": None, "payload": {"gross_weight_kg": 17.0}, "quality": {}},
+    ]
+    monkeypatch.setattr(lpg, "_database", _mock_db(conn))
+
+    res = lpg.get_lpg_maintenance_status(BRANCH, "lpg-01", {"id": USER})
+    assert res["maintenance_mode"] is True
+    assert res["stability"]["stable"] is True
+    assert res["stability"]["sample_count"] == 3
+    assert res["stability"]["spread_kg"] == 0.04

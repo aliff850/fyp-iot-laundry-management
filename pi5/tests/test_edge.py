@@ -18,8 +18,15 @@ def test_sync_iteration_keeps_machine_state_commands_and_cycles():
     worker = MagicMock()
     worker.status = "active"
     run_worker_iteration(worker)
-    assert worker.mock_calls == [call.refresh_gateway_state(),
-        call.sync_machine_operations(), call.run_sync_cycle(), call.sync_machine_cycles()]
+    assert worker.mock_calls == [
+        call.refresh_gateway_state(),
+        call.sync_machine_operations(),
+        call.sync_lpg_operations(),
+        call.sync_lpg_presence(),
+        call.run_sync_cycle(),
+        call.sync_machine_cycles(),
+        call.sync_incidents(),
+    ]
 
 
 def test_machine_presence_upload_uses_gateway_auth_and_current_local_identity(monkeypatch):

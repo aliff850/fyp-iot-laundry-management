@@ -1,4 +1,4 @@
-import React, { type ReactNode } from "react";
+import React, { Suspense, type ReactNode } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowLeft, Clock, Phone } from "lucide-react";
@@ -7,10 +7,16 @@ import {
   WorkspaceVerticalNav,
   type WorkspaceVerticalNavItem,
 } from "@/components/workspace/layout/WorkspaceVerticalNav";
-import type { BranchDetail } from "@/lib/auth/business";
+import { ActiveIncidentsBanner } from "@/components/workspace/overview/ActiveIncidentsBanner";
+import {
+  getBranchActiveIncidentsSummary,
+  type BranchDetail,
+  type BranchOverviewIncident,
+} from "@/lib/auth/business";
 
 export type BranchWorkspaceTab =
   | "overview"
+  | "incidents"
   | "machines"
   | "maintenance"
   | "lpg"
@@ -24,7 +30,26 @@ interface BranchWorkspaceShellProps {
   activeTab: BranchWorkspaceTab;
   userRole: "owner" | "branch_manager" | "machine_maintenance" | "lpg_maintenance";
   organizationName?: string;
+  hideIncidentsBanner?: boolean;
+  initialActiveIncidents?: {
+    totalCount: number;
+    incidents: BranchOverviewIncident[];
+  };
   children?: ReactNode;
+}
+
+async function BranchActiveIncidentsSlot({ branchId }: { branchId: string }) {
+  const summaryRes = await getBranchActiveIncidentsSummary(branchId, 5);
+  if (!summaryRes.ok || summaryRes.value.incidents.length === 0) {
+    return null;
+  }
+  return (
+    <ActiveIncidentsBanner
+      branchId={branchId}
+      incidents={summaryRes.value.incidents}
+      totalCount={summaryRes.value.total_count}
+    />
+  );
 }
 
 export function BranchWorkspaceShell({
@@ -32,6 +57,8 @@ export function BranchWorkspaceShell({
   activeTab,
   userRole,
   organizationName = "Your Organization",
+  hideIncidentsBanner = false,
+  initialActiveIncidents,
   children,
 }: BranchWorkspaceShellProps) {
   const isOwner = userRole === "owner";
@@ -47,6 +74,13 @@ export function BranchWorkspaceShell({
       href: `/branches/${branch.id}/overview`,
       icon: "overview",
       visible: isOwner || isManager,
+    },
+    {
+      id: "incidents",
+      label: "Active Incidents",
+      href: `/branches/${branch.id}/incidents`,
+      icon: "incidents",
+      visible: isOwner || isManager || isMachineTech || isLpgTech,
     },
     {
       id: "machines",
@@ -67,7 +101,7 @@ export function BranchWorkspaceShell({
       label: "Maintenance Logs",
       href: `/branches/${branch.id}/maintenance`,
       icon: "maintenance",
-      visible: isOwner || isManager || isMachineTech,
+      visible: isOwner || isManager || isMachineTech || isLpgTech,
     },
     {
       id: "customer-reports",
@@ -189,6 +223,20 @@ export function BranchWorkspaceShell({
                 </div>
               </div>
             </div>
+
+            {!hideIncidentsBanner && (
+              initialActiveIncidents ? (
+                <ActiveIncidentsBanner
+                  branchId={branch.id}
+                  incidents={initialActiveIncidents.incidents}
+                  totalCount={initialActiveIncidents.totalCount}
+                />
+              ) : (
+                <Suspense fallback={null}>
+                  <BranchActiveIncidentsSlot branchId={branch.id} />
+                </Suspense>
+              )
+            )}
 
             {/* Content Area */}
             <main id="branch-content" className="space-y-6">

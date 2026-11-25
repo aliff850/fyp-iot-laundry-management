@@ -114,16 +114,18 @@ describe("branch maintenance history page UI", () => {
     expect(errHtml).toContain("Maintenance logs are temporarily unavailable.");
   });
 
-  it("shows Maintenance Logs tab in BranchWorkspaceShell for machine roles and hides it for lpg_maintenance", () => {
+  it("shows Maintenance Logs and Active Incidents tabs in BranchWorkspaceShell for machine and lpg roles", () => {
     const techHtml = renderToString(
       React.createElement(BranchWorkspaceShell, {
         branch: sampleBranch,
         activeTab: "maintenance",
         userRole: "machine_maintenance",
+        hideIncidentsBanner: true,
       }),
     );
     expect(techHtml).toContain("Maintenance Logs");
     expect(techHtml).toContain("/branches/branch-1/maintenance");
+    expect(techHtml).toContain("/branches/branch-1/incidents");
     expect(techHtml).not.toContain("·");
 
     const lpgHtml = renderToString(
@@ -131,8 +133,10 @@ describe("branch maintenance history page UI", () => {
         branch: sampleBranch,
         activeTab: "lpg",
         userRole: "lpg_maintenance",
+        hideIncidentsBanner: true,
       }),
     );
-    expect(lpgHtml).not.toContain("/branches/branch-1/maintenance");
+    expect(lpgHtml).toContain("/branches/branch-1/maintenance");
+    expect(lpgHtml).toContain("/branches/branch-1/incidents");
   });
 });

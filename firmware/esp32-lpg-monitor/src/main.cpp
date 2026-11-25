@@ -26,6 +26,8 @@ const char *MQTT_USERNAME = SPINSENSE_MQTT_USERNAME;
 const char *MQTT_PASSWORD = SPINSENSE_MQTT_PASSWORD;
 const char *BRANCH_ID = SPINSENSE_BRANCH_ID;
 String mqttTopic;
+String mqttModeTopic;
+String nodeMode = "online";
 uint32_t bootId = 0;
 
 const char *DEVICE_ID = SPINSENSE_DEVICE_ID;
@@ -103,19 +105,31 @@ void renderScreen(float grossKg, float gasKg, float percentage) {
 #else
   display.print("LPG");
 #endif
-  display.print(" [W:");
-  display.print(wifiOk ? "OK" : "--");
-  display.print("|M:");
-  display.print(mqttOk ? "OK" : "--");
-  display.print("]");
+  if (nodeMode == "maintenance") {
+    display.print(" [MNT]");
+  } else if (nodeMode == "low") {
+    display.print(" [LOW]");
+  } else {
+    display.print(" [OK]");
+  }
+  display.print(" W:");
+  display.print(wifiOk ? "1" : "0");
+  display.print(" M:");
+  display.print(mqttOk ? "1" : "0");
 
   display.drawLine(0, 9, 127, 9, SSD1306_WHITE);
 
-  // Weight readouts
+  // Weight readouts or maintenance notice
   display.setCursor(0, 13);
-  display.print("Gross: ");
-  display.print(grossKg, 2);
-  display.print(" kg");
+  if (nodeMode == "maintenance") {
+    display.print("MAINT: Alerts paused");
+  } else if (nodeMode == "low") {
+    display.print("LOW: Replace soon");
+  } else {
+    display.print("Gross: ");
+    display.print(grossKg, 2);
+    display.print(" kg");
+  }
 
   display.setCursor(0, 25);
   display.print("Gas  : ");
@@ -204,6 +218,24 @@ void startWifiAttempt(unsigned long currentMillis) {
   wifiNeedsReset = false;
 }
 
+void onMqttMessage(char *topic, byte *payload, unsigned int length) {
+  if (String(topic) != mqttModeTopic || length == 0) {
+    return;
+  }
+  String body;
+  body.reserve(length + 1);
+  for (unsigned int i = 0; i < length; i++) {
+    body += static_cast<char>(payload[i]);
+  }
+  if (body.indexOf("\"maintenance\"") >= 0) {
+    nodeMode = "maintenance";
+  } else if (body.indexOf("\"low\"") >= 0) {
+    nodeMode = "low";
+  } else if (body.indexOf("\"online\"") >= 0) {
+    nodeMode = "online";
+  }
+}
+
 // Non-blocking Wi-Fi and MQTT connection manager
 void maintainNetwork(unsigned long currentMillis) {
   if (WiFi.status() != WL_CONNECTED) {
@@ -228,6 +260,7 @@ void maintainNetwork(unsigned long currentMillis) {
 
       if (mqttClient.connect(DEVICE_ID, MQTT_USERNAME, MQTT_PASSWORD)) {
         Serial.println(" connected!");
+        mqttClient.subscribe(mqttModeTopic.c_str(), 1);
       } else {
         Serial.print(" failed, rc=");
         Serial.println(mqttClient.state());
@@ -242,7 +275,9 @@ void setup() {
   Serial.begin(115200);
   bootId = esp_random();
   mqttTopic = String("branches/") + BRANCH_ID + "/devices/" + DEVICE_ID + "/telemetry";
+  mqttModeTopic = String("branches/") + BRANCH_ID + "/devices/" + DEVICE_ID + "/mode";
   mqttClient.setBufferSize(1024);
+  mqttClient.setCallback(onMqttMessage);
   delay(1000);
   Serial.println("\n--- SpinSense LPG Edge Node Starting ---");
 

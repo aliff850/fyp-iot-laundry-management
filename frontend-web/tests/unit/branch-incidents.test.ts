@@ -3,6 +3,12 @@ import React from "react";
 import { renderToString } from "react-dom/server";
 import { IncidentDetailClient } from "@/components/workspace/incidents/IncidentDetailClient";
 import { notificationHref } from "@/components/workspace/notifications/notificationLogic";
+import {
+  formatMytDate,
+  formatMytDateTime,
+  formatMytShortDateTime,
+  formatMytTime,
+} from "@/lib/formatDate";
 import type { IncidentDetail } from "@/lib/auth/business";
 
 vi.mock("next/navigation", () => ({
@@ -133,5 +139,26 @@ describe("incident workflow and deep links", () => {
     );
     expect(techHtml).not.toContain("Assign Specialist Task");
     expect(techHtml).toContain("Mark In Progress");
+  });
+
+  it("formats SSR timestamps deterministically in MYT without locale hydration drift", () => {
+    expect(formatMytShortDateTime("2026-11-23T16:15:00Z")).toBe("24 Nov, 00:15 MYT");
+    expect(formatMytDateTime("2026-11-23T16:15:00Z")).toBe("24 Nov 2026, 00:15 MYT");
+    expect(formatMytDate("2026-11-23T16:15:00Z")).toBe("24 Nov 2026");
+    expect(formatMytTime("2026-11-23T16:15:05Z")).toBe("00:15:05 MYT");
+    expect(formatMytTime(null, "Never")).toBe("Never");
+
+    const ownerHtml = renderToString(
+      React.createElement(IncidentDetailClient, {
+        branchId: "branch-1",
+        userId: "owner-1",
+        userRole: "owner",
+        initialIncident: sampleIncident,
+      }),
+    );
+    const text = ownerHtml.replace(/<!--.*?-->/g, "");
+    expect(text).toContain("Last edge sample: 23 Nov, 17:05 MYT");
+    expect(text).toContain("Opened: 23 Nov, 17:00 MYT");
+    expect(text).not.toMatch(/\b(?:AM|PM|am|pm)\b/);
   });
 });

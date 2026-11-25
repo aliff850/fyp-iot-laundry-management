@@ -16,28 +16,25 @@ import type { IncidentDetail, MaintenanceTaskItem } from "@/lib/auth/business";
 import {
   acknowledgeIncidentAction,
   createMaintenanceTaskAction,
+  fetchIncidentDetailAction,
   resolveIncidentAction,
   updateMaintenanceTaskAction,
 } from "@/app/branches/[branchId]/incidents/[incidentId]/actions";
 import { useActionToast } from "@/components/workspace/common/ActionToastContext";
+import { ServiceAndIncidentModal } from "@/components/workspace/common/ServiceAndIncidentModal";
+import { formatMytShortDateTime } from "@/lib/formatDate";
 
 interface IncidentDetailClientProps {
   branchId: string;
+  branchOpen?: boolean;
   userId: string;
   userRole: string;
+  defaultTechnicianName?: string;
   initialIncident: IncidentDetail;
 }
 
 function formatDateTime(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const dt = new Date(iso);
-  if (Number.isNaN(dt.getTime())) return iso;
-  return dt.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatMytShortDateTime(iso);
 }
 
 function workflowLabel(state: IncidentDetail["workflow_state"]): string {
@@ -54,13 +51,16 @@ function taskStatusLabel(status: MaintenanceTaskItem["status"]): string {
 
 export function IncidentDetailClient({
   branchId,
+  branchOpen = true,
   userId,
   userRole,
+  defaultTechnicianName = "",
   initialIncident,
 }: IncidentDetailClientProps) {
   const router = useRouter();
   const { notify } = useActionToast();
   const [incident, setIncident] = useState<IncidentDetail>(initialIncident);
+  const [serviceModalOpen, setServiceModalOpen] = useState(false);
   const [ackNote, setAckNote] = useState("");
   const [resolutionNote, setResolutionNote] = useState(initialIncident.resolution_note ?? "");
   const [taskTitle, setTaskTitle] = useState(
@@ -243,13 +243,25 @@ export function IncidentDetailClient({
           <p className="break-words text-sm text-muted">{incident.summary}</p>
         </div>
 
-        <Link
-          href={backHref}
-          className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-md border border-control bg-navy px-4 py-2 text-xs font-semibold text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent"
-        >
-          <ArrowLeft className="size-4" aria-hidden="true" />
-          Back to {incident.domain === "lpg" ? "LPG Safety" : "Machines"}
-        </Link>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          {incident.workflow_state !== "resolved" && (
+            <button
+              type="button"
+              onClick={() => setServiceModalOpen(true)}
+              className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-md border border-ink bg-ink px-4 py-2 text-xs font-semibold text-surface transition-colors hover:border-muted hover:bg-muted focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              <Wrench className="size-4" aria-hidden="true" />
+              <span>Service Asset &amp; Log Work</span>
+            </button>
+          )}
+          <Link
+            href={backHref}
+            className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-md border border-control bg-navy px-4 py-2 text-xs font-semibold text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            <ArrowLeft className="size-4" aria-hidden="true" />
+            Back to {incident.domain === "lpg" ? "LPG Safety" : "Machines"}
+          </Link>
+        </div>
       </div>
 
       {/* Physical edge condition state kept distinct from staff workflow state */}
@@ -575,6 +587,55 @@ export function IncidentDetailClient({
               </div>
             )}
           </section>
+
+          {/* Service & Maintenance Logs linked to this incident */}
+          <section className="space-y-4 rounded-md border border-line bg-surface p-4 sm:p-5">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2">
+                <Wrench className="size-4 text-warning" aria-hidden="true" />
+                <h2 className="text-base font-semibold text-ink">Service &amp; Maintenance Logs</h2>
+              </div>
+              {incident.workflow_state !== "resolved" && (
+                <button
+                  type="button"
+                  onClick={() => setServiceModalOpen(true)}
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-control bg-navy px-3.5 text-xs font-semibold text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent"
+                >
+                  <Wrench className="size-3.5" aria-hidden="true" />
+                  <span>Log Service Work</span>
+                </button>
+              )}
+            </div>
+
+            {!incident.maintenance_logs || incident.maintenance_logs.length === 0 ? (
+              <p className="text-xs text-muted">
+                No service logs have been submitted for this incident yet.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {incident.maintenance_logs.map((logEntry) => (
+                  <div
+                    key={logEntry.id}
+                    className="space-y-2 rounded-md border border-rule bg-raised/30 p-3.5 text-xs"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded border border-warning/40 bg-warning/10 px-2 py-0.5 font-mono font-semibold text-warning">
+                          {logEntry.error_code}
+                        </span>
+                        <span className="font-mono text-muted">{logEntry.reference_code}</span>
+                      </div>
+                      <span className="text-faint">{formatDateTime(logEntry.created_at)}</span>
+                    </div>
+                    <p className="whitespace-pre-wrap break-words text-ink">
+                      {logEntry.work_done}
+                    </p>
+                    <p className="text-muted">Crew: {logEntry.technician_name}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
 
         {/* Right Column: Acknowledgement, Clearance-Gated Resolution & Audit Timeline */}
@@ -670,6 +731,38 @@ export function IncidentDetailClient({
           </section>
         </div>
       </div>
+
+      {serviceModalOpen && (
+        <ServiceAndIncidentModal
+          open
+          branchId={branchId}
+          domain={incident.domain}
+          sourceId={incident.source_id}
+          assetLabel={incident.asset_name}
+          assetStatus={(incident.asset_state?.state || "UNKNOWN").toUpperCase()}
+          isMaintenanceMode={Boolean(incident.asset_state?.maintenance_mode)}
+          branchOpen={branchOpen}
+          defaultTechnicianName={defaultTechnicianName}
+          defaultErrorCode={incident.fault_code ?? null}
+          incident={{
+            id: incident.id,
+            reference_code: incident.reference_code,
+            fault_code: incident.fault_code,
+            fault_name: incident.fault_name,
+            workflow_state: incident.workflow_state,
+            edge_condition_state: incident.edge_condition_state,
+            summary: incident.summary,
+          }}
+          onClose={() => setServiceModalOpen(false)}
+          onCompleted={async () => {
+            const refreshed = await fetchIncidentDetailAction(incident.id);
+            if (refreshed.ok) {
+              setIncident(refreshed.incident);
+            }
+            router.refresh();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -249,22 +249,35 @@ def _incident_summary_item(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_branch_active_incidents(
-    conn, organization_id: UUID, branch_id: UUID
+    conn,
+    organization_id: UUID,
+    branch_id: UUID,
+    *,
+    domains: list[str] | tuple[str, ...] | None = None,
+    limit: int = 20,
 ) -> list[dict[str, Any]]:
-    """Return active or unresolved incidents for GET /branches/{branch_id}/overview."""
+    """Return active or unresolved incidents for branch overview and banners."""
+    clauses = [
+        "organization_id = %s",
+        "branch_id = %s",
+        "(edge_condition_state = 'active' or workflow_state <> 'resolved')",
+    ]
+    params: list[Any] = [organization_id, branch_id]
+    if domains:
+        clauses.append("domain = any(%s)")
+        params.append(list(domains))
+    params.append(limit)
     rows = conn.execute(
-        """select id, reference_code, asset_name, domain, condition_key, severity,
-                  edge_condition_state, workflow_state, fault_code, fault_name,
-                  summary, opened_at
-           from public.incidents
-           where organization_id = %s
-             and branch_id = %s
-             and (edge_condition_state = 'active' or workflow_state <> 'resolved')
-           order by
-             case when severity = 'critical' then 0 else 1 end,
-             opened_at desc
-           limit 20""",
-        (organization_id, branch_id),
+        f"""select id, reference_code, asset_name, domain, condition_key, severity,
+                   edge_condition_state, workflow_state, fault_code, fault_name,
+                   summary, opened_at, count(*) over() as total_active_count
+            from public.incidents
+            where {' and '.join(clauses)}
+            order by
+              case when severity = 'critical' then 0 else 1 end,
+              opened_at desc
+            limit %s""",
+        tuple(params),
     ).fetchall()
     items = []
     for row in rows:
@@ -283,9 +296,36 @@ def load_branch_active_incidents(
                 "workflow_state": row["workflow_state"],
                 "edge_condition_state": row["edge_condition_state"],
                 "created_at": _iso(row.get("opened_at")) or "",
+                "total_active_count": int(row.get("total_active_count") or len(rows)),
             }
         )
     return items
+
+
+def load_branch_active_incidents_summary(
+    conn,
+    organization_id: UUID,
+    branch_id: UUID,
+    *,
+    domains: list[str] | tuple[str, ...] | None = None,
+    limit: int = 5,
+) -> dict[str, Any]:
+    """Return top active incidents plus the exact total unresolved count."""
+    items = load_branch_active_incidents(
+        conn,
+        organization_id,
+        branch_id,
+        domains=domains,
+        limit=limit,
+    )
+    total_count = int(items[0]["total_active_count"]) if items else 0
+    return {
+        "total_count": total_count,
+        "incidents": [
+            {k: v for k, v in item.items() if k != "total_active_count"}
+            for item in items
+        ],
+    }
 
 
 @router.post("/edge/incidents")
@@ -553,12 +593,36 @@ def ingest_edge_incidents(batch: EdgeIncidentBatch, gateway=Depends(_gateway)):
     return {"accepted_ids": accepted_ids, "rejected": rejected}
 
 
+@router.get("/branches/{branch_id}/active-incidents-summary")
+def get_branch_active_incidents_summary(
+    branch_id: UUID,
+    limit: int = Query(default=5, ge=1, le=20),
+    user=Depends(_user),
+):
+    with _database(read_only=True) as conn:
+        member, branch_ids, domains, _ = _authorize_scope(
+            conn,
+            user["id"],
+            requested_branch_id=branch_id,
+        )
+        if branch_id not in branch_ids:
+            return {"total_count": 0, "incidents": []}
+        return load_branch_active_incidents_summary(
+            conn,
+            member["organization_id"],
+            branch_id,
+            domains=domains,
+            limit=limit,
+        )
+
+
 @router.get("/incidents")
 def list_incidents(
     branch_id: UUID | None = Query(default=None),
     domain: Literal["machine", "lpg"] | None = Query(default=None),
     workflow_state: Literal["open", "acknowledged", "resolved"] | None = Query(default=None),
     edge_condition_state: Literal["active", "cleared"] | None = Query(default=None),
+    active_only: bool = Query(default=False),
     limit: int = Query(default=50, ge=1, le=200),
     user=Depends(_user),
 ):
@@ -570,7 +634,7 @@ def list_incidents(
             requested_domain=domain,
         )
         if not branch_ids:
-            return {"incidents": []}
+            return {"incidents": [], "total_count": 0}
 
         clauses = [
             "i.organization_id = %s",
@@ -578,6 +642,8 @@ def list_incidents(
             "i.domain = any(%s)",
         ]
         params: list[Any] = [member["organization_id"], branch_ids, domains]
+        if active_only:
+            clauses.append("(i.edge_condition_state = 'active' or i.workflow_state <> 'resolved')")
         if workflow_state:
             clauses.append("i.workflow_state = %s")
             params.append(workflow_state)
@@ -589,7 +655,8 @@ def list_incidents(
         rows = conn.execute(
             f"""select i.*, b.name as branch_name,
                        (select count(*) from public.customer_reports cr where cr.linked_incident_id = i.id) as linked_reports_count,
-                       (select count(*) from public.maintenance_tasks mt where mt.incident_id = i.id and mt.status <> 'completed') as open_tasks_count
+                       (select count(*) from public.maintenance_tasks mt where mt.incident_id = i.id and mt.status <> 'completed') as open_tasks_count,
+                       count(*) over() as total_matching_count
                 from public.incidents i
                 join public.branches b on b.id = i.branch_id and b.organization_id = i.organization_id
                 where {' and '.join(clauses)}
@@ -601,7 +668,8 @@ def list_incidents(
             tuple(params),
         ).fetchall()
 
-    return {"incidents": [_incident_summary_item(row) for row in rows]}
+    total_count = int(rows[0].get("total_matching_count") or len(rows)) if rows else 0
+    return {"incidents": [_incident_summary_item(row) for row in rows], "total_count": total_count}
 
 
 @router.get("/incidents/{incident_id}")
@@ -640,6 +708,67 @@ def get_incident_detail(incident_id: UUID, user=Depends(_user)):
             (incident_id, member["organization_id"]),
         ).fetchall()
 
+        maint_logs = conn.execute(
+            """select id, reference_code, branch_id, device_id, source_id, asset_name,
+                      domain, log_kind, lpg_session_id,
+                      incident_id, error_code, fault_name, technician_name,
+                      performed_by_user_id, performed_by_role, work_done, outcome, created_at
+               from public.machine_maintenance_logs
+               where incident_id = %s and organization_id = %s
+               order by created_at desc, id desc""",
+            (incident_id, member["organization_id"]),
+        ).fetchall()
+
+        asset_state: dict[str, Any]
+        now_utc = datetime.now(timezone.utc)
+        if row["domain"] == "machine":
+            ml = conn.execute(
+                "select state_payload, cloud_seen_at from public.machine_latest where device_id = %s",
+                (row["device_id"],),
+            ).fetchone()
+            ml_seen = _utc(ml.get("cloud_seen_at")) if ml else None
+            ml_fresh = bool(ml_seen and (now_utc - ml_seen).total_seconds() <= 45)
+            ml_payload = ml.get("state_payload") if (ml and ml_fresh and isinstance(ml.get("state_payload"), dict)) else {}
+            asset_state = {
+                "domain": "machine",
+                "state": ml_payload.get("state") if ml_fresh else "offline",
+                "freshness": "fresh" if ml_fresh else "stale" if ml_seen else "missing",
+                "maintenance_mode": ml_fresh and ml_payload.get("state") == "maintenance",
+                "fault_code": ml_payload.get("fault_code") if ml_fresh else None,
+            }
+        else:
+            dev_status_row = conn.execute(
+                "select status from public.devices where id = %s",
+                (row["device_id"],),
+            ).fetchone()
+            lpg_sess = conn.execute(
+                """select id, session_kind, started_by_label, service_note, started_at
+                   from public.lpg_maintenance_sessions
+                   where device_id = %s and status = 'active'
+                   order by started_at desc
+                   limit 1""",
+                (row["device_id"],),
+            ).fetchone()
+            lpg_obs = conn.execute(
+                "select quality, cloud_received_at from public.lpg_latest where device_id = %s",
+                (row["device_id"],),
+            ).fetchone()
+            lpg_seen = _utc(lpg_obs.get("cloud_received_at")) if lpg_obs else None
+            lpg_fresh = bool(lpg_seen and (now_utc - lpg_seen).total_seconds() <= 45)
+            lpg_quality = lpg_obs.get("quality") if (lpg_obs and isinstance(lpg_obs.get("quality"), dict)) else {}
+            maint_active = bool(
+                lpg_sess
+                or (dev_status_row and str(dev_status_row.get("status") or "").lower() == "maintenance")
+                or (lpg_seen and (now_utc - lpg_seen).total_seconds() <= 120 and lpg_quality.get("maintenance_mode") is True)
+            )
+            asset_state = {
+                "domain": "lpg",
+                "state": "maintenance" if maint_active else "online" if lpg_fresh else "offline",
+                "freshness": "fresh" if lpg_fresh else "stale" if lpg_seen else "missing",
+                "maintenance_mode": maint_active,
+                "session_kind": lpg_sess.get("session_kind") if lpg_sess else None,
+            }
+
         eligible_assignees = []
         if member["role"] in MANAGER_ROLES:
             spec_role = "machine_maintenance" if row["domain"] == "machine" else "lpg_maintenance"
@@ -669,6 +798,32 @@ def get_incident_detail(incident_id: UUID, user=Depends(_user)):
     is_specialist = member["role"] in ("machine_maintenance", "lpg_maintenance")
     item = _incident_summary_item(row)
     item["evidence_snapshot"] = row.get("evidence_snapshot") or {}
+    item["asset_state"] = asset_state
+    item["maintenance_logs"] = [
+        {
+            "id": str(lg["id"]),
+            "reference_code": lg["reference_code"],
+            "branch_id": str(lg["branch_id"]),
+            "device_id": str(lg["device_id"]),
+            "source_id": lg["source_id"],
+            "asset_name": lg["asset_name"],
+            "domain": lg.get("domain") or row["domain"],
+            "log_kind": lg.get("log_kind") or "maintenance",
+            "lpg_session_id": str(lg["lpg_session_id"]) if lg.get("lpg_session_id") else None,
+            "incident_id": str(lg["incident_id"]) if lg.get("incident_id") else None,
+            "error_code": lg["error_code"],
+            "fault_name": lg.get("fault_name"),
+            "technician_name": lg["technician_name"],
+            "performed_by_user_id": (
+                str(lg["performed_by_user_id"]) if lg.get("performed_by_user_id") else None
+            ),
+            "performed_by_role": lg["performed_by_role"],
+            "work_done": lg["work_done"],
+            "outcome": lg["outcome"],
+            "created_at": _iso(lg.get("created_at")),
+        }
+        for lg in maint_logs
+    ]
     item["events"] = [
         {
             "id": str(ev["id"]),

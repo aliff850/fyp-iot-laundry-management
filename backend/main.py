@@ -1,11 +1,13 @@
 import os
+import threading
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from onboarding import router as onboarding_router
+from onboarding import router as onboarding_router, warm_db_pool
 from branches import router as branches_router
 from gateways import router as gateways_router
 from edge import router as edge_router
@@ -24,16 +26,23 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 INDEX_FILE = os.path.join(STATIC_DIR, "index.html")
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    threading.Thread(target=warm_db_pool, daemon=True, name="spinsense-db-warmup").start()
+    yield
+
+
 app = FastAPI(
     title="MSU SpinSense - Smart Laundry Operator API",
     description="IoT Laundry Management & Fleet Control API per PRD Specifications",
     version="1.1.0",
+    lifespan=_lifespan,
 )
 
 # Only explicitly configured operator origins may use cross-origin API requests.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in os.getenv("OPERATOR_ORIGINS", "http://localhost:3000").split(",") if origin.strip()],
+    allow_origins=[origin.strip() for origin in os.getenv("OPERATOR_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if origin.strip()],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

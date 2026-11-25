@@ -26,6 +26,7 @@ import {
   executeResolveReport,
 } from "@/app/branches/[branchId]/customer-reports/actions";
 import { useActionToast } from "@/components/workspace/common/ActionToastContext";
+import { formatMytDateTime } from "@/lib/formatDate";
 
 export type ReportsOperatorRole =
   | "owner"
@@ -190,17 +191,7 @@ export function CustomerReportTriageModal({
   };
 
   const formatTimestamp = (iso: string) => {
-    try {
-      return new Date(iso).toLocaleString("en-MY", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    } catch {
-      return iso;
-    }
+    return formatMytDateTime(iso, iso);
   };
 
   return (

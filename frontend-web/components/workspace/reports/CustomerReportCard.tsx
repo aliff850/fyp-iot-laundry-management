@@ -17,6 +17,7 @@ import type {
   CustomerReportItem,
   CustomerReportStatus,
 } from "@/lib/auth/business";
+import { formatMytShortDateTime } from "@/lib/formatDate";
 
 export interface CustomerReportCardProps {
   report: CustomerReportItem;
@@ -67,16 +68,7 @@ function getAssetIcon(type: CustomerReportItem["asset_type"]) {
 }
 
 function formatDate(iso: string) {
-  try {
-    return new Date(iso).toLocaleString("en-MY", {
-      day: "2-digit",
-      month: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
+  return formatMytShortDateTime(iso, iso);
 }
 
 export function CustomerReportCard({

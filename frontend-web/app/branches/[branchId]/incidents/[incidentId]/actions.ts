@@ -4,9 +4,18 @@ import { revalidatePath } from "next/cache";
 import {
   acknowledgeBranchIncident,
   createIncidentTask,
+  getIncidentDetail,
   resolveBranchIncident,
   updateIncidentTask,
 } from "@/lib/auth/business";
+
+export async function fetchIncidentDetailAction(incidentId: string) {
+  const result = await getIncidentDetail(incidentId);
+  if (!result.ok) {
+    return { ok: false as const, message: result.message };
+  }
+  return { ok: true as const, incident: result.value };
+}
 
 export async function acknowledgeIncidentAction(
   branchId: string,
@@ -18,6 +27,7 @@ export async function acknowledgeIncidentAction(
     return { ok: false as const, message: result.message };
   }
   revalidatePath(`/branches/${branchId}/overview`);
+  revalidatePath(`/branches/${branchId}/incidents`);
   revalidatePath(`/branches/${branchId}/incidents/${incidentId}`);
   return { ok: true as const, incident: result.value };
 }
@@ -32,6 +42,7 @@ export async function resolveIncidentAction(
     return { ok: false as const, message: result.message };
   }
   revalidatePath(`/branches/${branchId}/overview`);
+  revalidatePath(`/branches/${branchId}/incidents`);
   revalidatePath(`/branches/${branchId}/incidents/${incidentId}`);
   return { ok: true as const, incident: result.value };
 }

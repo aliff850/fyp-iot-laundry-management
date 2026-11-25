@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -588,4 +588,58 @@ def test_customer_report_links_to_open_incident_and_closure_does_not_clear_edge_
     assert spec_reports[0]["reporter_name"] == ""
     assert spec_reports[0]["reporter_contact"] == ""
     assert spec_reports[0]["linked_incident"]["reference_code"] == "INC-9001"
+
+
+def test_active_incidents_summary_and_active_only_filter(monkeypatch):
+    conn = MagicMock()
+    now = datetime.now(timezone.utc)
+    conn.execute.return_value.fetchall.return_value = [
+        {
+            "id": uuid4(),
+            "reference_code": f"INC-{idx}",
+            "organization_id": ORG_ID,
+            "branch_id": BRANCH_ID,
+            "branch_name": "MSU Shah Alam",
+            "device_id": DEV_WASHER,
+            "source_id": "washer_1",
+            "asset_name": "Washer 01",
+            "domain": "machine",
+            "condition_key": "machine_fault",
+            "severity": "critical",
+            "edge_condition_state": "active",
+            "workflow_state": "open",
+            "fault_code": "E01",
+            "fault_name": "Water Inlet Failure",
+            "summary": "Fault active",
+            "rule_version": "v1",
+            "revision": 1,
+            "opened_at": now - timedelta(minutes=idx),
+            "total_active_count": 7,
+            "total_matching_count": 7,
+            "linked_reports_count": 0,
+            "open_tasks_count": 0,
+        }
+        for idx in range(5)
+    ]
+
+    @contextmanager
+    def db(**_kwargs):
+        yield conn
+
+    monkeypatch.setattr(incidents, "_database", db)
+    monkeypatch.setattr(
+        incidents,
+        "_authorize_scope",
+        lambda *_args, **_kw: ({"organization_id": ORG_ID, "role": "machine_maintenance"}, [BRANCH_ID], ["machine"], {BRANCH_ID: "MSU"}),
+    )
+
+    summary = incidents.get_branch_active_incidents_summary(BRANCH_ID, limit=5, user={"id": MECH_ID})
+    assert summary["total_count"] == 7
+    assert len(summary["incidents"]) == 5
+
+    listing = incidents.list_incidents(branch_id=BRANCH_ID, active_only=True, user={"id": MECH_ID})
+    assert listing["total_count"] == 7
+    assert len(listing["incidents"]) == 5
+    sql_last = conn.execute.call_args_list[-1].args[0].lower()
+    assert "i.edge_condition_state = 'active' or i.workflow_state <> 'resolved'" in sql_last
 

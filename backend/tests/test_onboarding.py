@@ -456,3 +456,44 @@ def test_is_email_registered_and_endpoint_validation_and_rate_limit(monkeypatch)
     onboarding._EMAIL_CHECK_ATTEMPTS.clear()
 
 
+def test_user_auth_singleflight_and_expired_jwt_rejection(monkeypatch):
+    import base64
+    import concurrent.futures
+    import json as json_mod
+    import threading
+
+    def make_jwt(exp: int) -> str:
+        header = base64.urlsafe_b64encode(b'{"alg":"ES256"}').decode().rstrip("=")
+        payload = base64.urlsafe_b64encode(json_mod.dumps({"sub": USER_ID, "exp": exp}).encode()).decode().rstrip("=")
+        return f"{header}.{payload}.sig"
+
+    expired_jwt = make_jwt(1_000_000)
+    monkeypatch.setattr(onboarding, "_http_get", lambda *a, **k: pytest.fail("expired JWT should reject before HTTP"))
+    with pytest.raises(HTTPException) as exc:
+        onboarding._user(f"Bearer {expired_jwt}")
+    assert exc.value.status_code == 401
+
+    valid_jwt = make_jwt(4_000_000_000)
+    calls = {"count": 0}
+    gate = threading.Event()
+
+    def slow_http_get(*_args, **_kwargs):
+        calls["count"] += 1
+        gate.wait(timeout=1.0)
+        return fake_response(200, user())
+
+    with onboarding._TOKEN_CACHE_LOCK:
+        onboarding._TOKEN_CACHE.clear()
+    monkeypatch.setattr(onboarding, "_http_get", slow_http_get)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(onboarding._user, f"Bearer {valid_jwt}") for _ in range(4)]
+        gate.set()
+        results = [f.result() for f in futures]
+
+    assert all(r["id"] == USER_ID for r in results)
+    assert calls["count"] == 1
+    with onboarding._TOKEN_CACHE_LOCK:
+        onboarding._TOKEN_CACHE.clear()
+
+

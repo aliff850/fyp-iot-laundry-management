@@ -6,6 +6,7 @@ import { BranchWorkspaceShell } from "@/components/workspace/layout/BranchWorksp
 import { MaintenanceHistoryView } from "@/components/workspace/machines/MaintenanceHistoryView";
 import {
   getBranch,
+  getBranchLpgSafety,
   getBranchMaintenanceLogs,
   getMembership,
   getRemoteMachines,
@@ -22,12 +23,7 @@ export default async function BranchMaintenancePage({
   params,
 }: BranchMaintenancePageProps) {
   const { branchId } = await params;
-  const [membershipRes, branchRes, logsRes, machinesRes] = await Promise.all([
-    getMembership(),
-    getBranch(branchId),
-    getBranchMaintenanceLogs(branchId, { page: 1, page_size: 20 }),
-    getRemoteMachines(branchId),
-  ]);
+  const membershipRes = await getMembership();
 
   if (!membershipRes.ok && membershipRes.status === 401) {
     redirect(`/login?next=%2Fbranches%2F${branchId}%2Fmaintenance`);
@@ -39,17 +35,25 @@ export default async function BranchMaintenancePage({
 
   const role = membershipRes.value.role;
 
-  if (role === "lpg_maintenance") {
-    redirect(`/branches/${branchId}/lpg`);
-  }
-
   if (
     role !== "owner" &&
     role !== "branch_manager" &&
-    role !== "machine_maintenance"
+    role !== "machine_maintenance" &&
+    role !== "lpg_maintenance"
   ) {
     redirect("/branches");
   }
+
+  const [branchRes, logsRes, machinesRes, lpgRes] = await Promise.all([
+    getBranch(branchId),
+    getBranchMaintenanceLogs(branchId, { page: 1, page_size: 20 }),
+    role === "lpg_maintenance"
+      ? Promise.resolve({ ok: true as const, value: [] })
+      : getRemoteMachines(branchId),
+    role === "machine_maintenance"
+      ? Promise.resolve({ ok: true as const, value: null })
+      : getBranchLpgSafety(branchId),
+  ]);
 
   if (!branchRes.ok) {
     if (branchRes.status === 403) {
@@ -94,9 +98,14 @@ export default async function BranchMaintenancePage({
   const branch = branchRes.value;
   const orgName =
     membershipRes.value.organization?.name ?? "Your Organization";
-  const machineOptions = machinesRes.ok
-    ? machinesRes.value.map((m) => ({ source_id: m.source_id, label: m.label }))
-    : [];
+  const machineOptions = [
+    ...(machinesRes.ok
+      ? machinesRes.value.map((m) => ({ source_id: m.source_id, label: m.label }))
+      : []),
+    ...(lpgRes.ok && lpgRes.value
+      ? lpgRes.value.devices.map((d) => ({ source_id: d.source_id, label: d.label }))
+      : []),
+  ];
 
   return (
     <BranchWorkspaceShell
@@ -111,6 +120,7 @@ export default async function BranchMaintenancePage({
         </h2>
         <MaintenanceHistoryView
           branchId={branchId}
+          userRole={role}
           machines={machineOptions}
           initialPage={logsRes.ok ? logsRes.value : null}
           initialError={logsRes.ok ? null : logsRes.message}

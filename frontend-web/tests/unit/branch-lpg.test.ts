@@ -207,7 +207,9 @@ describe("LpgSafetyPanel & LpgWorkspaceView", () => {
     expect(text).toContain("Reserve Tank Node");
     expect(text).toContain("Unreported Station");
     expect(text).toContain("Calibrate clean air");
-    expect(text).toContain("Start tank swap");
+    expect(text).toContain("Swap tank");
+    expect(text).toContain("Maintenance / Log service");
+    expect(text).toContain("Online");
     expect(raw).toContain("min-h-11");
     expect(raw).toContain("bg-navy");
     expect(raw).toContain("bg-ink");
@@ -255,6 +257,31 @@ describe("LpgSafetyPanel & LpgWorkspaceView", () => {
     expect(text).toContain("Recalibrate gas");
     expect(text).toContain("Complete tank swap");
     expect(text).toContain("Morning cylinder swap");
+  });
+
+  it("renders Low mode reminder badge when fuel falls below 15% without creating an Incident badge", () => {
+    const lowDevice: SafetyNodeDevice = {
+      ...freshDevice,
+      operating_mode: "low",
+      low_fuel_reminder: true,
+      observation: {
+        ...freshDevice.observation!,
+        values: {
+          ...freshDevice.observation!.values,
+          lpg_percent: 11.5,
+          lpg_weight_kg: 1.61,
+        },
+      },
+    };
+    const raw = ReactDOMServer.renderToString(
+      React.createElement(LpgCylinderCard, {
+        device: lowDevice,
+        branchId: snapshotFixture.branch_id,
+      }),
+    );
+    const text = raw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
+    expect(text).toContain("Low — Replace soon");
+    expect(text).not.toContain(">Incident<");
   });
 });
 

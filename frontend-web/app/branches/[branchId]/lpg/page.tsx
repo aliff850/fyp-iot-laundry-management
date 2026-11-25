@@ -11,7 +11,6 @@ import {
   getBranchRecords,
   getMembership,
 } from "@/lib/auth/business";
-import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "LPG Fuel & Safety" };
 export const dynamic = "force-dynamic";
@@ -22,20 +21,12 @@ interface BranchLpgPageProps {
 
 export default async function BranchLpgPage({ params }: BranchLpgPageProps) {
   const { branchId } = await params;
-  const supabaseClient = await createClient();
-  const [membershipRes, branchRes, lpgRes, recordsRes, identityRes] = await Promise.all([
+  const [membershipRes, branchRes, lpgRes, recordsRes] = await Promise.all([
     getMembership(),
     getBranch(branchId),
     getBranchLpgSafety(branchId),
     getBranchRecords(branchId, "lpg", "all", 1, 10),
-    supabaseClient
-      ? supabaseClient.auth.getUser().catch(() => ({ data: { user: null } }))
-      : Promise.resolve({ data: { user: null } }),
   ]);
-
-  const rawFullName = identityRes?.data?.user?.user_metadata?.full_name;
-  const defaultActorName =
-    typeof rawFullName === "string" && rawFullName.trim().length > 0 ? rawFullName.trim() : null;
 
   if (!membershipRes.ok && membershipRes.status === 401) {
     redirect(`/login?next=%2Fbranches%2F${branchId}%2Flpg`);
@@ -44,6 +35,10 @@ export default async function BranchLpgPage({ params }: BranchLpgPageProps) {
   if (!membershipRes.ok || membershipRes.value.state !== "active") {
     redirect("/membership-status");
   }
+
+  const rawFullName = membershipRes.value.profile?.full_name;
+  const defaultActorName =
+    typeof rawFullName === "string" && rawFullName.trim().length > 0 ? rawFullName.trim() : null;
 
   const role = membershipRes.value.role;
 

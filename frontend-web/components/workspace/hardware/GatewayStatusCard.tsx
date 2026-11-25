@@ -5,6 +5,7 @@ import { AlertTriangle, Cpu, Loader2, PowerOff } from "lucide-react";
 import { revokeGatewayAction } from "@/app/branches/[branchId]/hardware-setup/actions";
 import { useActionToast } from "@/components/workspace/common/ActionToastContext";
 import type { GatewayItem } from "@/lib/auth/business";
+import { formatMytTime } from "@/lib/formatDate";
 
 interface GatewayStatusCardProps {
   branchId: string;
@@ -176,13 +177,13 @@ export function GatewayStatusCard({
         <div className="rounded border border-rule bg-raised p-3">
           <span className="text-muted block mb-1">Last Heartbeat</span>
           <span className="text-ink">
-            {gateway.last_contact_at ? new Date(gateway.last_contact_at).toLocaleTimeString() : "Never"}
+            {formatMytTime(gateway.last_contact_at, "Never")}
           </span>
         </div>
         <div className="rounded border border-rule bg-raised p-3">
           <span className="text-muted block mb-1">Last Telemetry Sync</span>
           <span className="text-ink">
-            {gateway.last_sync_at ? new Date(gateway.last_sync_at).toLocaleTimeString() : "Never"}
+            {formatMytTime(gateway.last_sync_at, "Never")}
           </span>
         </div>
       </div>

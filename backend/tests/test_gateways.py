@@ -492,3 +492,97 @@ def test_edge_sync_rejects_conflicting_record_identity(monkeypatch):
     insert_call = next(call for call in conn.execute.call_args_list
                        if "insert into public.telemetry_observations" in call.args[0])
     assert "physical" in insert_call.args[1]
+
+
+def test_edge_sync_updates_lpg_latest_with_effective_timestamp(monkeypatch):
+    conn = MagicMock()
+    gw = {"id": GATEWAY_ID, "organization_id": ORG_ID, "branch_id": BRANCH_ID,
+          "status": "active", "config_revision": 2}
+    conn.execute.return_value.fetchall.return_value = [
+        {
+            "id": DEVICE_ID,
+            "source_id": "ESP32-NODE-01",
+            "source_kind": "physical",
+            "device_type": "lpg_edge_node",
+            "label": "LPG 01",
+            "status": "active",
+        }
+    ]
+    conn.execute.return_value.fetchone.return_value = {"id": 1}
+    monkeypatch.setattr(edge, "_database", mock_db(conn))
+
+    now = datetime.now(timezone.utc)
+    older = edge.EdgeTelemetryRecord(
+        record_id=uuid4(),
+        edge_id=101,
+        source_id="ESP32-NODE-01",
+        gateway_receipt_at=now - timedelta(seconds=30),
+        source_recorded_at=now - timedelta(seconds=30),
+        payload={"lpg_weight_kg": 10.0},
+        quality={"source_time_quality": "device_reported"},
+    )
+    newer = edge.EdgeTelemetryRecord(
+        record_id=uuid4(),
+        edge_id=102,
+        source_id="ESP32-NODE-01",
+        gateway_receipt_at=now - timedelta(seconds=5),
+        source_recorded_at=now - timedelta(seconds=5),
+        payload={"lpg_weight_kg": 9.8},
+        quality={"source_time_quality": "device_reported"},
+    )
+    batch = edge.EdgeSyncBatch(
+        gateway_id=GATEWAY_ID,
+        batch_id=uuid4(),
+        records=[newer, older],
+    )
+    res = edge.sync_telemetry_batch(batch, gw)
+    assert res["accepted_ids"] == [102, 101]
+    lpg_calls = [c for c in conn.execute.call_args_list if "insert into public.lpg_latest" in c.args[0]]
+    assert len(lpg_calls) == 1
+    assert lpg_calls[0].args[1][4] == newer.record_id
+    assert "on conflict (device_id) do update" in lpg_calls[0].args[0]
+
+
+def test_edge_lpg_presence_upserts_lpg_latest_without_history_rows(monkeypatch):
+    conn = MagicMock()
+    gw = {"id": GATEWAY_ID, "organization_id": ORG_ID, "branch_id": BRANCH_ID,
+          "status": "active", "config_revision": 4}
+    conn.execute.return_value.fetchall.return_value = [
+        {
+            "id": DEVICE_ID,
+            "source_id": "ESP32-NODE-01",
+            "source_kind": "physical",
+            "device_type": "lpg_edge_node",
+            "label": "LPG 01",
+            "status": "active",
+        }
+    ]
+    monkeypatch.setattr(edge, "_database", mock_db(conn))
+
+    now = datetime.now(timezone.utc)
+    batch = edge.EdgeLpgPresenceBatch(
+        gateway_id=GATEWAY_ID,
+        nodes=[
+            edge.EdgeLpgPresenceItem(
+                record_id=uuid4(),
+                source_id="ESP32-NODE-01",
+                gateway_receipt_at=now,
+                payload={"gross_weight_kg": 25.0, "lpg_percent": 70.0, "voltage": 0.45},
+                quality={"operating_mode": "online", "gas_condition": "normal", "recent_samples": [{"gross_weight_kg": 25.0, "sample_at": now.isoformat(), "weight_valid": True}]},
+            ),
+            edge.EdgeLpgPresenceItem(
+                record_id=uuid4(),
+                source_id="UNKNOWN-LPG",
+                gateway_receipt_at=now,
+                payload={"gross_weight_kg": 10.0},
+                quality={},
+            ),
+        ],
+    )
+
+    res = edge.sync_lpg_presence_batch(batch, gw)
+    assert res["accepted_source_ids"] == ["ESP32-NODE-01"]
+    assert res["rejected"][0]["source_id"] == "UNKNOWN-LPG"
+    sql_calls = [c.args[0] for c in conn.execute.call_args_list]
+    assert not any("telemetry_observations" in sql for sql in sql_calls)
+    assert any("insert into public.lpg_latest" in sql for sql in sql_calls)

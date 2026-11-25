@@ -3,6 +3,7 @@
 import React from "react";
 import { SlidersHorizontal } from "lucide-react";
 import type { RemoteMachine } from "@/app/branches/[branchId]/machines/actions";
+import { formatMytDateTime } from "@/lib/formatDate";
 
 export type MachineModalTab = "diagnostics" | "statistics" | "programs" | "parameters";
 
@@ -88,8 +89,7 @@ export function SimpleDryerSvg({
 
 export function formatDateLabel(value: string | null): string {
   if (!value) return "—";
-  const time = new Date(value);
-  return Number.isNaN(time.getTime()) ? "Time unknown" : time.toLocaleString("en-MY");
+  return formatMytDateTime(value, "Time unknown");
 }
 
 export function freshnessText(freshness: RemoteMachine["freshness"]): string {

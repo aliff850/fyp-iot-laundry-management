@@ -2,7 +2,6 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import type { ChartConfiguration } from "chart.js/auto";
-import { refreshBranchLpgSafety } from "@/app/branches/[branchId]/lpg/actions";
 import type { LpgSafetySnapshot, SafetyNodeDevice } from "@/lib/auth/business";
 import {
   ChartCanvas,
@@ -24,7 +23,7 @@ export interface LpgTankLevelsChartProps {
   initialError?: string | null;
 }
 
-const POLL_INTERVAL_MS = 4000;
+const POLL_INTERVAL_MS = 6000;
 
 export function deriveLpgTankEntries(devices: SafetyNodeDevice[]): LpgTankEntry[] {
   return devices.map((device) => {
@@ -133,22 +132,49 @@ export function LpgTankLevelsChart({
 
   useEffect(() => {
     let active = true;
+    let inFlight = false;
+    let activeController: AbortController | null = null;
 
     async function poll() {
+      if (!active || inFlight) return;
       if (document.visibilityState !== "visible") return;
-      const result = await refreshBranchLpgSafety(branchId);
-      if (!active) return;
-      if (result.ok) {
-        setSnapshot(result.value);
-        setErrorMessage(null);
-      } else {
-        setErrorMessage(result.message);
+      inFlight = true;
+      const controller = new AbortController();
+      activeController = controller;
+      try {
+        const res = await fetch(
+          `/api/workspace/branches/${encodeURIComponent(branchId)}/lpg-safety`,
+          { method: "GET", cache: "no-store", signal: controller.signal },
+        );
+        const result = (await res.json()) as
+          | { ok: true; value: LpgSafetySnapshot }
+          | { ok: false; message: string };
+        if (!active) return;
+        if (result.ok) {
+          setSnapshot(result.value);
+          setErrorMessage(null);
+        } else {
+          setErrorMessage(result.message);
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          return;
+        }
+        if (active) {
+          setErrorMessage("The business service is unavailable. Please retry.");
+        }
+      } finally {
+        if (activeController === controller) {
+          activeController = null;
+        }
+        inFlight = false;
       }
     }
 
     const timer = window.setInterval(poll, POLL_INTERVAL_MS);
     return () => {
       active = false;
+      activeController?.abort();
       window.clearInterval(timer);
     };
   }, [branchId]);

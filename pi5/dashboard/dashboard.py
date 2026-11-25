@@ -720,21 +720,50 @@ def _dashboard_snapshot() -> Dict[str, Any]:
                     presence = cursor.fetchone()
                 else:
                     presence = None
-                cursor.execute(
-                    """SELECT record_id, recorded_at, gateway_receipt_at, source_time_quality,
-                              source_kind, quality_metadata, data_payload, is_synced
-                       FROM sensor_telemetry
-                       WHERE gateway_id=%s AND source_id=%s AND quarantine_reason IS NULL
-                       ORDER BY CASE
-                           WHEN source_time_quality IN ('device_reported', 'assumed_utc')
-                                AND recorded_at <= gateway_receipt_at + INTERVAL 60 SECOND
-                           THEN LEAST(recorded_at, gateway_receipt_at) ELSE gateway_receipt_at END DESC, id DESC LIMIT 1""",
-                    (gateway_id, device["source_id"]),
-                )
-                row = cursor.fetchone()
+                lpg_presence_row = None
+                if device["device_type"] == "lpg_edge_node":
+                    try:
+                        cursor.execute(
+                            """SELECT boot_id, sequence, source_kind, source_time_quality,
+                                      recorded_at, gateway_receipt_at, quality_metadata,
+                                      data_payload, last_history_saved_at
+                               FROM lpg_presence
+                               WHERE gateway_id=%s AND source_id=%s""",
+                            (gateway_id, device["source_id"]),
+                        )
+                        cand = cursor.fetchone()
+                        if isinstance(cand, dict) and cand.get("gateway_receipt_at") is not None and "data_payload" in cand:
+                            lpg_presence_row = cand
+                    except Exception:
+                        lpg_presence_row = None
+
                 if device["device_type"] in ("washer", "dryer", "washer_dryer") and device["source_kind"] == "simulated":
                     observation = _machine_presence_observation(presence)
+                elif lpg_presence_row is not None:
+                    observation = _observation({
+                        "record_id": f"presence:{lpg_presence_row.get('boot_id')}:{lpg_presence_row.get('sequence')}",
+                        "source_id": device["source_id"],
+                        "recorded_at": lpg_presence_row.get("recorded_at"),
+                        "gateway_receipt_at": lpg_presence_row.get("gateway_receipt_at"),
+                        "source_time_quality": lpg_presence_row.get("source_time_quality"),
+                        "source_kind": lpg_presence_row.get("source_kind") or device["source_kind"],
+                        "quality_metadata": lpg_presence_row.get("quality_metadata"),
+                        "data_payload": lpg_presence_row.get("data_payload"),
+                        "is_synced": 1 if lpg_presence_row.get("last_history_saved_at") else 0,
+                    })
                 else:
+                    cursor.execute(
+                        """SELECT record_id, recorded_at, gateway_receipt_at, source_time_quality,
+                                  source_kind, quality_metadata, data_payload, is_synced
+                           FROM sensor_telemetry
+                           WHERE gateway_id=%s AND source_id=%s AND quarantine_reason IS NULL
+                           ORDER BY CASE
+                               WHEN source_time_quality IN ('device_reported', 'assumed_utc')
+                                    AND recorded_at <= gateway_receipt_at + INTERVAL 60 SECOND
+                               THEN LEAST(recorded_at, gateway_receipt_at) ELSE gateway_receipt_at END DESC, id DESC LIMIT 1""",
+                        (gateway_id, device["source_id"]),
+                    )
+                    row = cursor.fetchone()
                     observation = _observation(row)
                 active_session = lpg_maint_sessions.get(device["source_id"])
                 is_maint = (
@@ -1423,6 +1452,20 @@ def dashboard_safety():
 
 def _recent_lpg_samples(conn, gateway_id: str, source_id: str, limit: int = 10) -> list[Dict[str, Any]]:
     with conn.cursor() as cursor:
+        try:
+            cursor.execute(
+                """SELECT recent_samples_json
+                   FROM lpg_presence
+                   WHERE gateway_id=%s AND source_id=%s""",
+                (gateway_id, source_id),
+            )
+            pres_row = cursor.fetchone()
+            if isinstance(pres_row, dict) and pres_row.get("recent_samples_json"):
+                parsed = lpg_interpreter.parse_recent_lpg_samples(pres_row.get("recent_samples_json"), limit=limit)
+                if parsed:
+                    return parsed
+        except Exception:
+            pass
         cursor.execute(
             """SELECT record_id, recorded_at, gateway_receipt_at, source_time_quality,
                       quality_metadata, data_payload

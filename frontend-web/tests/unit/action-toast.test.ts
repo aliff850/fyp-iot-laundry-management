@@ -10,25 +10,7 @@ import {
   withActionToast,
   type ActionToastEntry,
 } from "@/components/workspace/common/ActionToastContext";
-import { MachineMaintenancePanel } from "@/components/workspace/machines/MachineMaintenancePanel";
-import type { RemoteMachine } from "@/lib/auth/business";
-
-const washerFixture: RemoteMachine = {
-  source_id: "washer-sim-01",
-  type: "washer",
-  source: "simulated",
-  label: "Demo Washer 01",
-  capacity_kg: 14,
-  state: "idle",
-  freshness: "fresh",
-  last_update: "2026-11-23T10:00:00Z",
-  data: {
-    remaining_seconds: 0,
-    programs: {
-      quick: { name: "Quick", duration_seconds: 30, price_myr: "4.00" },
-    },
-  },
-};
+import { ServiceAndIncidentModal } from "@/components/workspace/common/ServiceAndIncidentModal";
 
 describe("Bottom-left floating ActionToast system", () => {
   it("renders floating ActionToast on bottom-left with info/success/error tokens, optional link, and 44px dismiss control", () => {
@@ -170,33 +152,38 @@ describe("Bottom-left floating ActionToast system", () => {
     });
   });
 
-  it("renders MachineMaintenancePanel safely without inline feedback banners", () => {
+  it("renders ServiceAndIncidentModal safely without inline feedback banners", () => {
     const idleHtml = renderToString(
-      React.createElement(MachineMaintenancePanel, {
-        machine: washerFixture,
-        effectiveStatus: "IDLE",
+      React.createElement(ServiceAndIncidentModal, {
+        open: false,
         branchId: "branch-1",
+        domain: "machine",
+        sourceId: "washer-sim-01",
+        assetLabel: "Demo Washer 01",
+        assetStatus: "IDLE",
+        isMaintenanceMode: false,
         branchOpen: true,
         defaultTechnicianName: "Ali Tech",
+        onClose: () => {},
       }),
     );
-    expect(idleHtml).toContain("Put under maintenance");
-    expect(idleHtml).toContain("Put this machine into maintenance mode before logging repair work.");
-    expect(idleHtml).not.toContain("Save maintenance log");
-    expect(idleHtml).not.toContain("Log maintenance &amp; return to idle");
-    expect(idleHtml).not.toContain('role="status"');
-    expect(idleHtml).not.toContain('role="alert"');
+    expect(idleHtml).toBe("");
 
     const maintHtml = renderToString(
-      React.createElement(MachineMaintenancePanel, {
-        machine: { ...washerFixture, state: "maintenance" },
-        effectiveStatus: "MAINTENANCE",
+      React.createElement(ServiceAndIncidentModal, {
+        open: true,
         branchId: "branch-1",
-        branchOpen: true,
+        domain: "lpg",
+        sourceId: "esp32-lpg-01",
+        assetLabel: "Main Cylinder",
+        assetStatus: "LOW",
+        isMaintenanceMode: true,
         defaultTechnicianName: "Ali Tech",
+        onClose: () => {},
       }),
     );
-    expect(maintHtml).toContain("Log maintenance &amp; return to idle");
+    expect(maintHtml).toContain("Maintenance Active");
+    expect(maintHtml).toContain("Complete service &amp; return online");
     expect(maintHtml).not.toContain('role="status"');
     expect(maintHtml).not.toContain('role="alert"');
   });

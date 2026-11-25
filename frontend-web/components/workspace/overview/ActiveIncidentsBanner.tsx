@@ -2,23 +2,16 @@ import React from "react";
 import Link from "next/link";
 import { AlertTriangle, ArrowRight, Clock } from "lucide-react";
 import type { BranchOverviewIncident } from "@/lib/auth/business";
+import { formatMytDateTime } from "@/lib/formatDate";
 
 export interface ActiveIncidentsBannerProps {
   branchId: string;
   incidents: BranchOverviewIncident[];
+  totalCount?: number;
 }
 
 function formatIncidentTimestamp(iso: string): string {
-  if (!iso) return "—";
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) return iso;
-  return parsed.toLocaleString("en-MY", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatMytDateTime(iso);
 }
 
 function severityPill(severity: BranchOverviewIncident["severity"]): {
@@ -64,8 +57,15 @@ function formatDomainLabel(domain?: string | null): string | null {
 export function ActiveIncidentsBanner({
   branchId,
   incidents,
+  totalCount,
 }: ActiveIncidentsBannerProps) {
   if (incidents.length === 0) return null;
+
+  const displayedIncidents = incidents.slice(0, 5);
+  const effectiveTotal =
+    typeof totalCount === "number" && totalCount >= displayedIncidents.length
+      ? totalCount
+      : incidents.length;
 
   return (
     <section
@@ -76,13 +76,13 @@ export function ActiveIncidentsBanner({
       <div className="flex items-center gap-2.5">
         <AlertTriangle className="size-5 shrink-0 text-negative" aria-hidden="true" />
         <h2 className="text-sm font-semibold text-ink sm:text-base">
-          {incidents.length}{" "}
-          {incidents.length === 1 ? "Active Incident" : "Active Incidents"} Requiring Attention
+          {effectiveTotal}{" "}
+          {effectiveTotal === 1 ? "Active Incident" : "Active Incidents"} Requiring Attention
         </h2>
       </div>
 
       <div className="mt-3.5 flex w-full flex-col gap-3">
-        {incidents.map((inc) => {
+        {displayedIncidents.map((inc) => {
           const sev = severityPill(inc.severity);
           const workflowLabel = formatWorkflowLabel(inc.workflow_state);
           const domainLabel = formatDomainLabel(inc.domain);
@@ -147,6 +147,16 @@ export function ActiveIncidentsBanner({
             </article>
           );
         })}
+      </div>
+
+      <div className="mt-4 flex justify-end border-t border-negative/25 pt-3">
+        <Link
+          href={`/branches/${branchId}/incidents`}
+          className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-4 py-2 text-xs font-semibold text-ink transition-colors hover:border-accent/60 hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:w-auto"
+        >
+          <span>View all active incidents</span>
+          <ArrowRight className="size-3.5 shrink-0" aria-hidden="true" />
+        </Link>
       </div>
     </section>
   );

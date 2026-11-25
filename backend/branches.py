@@ -493,7 +493,7 @@ def get_branch_overview(branch_id: UUID, user=Depends(_user)):
             and d.device_type in ('washer','dryer','washer_dryer')""",
             (branch_id, organization)).fetchall()
         from datetime import datetime, timedelta, timezone
-        from incidents import load_branch_active_incidents
+        from incidents import load_branch_active_incidents_summary
         from lpg_operations import load_branch_safety_nodes, summarize_branch_lpg_overview
         now = datetime.now(timezone.utc)
         states = [m["state_payload"].get("state", "unknown") if m["state_payload"]
@@ -505,10 +505,14 @@ def get_branch_overview(branch_id: UUID, user=Depends(_user)):
         offline_cnt = states.count("unknown")
         washers_cnt = sum(1 for m in fleet_machines if m["device_type"] == "washer")
         dryers_cnt = sum(1 for m in fleet_machines if m["device_type"] == "dryer")
+        active_incidents_summary = load_branch_active_incidents_summary(
+            conn, organization, branch_id, limit=5
+        )
 
         return {
             "branch": b_data,
-            "incidents": load_branch_active_incidents(conn, organization, branch_id),
+            "incidents": active_incidents_summary["incidents"],
+            "incidents_total_count": active_incidents_summary["total_count"],
             "personnel": {
                 "total_assigned": len(personnel_list),
                 "branch_managers": sum(1 for p in personnel_list if p["role"] == "branch_manager"),

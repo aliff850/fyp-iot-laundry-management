@@ -20,6 +20,7 @@ import type {
 
 export interface MaintenanceHistoryViewProps {
   branchId: string;
+  userRole?: "owner" | "branch_manager" | "machine_maintenance" | "lpg_maintenance";
   machines: Pick<RemoteMachine, "source_id" | "label">[];
   initialPage: MaintenanceLogsPage | null;
   initialError?: string | null;
@@ -27,14 +28,24 @@ export interface MaintenanceHistoryViewProps {
 
 const PAGE_SIZE = 20;
 
+function logKindLabel(kind?: MaintenanceLogItem["log_kind"]): string {
+  if (kind === "incident_resolution") return "Incident Resolution";
+  if (kind === "tank_swap") return "Tank Swap";
+  if (kind === "inspection") return "Inspection";
+  return "Maintenance";
+}
+
 export function MaintenanceHistoryView({
   branchId,
+  userRole = "owner",
   machines,
   initialPage,
   initialError = null,
 }: MaintenanceHistoryViewProps) {
+  const canFilterDomain = userRole === "owner" || userRole === "branch_manager";
   const [data, setData] = useState<MaintenanceLogsPage | null>(initialPage);
   const [error, setError] = useState<string | null>(initialError);
+  const [domainFilter, setDomainFilter] = useState<"" | "machine" | "lpg">("");
   const [sourceFilter, setSourceFilter] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [appliedSearch, setAppliedSearch] = useState("");
@@ -60,12 +71,14 @@ export function MaintenanceHistoryView({
   })();
 
   const fetchLogs = (
+    nextDomain: "" | "machine" | "lpg",
     nextSourceId: string,
     nextSearch: string,
     nextPage: number,
   ) => {
     startTransition(async () => {
       const result = await loadBranchMaintenanceLogs(branchId, {
+        ...(nextDomain ? { domain: nextDomain } : {}),
         ...(nextSourceId ? { source_id: nextSourceId } : {}),
         ...(nextSearch ? { search: nextSearch } : {}),
         page: nextPage,
@@ -84,17 +97,18 @@ export function MaintenanceHistoryView({
     event.preventDefault();
     const trimmed = searchInput.trim();
     setAppliedSearch(trimmed);
-    fetchLogs(sourceFilter, trimmed, 1);
+    fetchLogs(domainFilter, sourceFilter, trimmed, 1);
   };
 
   const handleResetFilters = () => {
+    setDomainFilter("");
     setSourceFilter("");
     setSearchInput("");
     setAppliedSearch("");
-    fetchLogs("", "", 1);
+    fetchLogs("", "", "", 1);
   };
 
-  const hasActiveFilters = Boolean(sourceFilter || appliedSearch);
+  const hasActiveFilters = Boolean(domainFilter || sourceFilter || appliedSearch);
 
   return (
     <div className="space-y-6">
@@ -102,19 +116,39 @@ export function MaintenanceHistoryView({
         onSubmit={handleApplyFilters}
         className="flex flex-col gap-3 rounded-md border border-line bg-surface p-3.5 sm:p-4 lg:flex-row lg:items-end"
       >
+        {canFilterDomain && (
+          <label className="flex min-w-0 flex-1 flex-col gap-1.5 text-xs font-medium text-muted lg:max-w-44">
+            <span>Domain</span>
+            <select
+              name="domain"
+              value={domainFilter}
+              onChange={(e) => {
+                const nextDomain = e.target.value as "" | "machine" | "lpg";
+                setDomainFilter(nextDomain);
+                fetchLogs(nextDomain, sourceFilter, appliedSearch, 1);
+              }}
+              className="min-h-11 w-full rounded-md border border-control bg-canvas px-3 py-2 text-sm text-ink focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              <option value="">All equipment</option>
+              <option value="machine">Machines</option>
+              <option value="lpg">LPG &amp; Safety</option>
+            </select>
+          </label>
+        )}
+
         <label className="flex min-w-0 flex-1 flex-col gap-1.5 text-xs font-medium text-muted">
-          <span>Machine</span>
+          <span>Asset</span>
           <select
             name="source_id"
             value={sourceFilter}
             onChange={(e) => {
               const nextSource = e.target.value;
               setSourceFilter(nextSource);
-              fetchLogs(nextSource, appliedSearch, 1);
+              fetchLogs(domainFilter, nextSource, appliedSearch, 1);
             }}
             className="min-h-11 w-full rounded-md border border-control bg-canvas px-3 py-2 text-sm text-ink focus-visible:outline-2 focus-visible:outline-accent"
           >
-            <option value="">All machines</option>
+            <option value="">All assets</option>
             {machineOptions.map(([sourceId, label]) => (
               <option key={sourceId} value={sourceId}>
                 {label} ({sourceId})
@@ -228,6 +262,12 @@ export function MaintenanceHistoryView({
                         <span className="inline-flex items-center rounded border border-warning/40 bg-warning/10 px-2 py-0.5 font-mono text-xs font-semibold text-warning">
                           {entry.error_code}
                         </span>
+                        <span className="inline-flex items-center rounded border border-rule bg-raised px-2 py-0.5 text-[11px] font-medium text-muted">
+                          {entry.domain === "lpg" ? "LPG & Safety" : "Machine"}
+                        </span>
+                        <span className="inline-flex items-center rounded border border-line bg-canvas px-2 py-0.5 text-[11px] font-medium text-muted">
+                          {logKindLabel(entry.log_kind)}
+                        </span>
                         <h3 className="break-words text-sm font-semibold text-ink sm:text-base">
                           {entry.fault_name
                             ? entry.fault_name
@@ -271,7 +311,7 @@ export function MaintenanceHistoryView({
                       </dd>
                     </div>
                     <div className="min-w-0">
-                      <dt className="text-faint">Machine</dt>
+                      <dt className="text-faint">Asset</dt>
                       <dd className="mt-0.5 break-words font-medium text-ink">
                         {entry.asset_name} ({entry.source_id})
                       </dd>
@@ -316,7 +356,7 @@ export function MaintenanceHistoryView({
             <button
               type="button"
               disabled={isPending || page <= 1}
-              onClick={() => fetchLogs(sourceFilter, appliedSearch, page - 1)}
+              onClick={() => fetchLogs(domainFilter, sourceFilter, appliedSearch, page - 1)}
               className="inline-flex min-h-11 min-w-11 flex-1 items-center justify-center rounded-md border border-control bg-navy px-3.5 py-2 text-xs font-medium text-ink hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted sm:flex-initial"
             >
               Previous
@@ -324,7 +364,7 @@ export function MaintenanceHistoryView({
             <button
               type="button"
               disabled={isPending || !hasMore}
-              onClick={() => fetchLogs(sourceFilter, appliedSearch, page + 1)}
+              onClick={() => fetchLogs(domainFilter, sourceFilter, appliedSearch, page + 1)}
               className="inline-flex min-h-11 min-w-11 flex-1 items-center justify-center rounded-md border border-control bg-navy px-3.5 py-2 text-xs font-medium text-ink hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted sm:flex-initial"
             >
               Next

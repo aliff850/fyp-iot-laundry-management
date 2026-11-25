@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -12,7 +13,6 @@ import {
 } from "lucide-react";
 import { Notice } from "@/components/auth/AuthForm";
 import { BranchWorkspaceShell } from "@/components/workspace/layout/BranchWorkspaceShell";
-import { ActiveIncidentsBanner } from "@/components/workspace/overview/ActiveIncidentsBanner";
 import { PerformanceChart } from "@/components/workspace/branches/PerformanceChart";
 import { LpgTankLevelsChart } from "@/components/workspace/branches/LpgTankLevelsChart";
 import { BranchRecordsTable } from "@/components/workspace/records/BranchRecordsTable";
@@ -32,14 +32,62 @@ interface BranchOverviewPageProps {
   params: Promise<{ branchId: string }>;
 }
 
+function OverviewPanelSkeleton({ tall = false }: { tall?: boolean }) {
+  return (
+    <section className="rounded-md border border-line bg-surface p-5 md:p-6" aria-hidden="true">
+      <div className="mb-4 h-5 w-44 animate-pulse rounded bg-raised" />
+      <div
+        className={`${tall ? "h-64" : "h-48"} w-full animate-pulse rounded-md border border-rule bg-raised`}
+      />
+    </section>
+  );
+}
+
+async function OverviewPerformanceSection({ branchId }: { branchId: string }) {
+  const analyticsRes = await getBranchOverviewAnalytics(branchId, "day");
+  return (
+    <PerformanceChart
+      key={branchId}
+      branchId={branchId}
+      initialAnalytics={analyticsRes.ok ? analyticsRes.value : null}
+      initialError={analyticsRes.ok ? null : analyticsRes.message}
+    />
+  );
+}
+
+async function OverviewLpgSection({ branchId }: { branchId: string }) {
+  const lpgRes = await getBranchLpgSafety(branchId);
+  return (
+    <LpgTankLevelsChart
+      key={`lpg-tanks-${branchId}`}
+      branchId={branchId}
+      initialSnapshot={lpgRes.ok ? lpgRes.value : null}
+      initialError={lpgRes.ok ? null : lpgRes.message}
+    />
+  );
+}
+
+async function OverviewRecordsSection({ branchId }: { branchId: string }) {
+  const recordsRes = await getBranchRecords(branchId, "lpg", "all", 1, 10);
+  return (
+    <BranchRecordsTable
+      key={`records-${branchId}`}
+      branchId={branchId}
+      allowedScopes={["lpg", "machines"]}
+      defaultScope="lpg"
+      title="Recent records"
+      showPrice={true}
+      initialData={recordsRes.ok ? recordsRes.value : null}
+      initialError={recordsRes.ok ? null : recordsRes.message}
+    />
+  );
+}
+
 export default async function BranchOverviewPage({ params }: BranchOverviewPageProps) {
   const { branchId } = await params;
-  const [membershipRes, overviewRes, analyticsRes, lpgRes, recordsRes] = await Promise.all([
+  const [membershipRes, overviewRes] = await Promise.all([
     getMembership(),
     getBranchOverview(branchId),
-    getBranchOverviewAnalytics(branchId, "day"),
-    getBranchLpgSafety(branchId),
-    getBranchRecords(branchId, "lpg", "all", 1, 10),
   ]);
 
   if (!membershipRes.ok && membershipRes.status === 401) {
@@ -86,12 +134,13 @@ export default async function BranchOverviewPage({ params }: BranchOverviewPageP
       activeTab="overview"
       userRole={role}
       organizationName={orgName}
+      initialActiveIncidents={{
+        totalCount: overview.incidents_total_count ?? overview.incidents.length,
+        incidents: overview.incidents,
+      }}
     >
       <div className="space-y-6">
-        {/* Scoped Incidents Banner */}
-        {overview.incidents.length > 0 ? (
-          <ActiveIncidentsBanner branchId={branchId} incidents={overview.incidents} />
-        ) : (
+        {overview.incidents.length === 0 && (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface p-4">
             <div className="flex items-center gap-2.5">
               <ShieldCheck className="size-5 text-positive" aria-hidden="true" />
@@ -185,30 +234,17 @@ export default async function BranchOverviewPage({ params }: BranchOverviewPageP
           </div>
         </section>
 
-        <PerformanceChart
-          key={branch.id}
-          branchId={branch.id}
-          initialAnalytics={analyticsRes.ok ? analyticsRes.value : null}
-          initialError={analyticsRes.ok ? null : analyticsRes.message}
-        />
+        <Suspense fallback={<OverviewPanelSkeleton tall />}>
+          <OverviewPerformanceSection branchId={branch.id} />
+        </Suspense>
 
-        <LpgTankLevelsChart
-          key={`lpg-tanks-${branch.id}`}
-          branchId={branch.id}
-          initialSnapshot={lpgRes.ok ? lpgRes.value : null}
-          initialError={lpgRes.ok ? null : lpgRes.message}
-        />
+        <Suspense fallback={<OverviewPanelSkeleton />}>
+          <OverviewLpgSection branchId={branch.id} />
+        </Suspense>
 
-        <BranchRecordsTable
-          key={`records-${branch.id}`}
-          branchId={branch.id}
-          allowedScopes={["lpg", "machines"]}
-          defaultScope="lpg"
-          title="Recent records"
-          showPrice={true}
-          initialData={recordsRes.ok ? recordsRes.value : null}
-          initialError={recordsRes.ok ? null : recordsRes.message}
-        />
+        <Suspense fallback={<OverviewPanelSkeleton />}>
+          <OverviewRecordsSection branchId={branch.id} />
+        </Suspense>
       </div>
     </BranchWorkspaceShell>
   );

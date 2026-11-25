@@ -1,4 +1,9 @@
+import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const perRequestCache: <T extends (...args: any[]) => any>(fn: T) => T =
+  typeof cache === "function" ? cache : ((fn) => fn);
 
 export type MembershipState = "incomplete" | "pending" | "approval_pending" | "rejected" | "active" | "approved_unassigned" | "deactivated";
 export type MembershipProfile = { full_name: string; phone: string };
@@ -36,28 +41,49 @@ function apiBase(): string | null {
 
 let inFlightTokenPromise: Promise<Result<string>> | null = null;
 
-async function resolveVerifiedBearerToken(): Promise<Result<string>> {
-  if (inFlightTokenPromise) return inFlightTokenPromise;
-  inFlightTokenPromise = (async (): Promise<Result<string>> => {
-    try {
-      const client = await createClient();
-      if (!client) return { ok: false, status: 503, message: "Authentication is unavailable." };
-      // getUser establishes a fresh verified identity; getSession only supplies its bearer token.
-      const { data: identity, error: identityError } = await client.auth.getUser();
+type ClaimsAuthClient = {
+  getClaims?: () => Promise<{ data?: { claims?: Record<string, unknown> | null } | null; error?: unknown }>;
+  getUser: () => Promise<{ data: { user?: { email_confirmed_at?: string | null } | null }; error?: unknown }>;
+  getSession: () => Promise<{ data: { session?: { access_token?: string | null } | null }; error?: unknown }>;
+};
+
+const verifySessionTokenOnce = perRequestCache(async (): Promise<Result<string>> => {
+  try {
+    const client = await createClient();
+    if (!client) return { ok: false, status: 503, message: "Authentication is unavailable." };
+    const auth = client.auth as unknown as ClaimsAuthClient;
+    if (typeof auth.getClaims === "function") {
+      // getClaims verifies asymmetric JWTs locally via cached JWKS; FastAPI enforces /auth/v1/user + DB state.
+      const { data: claimsData, error: claimsError } = await auth.getClaims();
+      const claims = claimsData?.claims;
+      const meta =
+        claims?.user_metadata && typeof claims.user_metadata === "object"
+          ? (claims.user_metadata as Record<string, unknown>)
+          : null;
+      if (claimsError || !claims?.sub || meta?.email_verified === false) {
+        return { ok: false, status: 401, message: "Log in with a confirmed account." };
+      }
+    } else {
+      const { data: identity, error: identityError } = await auth.getUser();
       if (identityError || !identity.user?.email_confirmed_at) {
         return { ok: false, status: 401, message: "Log in with a confirmed account." };
       }
-      const { data: session, error: sessionError } = await client.auth.getSession();
-      if (sessionError || !session.session?.access_token) {
-        return { ok: false, status: 401, message: "Your session has expired. Log in again." };
-      }
-      return { ok: true, value: session.session.access_token };
-    } catch {
-      return { ok: false, status: 503, message: "Authentication is temporarily unavailable." };
-    } finally {
-      inFlightTokenPromise = null;
     }
-  })();
+    const { data: session, error: sessionError } = await auth.getSession();
+    if (sessionError || !session.session?.access_token) {
+      return { ok: false, status: 401, message: "Your session has expired. Log in again." };
+    }
+    return { ok: true, value: session.session.access_token };
+  } catch {
+    return { ok: false, status: 503, message: "Authentication is temporarily unavailable." };
+  }
+});
+
+async function resolveVerifiedBearerToken(): Promise<Result<string>> {
+  if (inFlightTokenPromise) return inFlightTokenPromise;
+  inFlightTokenPromise = verifySessionTokenOnce().finally(() => {
+    inFlightTokenPromise = null;
+  });
   return inFlightTokenPromise;
 }
 
@@ -330,6 +356,7 @@ export type BranchOverviewIncident = {
 export type BranchOverviewData = {
   branch: BranchDetail;
   incidents: BranchOverviewIncident[];
+  incidents_total_count?: number;
   personnel: {
     total_assigned: number;
     branch_managers: number;
@@ -366,11 +393,15 @@ export type BranchOverviewData = {
   };
 };
 
-export async function getBranch(branchId: string): Promise<Result<BranchDetail>> {
+const fetchBranchCached = perRequestCache(async (branchId: string): Promise<Result<BranchDetail>> => {
   const result = await businessRequest<{ branch: BranchDetail }>(`/branches/${branchId}`);
   if (!result.ok) return result;
   if (!result.value?.branch || !validBranch(result.value.branch)) return invalid();
   return { ok: true, value: result.value.branch };
+});
+
+export async function getBranch(branchId: string): Promise<Result<BranchDetail>> {
+  return fetchBranchCached(branchId);
 }
 
 export interface BranchUpdatePayload {
@@ -452,6 +483,15 @@ export type FaultDiagnosis = {
   troubleshooting_steps: string[];
 };
 
+export type RemoteMachineActiveIncident = {
+  id: string;
+  reference_code: string;
+  severity: "warning" | "critical";
+  fault_code: string | null;
+  workflow_state: string;
+  edge_condition_state: string;
+};
+
 export type RemoteMachine = {
   source_id: string;
   type: "washer" | "dryer" | "washer_dryer";
@@ -470,6 +510,7 @@ export type RemoteMachine = {
     programs?: Record<string, Record<string, unknown>>;
   } | null;
   diagnosis?: FaultDiagnosis | null;
+  active_incident?: RemoteMachineActiveIncident | null;
 };
 
 export type RemoteMachineCommandAction =
@@ -670,6 +711,8 @@ export interface SafetyNodeGasInterpretation {
 
 export interface SafetyNodeMaintenanceSession {
   session_id?: string | null;
+  session_kind?: "tank_swap" | "maintenance" | "incident_inspection" | string;
+  incident_id?: string | null;
   started_by?: string | null;
   service_note?: string | null;
   started_at?: string | null;
@@ -703,6 +746,8 @@ export interface SafetyNodeDevice {
   label: string;
   capacity_kg: number | null;
   status?: "active" | "maintenance" | string;
+  operating_mode?: "online" | "low" | "maintenance" | "stale" | "offline" | string;
+  low_fuel_reminder?: boolean;
   maintenance_mode?: boolean;
   maintenance_session?: SafetyNodeMaintenanceSession | null;
   gas_interpretation?: SafetyNodeGasInterpretation | null;
@@ -819,6 +864,50 @@ export async function startLpgTankSwap(
 ): Promise<Result<LpgCommandDispatchResponse>> {
   const result = await businessRequest<LpgCommandDispatchResponse>(
     `/branches/${encodeURIComponent(branchId)}/lpg/${encodeURIComponent(sourceId)}/maintenance/start`,
+    "POST",
+    payload,
+  );
+  if (!result.ok) return result;
+  if (!result.value || typeof result.value.command_id !== "string") return invalid();
+  return { ok: true, value: result.value };
+}
+
+export interface LpgStartServiceMaintenancePayload {
+  request_id: string;
+  started_by?: string;
+  service_note?: string;
+  session_kind?: "maintenance" | "incident_inspection";
+  incident_id?: string | null;
+}
+
+export interface LpgCompleteServiceMaintenancePayload {
+  request_id: string;
+  completed_by?: string;
+  service_note?: string;
+}
+
+export async function startLpgServiceMaintenance(
+  branchId: string,
+  sourceId: string,
+  payload: LpgStartServiceMaintenancePayload,
+): Promise<Result<LpgCommandDispatchResponse>> {
+  const result = await businessRequest<LpgCommandDispatchResponse>(
+    `/branches/${encodeURIComponent(branchId)}/lpg/${encodeURIComponent(sourceId)}/service-maintenance/start`,
+    "POST",
+    payload,
+  );
+  if (!result.ok) return result;
+  if (!result.value || typeof result.value.command_id !== "string") return invalid();
+  return { ok: true, value: result.value };
+}
+
+export async function completeLpgServiceMaintenance(
+  branchId: string,
+  sourceId: string,
+  payload: LpgCompleteServiceMaintenancePayload,
+): Promise<Result<LpgCommandDispatchResponse>> {
+  const result = await businessRequest<LpgCommandDispatchResponse>(
+    `/branches/${encodeURIComponent(branchId)}/lpg/${encodeURIComponent(sourceId)}/service-maintenance/complete`,
     "POST",
     payload,
   );
@@ -1140,6 +1229,7 @@ export interface OverviewAnalyticsSummary {
   total_lpg_nodes: number;
   gas_aggregation_mode: "uncalibrated" | "single_node" | "multi_node_average";
   complaints_total: number | null;
+  incidents_total?: number;
 }
 
 export interface OverviewProgramSpec {
@@ -1225,12 +1315,38 @@ export interface OverviewHourlyDemandPoint {
   estimated_revenue_myr: string;
 }
 
+export interface OverviewIncidentPoint {
+  bucket: string;
+  label: string;
+  total: number;
+  warning: number;
+  critical: number;
+  resolved: number;
+}
+
+export interface OverviewIncidentMetrics {
+  total_incidents: number;
+  open_count: number;
+  acknowledged_count: number;
+  resolved_count: number;
+  warning_count: number;
+  critical_count: number;
+  machine_count: number;
+  lpg_count: number;
+  avg_acknowledge_minutes: number | null;
+  avg_resolve_minutes: number | null;
+  ack_sample_count: number;
+  resolve_sample_count: number;
+  series: OverviewIncidentPoint[];
+}
+
 export interface BranchOverviewAnalytics {
   branch_count?: number;
   branch_breakdown?: OverviewBranchBreakdown[];
   program_breakdown?: OverviewProgramBreakdown[];
   cycle_outcomes?: OverviewCycleOutcomes;
   hourly_demand?: OverviewHourlyDemandPoint[];
+  incident_metrics?: OverviewIncidentMetrics;
   branch_id: string;
   period: OverviewAnalyticsPeriod;
   granularity: "hour" | "day";
@@ -1662,21 +1778,62 @@ export type EligibleAssignee = {
   role: string;
 };
 
+export type IncidentAssetState = {
+  domain: "machine" | "lpg";
+  state: string;
+  freshness: string;
+  maintenance_mode: boolean;
+  fault_code?: string | null;
+  session_kind?: string | null;
+};
+
 export type IncidentDetail = IncidentSummary & {
   evidence_snapshot: Record<string, unknown>;
+  asset_state?: IncidentAssetState;
+  maintenance_logs?: MaintenanceLogItem[];
   events: IncidentEventItem[];
   tasks: MaintenanceTaskItem[];
   linked_reports: LinkedReportSummary[];
   eligible_assignees: EligibleAssignee[];
 };
 
+export type BranchActiveIncidentsSummary = {
+  total_count: number;
+  incidents: BranchOverviewIncident[];
+};
+
+export async function getBranchActiveIncidentsSummary(
+  branchId: string,
+  limit = 5,
+): Promise<Result<BranchActiveIncidentsSummary>> {
+  const result = await businessRequest<BranchActiveIncidentsSummary>(
+    `/branches/${encodeURIComponent(branchId)}/active-incidents-summary?limit=${limit}`,
+  );
+  if (!result.ok) return result;
+  if (!Array.isArray(result.value?.incidents)) return invalid();
+  return {
+    ok: true,
+    value: {
+      total_count: Number(result.value.total_count ?? result.value.incidents.length),
+      incidents: result.value.incidents,
+    },
+  };
+}
+
 export async function getBranchIncidents(
   branchId: string,
-  params?: { domain?: "machine" | "lpg"; workflowState?: IncidentWorkflowState },
+  params?: {
+    domain?: "machine" | "lpg";
+    workflowState?: IncidentWorkflowState;
+    activeOnly?: boolean;
+    limit?: number;
+  },
 ): Promise<Result<IncidentSummary[]>> {
   const query = new URLSearchParams({ branch_id: branchId });
   if (params?.domain) query.set("domain", params.domain);
   if (params?.workflowState) query.set("workflow_state", params.workflowState);
+  if (params?.activeOnly) query.set("active_only", "true");
+  if (typeof params?.limit === "number") query.set("limit", String(params.limit));
   const result = await businessRequest<{ incidents: IncidentSummary[] }>(`/incidents?${query.toString()}`);
   if (!result.ok) return result;
   if (!Array.isArray(result.value?.incidents)) return invalid();
@@ -1752,6 +1909,7 @@ export async function updateIncidentTask(
 }
 
 export type MaintenanceLogOutcome = "in_progress" | "completed";
+export type MaintenanceLogKind = "maintenance" | "incident_resolution" | "tank_swap" | "inspection";
 
 export type MaintenanceLogItem = {
   id: string;
@@ -1760,6 +1918,9 @@ export type MaintenanceLogItem = {
   device_id: string;
   source_id: string;
   asset_name: string;
+  domain?: "machine" | "lpg";
+  log_kind?: MaintenanceLogKind;
+  lpg_session_id?: string | null;
   incident_id: string | null;
   error_code: string;
   fault_name: string | null;
@@ -1783,20 +1944,30 @@ export type MaintenanceLogCreateInput = {
   error_code: string;
   technician_name: string;
   work_done: string;
+  log_kind?: MaintenanceLogKind;
+  incident_id?: string | null;
   outcome: MaintenanceLogOutcome;
   return_to_service?: boolean;
+  resolve_incident?: boolean;
   command_request_id?: string;
 };
 
 export type MaintenanceLogCreateResponse = {
   item: MaintenanceLogItem;
   command: { command_id: string; status: string } | null;
+  incident_resolution?: {
+    resolved: boolean;
+    incident_id: string;
+    reason?: string;
+  } | null;
 };
 
 export async function getBranchMaintenanceLogs(
   branchId: string,
   options?: {
+    domain?: "machine" | "lpg";
     source_id?: string;
+    incident_id?: string;
     error_code?: string;
     search?: string;
     page?: number;
@@ -1804,7 +1975,9 @@ export async function getBranchMaintenanceLogs(
   },
 ): Promise<Result<MaintenanceLogsPage>> {
   const query = new URLSearchParams();
+  if (options?.domain) query.set("domain", options.domain);
   if (options?.source_id?.trim()) query.set("source_id", options.source_id.trim());
+  if (options?.incident_id?.trim()) query.set("incident_id", options.incident_id.trim());
   if (options?.error_code?.trim()) query.set("error_code", options.error_code.trim());
   if (options?.search?.trim()) query.set("search", options.search.trim());
   if (options?.page) query.set("page", String(options.page));
@@ -1815,6 +1988,21 @@ export async function getBranchMaintenanceLogs(
   );
   if (!result.ok) return result;
   if (!Array.isArray(result.value?.items)) return invalid();
+  return result;
+}
+
+export async function createDeviceMaintenanceLog(
+  branchId: string,
+  sourceId: string,
+  payload: MaintenanceLogCreateInput,
+): Promise<Result<MaintenanceLogCreateResponse>> {
+  const result = await businessRequest<MaintenanceLogCreateResponse>(
+    `/branches/${encodeURIComponent(branchId)}/devices/${encodeURIComponent(sourceId)}/maintenance-logs`,
+    "POST",
+    payload,
+  );
+  if (!result.ok) return result;
+  if (!result.value?.item?.id) return invalid();
   return result;
 }
 

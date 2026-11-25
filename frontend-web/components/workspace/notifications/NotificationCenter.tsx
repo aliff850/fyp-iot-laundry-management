@@ -19,7 +19,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { fetchWorkspaceNotifications } from "@/app/notifications/actions";
+import type { FetchWorkspaceNotificationsResult } from "@/app/notifications/actions";
 import type {
   NotificationBranchOption,
   WorkspaceNotificationEvent,
@@ -244,13 +244,39 @@ export function NotificationCenter({
 
     let cancelled = false;
     let authStopped = false;
+    let inFlight = false;
+    let activeController: AbortController | null = null;
 
     const pollOnce = async () => {
-      if (cancelled || authStopped) return;
+      if (cancelled || authStopped || inFlight) return;
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       if (typeof navigator !== "undefined" && navigator.onLine === false) return;
 
-      const result = await fetchWorkspaceNotifications("all");
+      inFlight = true;
+      const controller = new AbortController();
+      activeController = controller;
+      let result: FetchWorkspaceNotificationsResult;
+      try {
+        const response = await fetch("/api/workspace/notifications?category=all&limit=100", {
+          method: "GET",
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        result = (await response.json()) as FetchWorkspaceNotificationsResult;
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          return;
+        }
+        if (!cancelled) {
+          setPollError("Unable to refresh workspace notifications.");
+        }
+        return;
+      } finally {
+        if (activeController === controller) {
+          activeController = null;
+        }
+        inFlight = false;
+      }
       if (cancelled) return;
 
       if (!result.ok) {
@@ -305,7 +331,7 @@ export function NotificationCenter({
     void pollOnce();
     const interval = setInterval(() => {
       void pollOnce();
-    }, 5000);
+    }, 15000);
 
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
@@ -316,6 +342,7 @@ export function NotificationCenter({
 
     return () => {
       cancelled = true;
+      activeController?.abort();
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };

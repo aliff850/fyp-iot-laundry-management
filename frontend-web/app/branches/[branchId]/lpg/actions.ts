@@ -3,13 +3,17 @@
 import { revalidatePath } from "next/cache";
 import {
   calibrateLpgGasBaseline,
+  completeLpgServiceMaintenance,
   completeLpgTankSwap,
   getBranchLpgSafety,
   getLpgCommandStatus,
   getLpgMaintenanceStatus,
+  startLpgServiceMaintenance,
   startLpgTankSwap,
+  type LpgCompleteServiceMaintenancePayload,
   type LpgCompleteTankSwapPayload,
   type LpgGasBaselinePayload,
+  type LpgStartServiceMaintenancePayload,
   type LpgStartTankSwapPayload,
 } from "@/lib/auth/business";
 
@@ -65,6 +69,40 @@ export async function completeBranchLpgTankSwap(
   const result = await completeLpgTankSwap(branchId, sourceId, payload);
   if (result.ok) {
     revalidatePath(`/branches/${branchId}/lpg`);
+    revalidatePath(`/branches/${branchId}/maintenance`);
+    revalidatePath(`/branches/${branchId}/overview`);
+  }
+  return result;
+}
+
+export async function startBranchLpgServiceMaintenance(
+  branchId: string,
+  sourceId: string,
+  payload: LpgStartServiceMaintenancePayload,
+) {
+  if (!validBranch(branchId) || !validSource(sourceId) || !UUID_RE.test(payload.request_id)) {
+    return { ok: false as const, status: 400, message: "Invalid LPG maintenance request identity." };
+  }
+  const result = await startLpgServiceMaintenance(branchId, sourceId, payload);
+  if (result.ok) {
+    revalidatePath(`/branches/${branchId}/lpg`);
+    revalidatePath(`/branches/${branchId}/overview`);
+  }
+  return result;
+}
+
+export async function completeBranchLpgServiceMaintenance(
+  branchId: string,
+  sourceId: string,
+  payload: LpgCompleteServiceMaintenancePayload,
+) {
+  if (!validBranch(branchId) || !validSource(sourceId) || !UUID_RE.test(payload.request_id)) {
+    return { ok: false as const, status: 400, message: "Invalid LPG maintenance completion request identity." };
+  }
+  const result = await completeLpgServiceMaintenance(branchId, sourceId, payload);
+  if (result.ok) {
+    revalidatePath(`/branches/${branchId}/lpg`);
+    revalidatePath(`/branches/${branchId}/maintenance`);
     revalidatePath(`/branches/${branchId}/overview`);
   }
   return result;

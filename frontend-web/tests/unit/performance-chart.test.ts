@@ -6,6 +6,10 @@ import {
   PerformanceChart,
   selectRevenueSeriesValues,
 } from "@/components/workspace/branches/PerformanceChart";
+import {
+  IncidentMetricsSection,
+  formatIncidentDuration,
+} from "@/components/workspace/branches/IncidentMetricsSection";
 import type { BranchOverviewAnalytics } from "@/lib/auth/business";
 
 const BRANCH_ID = "22222222-2222-2222-2222-222222222222";
@@ -430,5 +434,66 @@ describe("PerformanceChart (Pi-aligned Chart.js Branch Overview Analytics)", () 
     );
     expect(weekHtml).toContain("Daily estimated revenue");
     expect(weekHtml).toContain("Daily MYT");
+  });
+
+  it("renders RP-01 incident metrics KPIs, durations, and honest empty fallback without forbidden markup", () => {
+    expect(formatIncidentDuration(null, false)).toBe("—");
+    expect(formatIncidentDuration(null, true)).toBe("None recorded");
+    expect(formatIncidentDuration(12.34, true)).toBe("12.3 min");
+
+    const analyticsWithIncidents = buildAnalytics({
+      summary: {
+        ...buildAnalytics().summary,
+        incidents_total: 3,
+      },
+      incident_metrics: {
+        total_incidents: 3,
+        open_count: 1,
+        acknowledged_count: 1,
+        resolved_count: 1,
+        warning_count: 2,
+        critical_count: 1,
+        machine_count: 2,
+        lpg_count: 1,
+        avg_acknowledge_minutes: 10.0,
+        avg_resolve_minutes: 30.0,
+        ack_sample_count: 2,
+        resolve_sample_count: 1,
+        series: [
+          { bucket: "2026-11-15T09:00", label: "09:00", total: 1, warning: 0, critical: 1, resolved: 1 },
+          { bucket: "2026-11-15T10:00", label: "10:00", total: 2, warning: 2, critical: 0, resolved: 0 },
+        ],
+      },
+    });
+
+    const html = renderToString(
+      React.createElement(PerformanceChart, {
+        branchId: BRANCH_ID,
+        initialAnalytics: analyticsWithIncidents,
+      })
+    );
+    const text = html.replace(/<!--.*?-->/g, "");
+    expect(text).toContain("Incident metrics");
+    expect(text).toContain("Critical alerts");
+    expect(text).toContain("Avg acknowledge");
+    expect(text).toContain("10.0 min");
+    expect(text).toContain("2 acknowledged");
+    expect(text).toContain("Avg resolution");
+    expect(text).toContain("30.0 min");
+    expect(text).toContain("1 resolved");
+    expect(text).toContain("Machine domain");
+    expect(text).toContain("LPG domain");
+    expect(text).not.toContain("·");
+    expect(text).not.toMatch(/WF-0\d|CR-0\d|FM-0\d|RP-0\d|IM-0\d/);
+
+    const emptyHtml = renderToString(
+      React.createElement(IncidentMetricsSection, {
+        granularity: "day",
+        hasLoadedData: true,
+      })
+    );
+    const emptyText = emptyHtml.replace(/<!--.*?-->/g, "");
+    expect(emptyText).toContain("None recorded");
+    expect(emptyText).toContain("No incidents recorded in this timeframe.");
   });
 });

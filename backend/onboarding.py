@@ -1,5 +1,7 @@
 """Supabase-verified, database-authorized onboarding boundary."""
 
+import base64
+import json
 import logging
 import os
 import re
@@ -41,14 +43,52 @@ _HTTP_CLIENT = httpx.Client(
     limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
 )
 
-_TOKEN_CACHE_TTL_SECONDS = 5.0
+_TOKEN_CACHE_TTL_SECONDS = 45.0
 _TOKEN_CACHE_LOCK = threading.Lock()
 _TOKEN_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+_TOKEN_INFLIGHT_LOCK = threading.Lock()
+_TOKEN_INFLIGHT: dict[tuple[str, str], threading.Event] = {}
 
 _DB_POOL_MAX_IDLE = 8
-_DB_IDLE_CHECK_SECONDS = 15.0
+_DB_POOL_MIN_WARM = 2
+_DB_IDLE_CHECK_SECONDS = 45.0
 _DB_POOL_LOCK = threading.Lock()
 _DB_IDLE_POOL: dict[str, deque[tuple[psycopg.Connection, float]]] = {}
+
+
+def _jwt_remaining_seconds(token: str) -> float | None:
+    """Return remaining seconds until unverified JWT `exp`, or None for opaque tokens."""
+    parts = token.split(".")
+    if len(parts) != 3 or not parts[1]:
+        return None
+    try:
+        padded = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        exp = payload.get("exp")
+        if isinstance(exp, (int, float)) and not isinstance(exp, bool):
+            return float(exp) - time.time()
+    except Exception:
+        return None
+    return None
+
+
+def warm_db_pool(target_idle: int = _DB_POOL_MIN_WARM) -> None:
+    """Best-effort warm-up of idle DB pool connections on server startup."""
+    if psycopg.connect is not _DEFAULT_PSYCOPG_CONNECT:
+        return
+    try:
+        _, _, dsn = _configuration()
+    except HTTPException:
+        return
+    with _DB_POOL_LOCK:
+        existing = len(_DB_IDLE_POOL.get(dsn, ()))
+    needed = max(0, min(target_idle, _DB_POOL_MAX_IDLE) - existing)
+    for _ in range(needed):
+        try:
+            conn = psycopg.connect(dsn, row_factory=dict_row, connect_timeout=5)
+            _return_db_connection(dsn, conn)
+        except Exception:
+            break
 
 
 def _http_get(url: str, **kwargs):
@@ -220,7 +260,15 @@ def _user(authorization: str | None = Header(default=None)):
 
     use_cache = httpx.get is _DEFAULT_HTTPX_GET
     cache_key = (url, token)
+    exp_remaining: float | None = None
+    inflight_event: threading.Event | None = None
+    is_leader = False
+
     if use_cache:
+        exp_remaining = _jwt_remaining_seconds(token)
+        if exp_remaining is not None and exp_remaining <= 0:
+            raise HTTPException(401, "A valid Supabase session is required")
+
         now = time.monotonic()
         with _TOKEN_CACHE_LOCK:
             cached = _TOKEN_CACHE.get(cache_key)
@@ -231,30 +279,59 @@ def _user(authorization: str | None = Header(default=None)):
             if cached:
                 _TOKEN_CACHE.pop(cache_key, None)
 
+        with _TOKEN_INFLIGHT_LOCK:
+            existing_event = _TOKEN_INFLIGHT.get(cache_key)
+            if existing_event is None:
+                inflight_event = threading.Event()
+                _TOKEN_INFLIGHT[cache_key] = inflight_event
+                is_leader = True
+            else:
+                inflight_event = existing_event
+
+        if not is_leader and inflight_event is not None:
+            inflight_event.wait(timeout=6.0)
+            now = time.monotonic()
+            with _TOKEN_CACHE_LOCK:
+                cached = _TOKEN_CACHE.get(cache_key)
+                if cached and cached[0] > now:
+                    user_copy = dict(cached[1])
+                    _assert_confirmed_active(user_copy)
+                    return user_copy
+
     try:
-        response = _http_get(
-            f"{url}/auth/v1/user",
-            headers={"apikey": key, "Authorization": f"Bearer {token}"},
-            timeout=5,
-        )
-    except httpx.RequestError as exc:
-        raise HTTPException(503, "Identity service is unavailable") from exc
-    if response.status_code in (401, 403):
-        raise HTTPException(401, "A valid Supabase session is required")
-    if response.status_code != 200:
-        raise HTTPException(503, "Identity service is unavailable")
-    try:
-        user = response.json()
-        user["id"] = str(UUID(user["id"]))
-    except (ValueError, KeyError, TypeError) as exc:
-        raise HTTPException(503, "Identity response is invalid") from exc
-    _assert_confirmed_active(user)
-    if use_cache:
-        with _TOKEN_CACHE_LOCK:
-            if len(_TOKEN_CACHE) > 256:
-                _TOKEN_CACHE.clear()
-            _TOKEN_CACHE[cache_key] = (time.monotonic() + _TOKEN_CACHE_TTL_SECONDS, dict(user))
-    return user
+        try:
+            response = _http_get(
+                f"{url}/auth/v1/user",
+                headers={"apikey": key, "Authorization": f"Bearer {token}"},
+                timeout=5,
+            )
+        except httpx.RequestError as exc:
+            raise HTTPException(503, "Identity service is unavailable") from exc
+        if response.status_code in (401, 403):
+            raise HTTPException(401, "A valid Supabase session is required")
+        if response.status_code != 200:
+            raise HTTPException(503, "Identity service is unavailable")
+        try:
+            user = response.json()
+            user["id"] = str(UUID(user["id"]))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(503, "Identity response is invalid") from exc
+        _assert_confirmed_active(user)
+        if use_cache:
+            ttl = _TOKEN_CACHE_TTL_SECONDS
+            if exp_remaining is not None:
+                ttl = min(ttl, max(1.0, exp_remaining))
+            with _TOKEN_CACHE_LOCK:
+                if len(_TOKEN_CACHE) > 256:
+                    _TOKEN_CACHE.clear()
+                _TOKEN_CACHE[cache_key] = (time.monotonic() + ttl, dict(user))
+        return user
+    finally:
+        if is_leader and inflight_event is not None:
+            with _TOKEN_INFLIGHT_LOCK:
+                if _TOKEN_INFLIGHT.get(cache_key) is inflight_event:
+                    _TOKEN_INFLIGHT.pop(cache_key, None)
+            inflight_event.set()
 
 
 def _assert_confirmed_active(user):

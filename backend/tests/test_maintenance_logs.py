@@ -69,7 +69,7 @@ def test_list_maintenance_logs_filters_and_paginates(monkeypatch):
         user={"id": TECH_USER},
     )
 
-    assert seen_roles == [("owner", "branch_manager", "machine_maintenance")]
+    assert seen_roles == [("owner", "branch_manager", "machine_maintenance", "lpg_maintenance")]
     assert result["total"] == 3
     assert result["has_more"] is True
     assert len(result["items"]) == 1
@@ -301,3 +301,82 @@ def test_create_maintenance_log_rejects_non_maintenance_states(
         "insert into public.machine_maintenance_logs" in call.args[0]
         for call in conn.execute.call_args_list
     )
+
+
+def test_unified_device_maintenance_log_for_lpg_enqueues_complete_maintenance_and_resolves_cleared_incident(
+    monkeypatch,
+):
+    conn = MagicMock()
+    cmd_id = uuid4()
+    session_id = uuid4()
+    now = datetime.now(timezone.utc)
+    conn.execute.return_value.fetchone.side_effect = [
+        {
+            "id": DEVICE,
+            "gateway_id": GATEWAY,
+            "source_id": "esp32-lpg-01",
+            "source_kind": "physical",
+            "device_type": "lpg_edge_node",
+            "label": "Main Tank Scale",
+            "device_status": "active",
+            "gateway_status": "active",
+        },
+        {"id": session_id},  # active lpg_maintenance_sessions
+        {"quality": {"maintenance_mode": True}, "cloud_received_at": now},
+        None,  # no pending lpg_commands
+        {"status": "queued", "action": "complete_maintenance", "device_id": DEVICE},
+        {"id": INCIDENT, "workflow_state": "open", "edge_condition_state": "cleared"},
+        {
+            "id": uuid4(),
+            "reference_code": "MNT-LPG001",
+            "branch_id": BRANCH,
+            "device_id": DEVICE,
+            "source_id": "esp32-lpg-01",
+            "asset_name": "Main Tank Scale",
+            "domain": "lpg",
+            "log_kind": "incident_resolution",
+            "lpg_session_id": session_id,
+            "incident_id": INCIDENT,
+            "error_code": "GAS_WARNING",
+            "fault_name": "Gas Concentration Elevated",
+            "technician_name": "Chong LPG",
+            "performed_by_user_id": TECH_USER,
+            "performed_by_role": "lpg_maintenance",
+            "work_done": "Tightened manifold fitting and leak-tested with soap solution.",
+            "outcome": "completed",
+            "created_at": now,
+        },
+        None,  # idempotency check for task_updated incident event
+        None,  # idempotency check for resolved incident event
+    ]
+
+    monkeypatch.setattr(maintenance_logs, "_database", _mock_db(conn))
+    monkeypatch.setattr(
+        maintenance_logs,
+        "_authorize_branch_access",
+        lambda *_args: ({"organization_id": ORG, "role": "lpg_maintenance"}, {}),
+    )
+    monkeypatch.setattr(maintenance_logs, "_generate_reference_code", lambda: "MNT-LPG001")
+
+    body = maintenance_logs.MaintenanceLogCreateRequest(
+        error_code="GAS_WARNING",
+        technician_name="Chong LPG",
+        work_done="Tightened manifold fitting and leak-tested with soap solution.",
+        log_kind="incident_resolution",
+        incident_id=INCIDENT,
+        outcome="completed",
+        return_to_service=True,
+        resolve_incident=True,
+        command_request_id=cmd_id,
+    )
+    res = maintenance_logs.create_device_maintenance_log(
+        BRANCH, "esp32-lpg-01", body, user={"id": TECH_USER}
+    )
+
+    assert res["item"]["domain"] == "lpg"
+    assert res["item"]["log_kind"] == "incident_resolution"
+    assert res["command"] == {"command_id": str(cmd_id), "status": "queued"}
+    assert res["incident_resolution"] == {"resolved": True, "incident_id": str(INCIDENT)}
+    sql_log = "\n".join(call.args[0].lower() for call in conn.execute.call_args_list)
+    assert "insert into public.lpg_commands" in sql_log
+    assert "update public.incidents" in sql_log

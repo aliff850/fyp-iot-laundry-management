@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import { CheckCircle, Clock, Radio } from "lucide-react";
 import { DeviceApprovalModal } from "@/components/workspace/hardware/DeviceApprovalModal";
 import type { DeviceDiscoveryItem } from "@/lib/auth/business";
+import { formatMytTime } from "@/lib/formatDate";
 
 interface PendingDiscoveriesListProps {
   branchId: string;
@@ -68,10 +69,10 @@ export function PendingDiscoveriesList({
                 <td className="px-4 py-3 font-semibold text-ink">{d.source_id}</td>
                 <td className="px-4 py-3 text-muted">{d.proposed_type || "Unknown"}</td>
                 <td className="px-4 py-3 text-faint">
-                  {new Date(d.first_seen_at).toLocaleTimeString()}
+                  {formatMytTime(d.first_seen_at)}
                 </td>
                 <td className="px-4 py-3 text-faint">
-                  {new Date(d.last_seen_at).toLocaleTimeString()}
+                  {formatMytTime(d.last_seen_at)}
                 </td>
                 {isOwner && (
                   <td className="px-4 py-3 text-right">
@@ -103,7 +104,7 @@ export function PendingDiscoveriesList({
             </div>
             <div className="text-xs text-faint flex items-center gap-1">
               <Clock className="h-3.5 w-3.5" />
-              <span>Last seen {new Date(d.last_seen_at).toLocaleTimeString()}</span>
+              <span>Last seen {formatMytTime(d.last_seen_at)}</span>
             </div>
             {isOwner && (
               <button

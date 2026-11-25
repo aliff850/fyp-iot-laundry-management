@@ -2,6 +2,7 @@ import React from "react";
 import { PersonnelBranchSelect } from "@/components/workspace/personnel/PersonnelBranchSelect";
 import { PersonnelRoleSelect } from "@/components/workspace/personnel/PersonnelRoleSelect";
 import { RemoveFromBranchButton } from "@/components/workspace/personnel/RemoveFromBranchButton";
+import { formatMytDate } from "@/lib/formatDate";
 import type {
   OrganizationPersonnel,
   WorkspaceBranch,
@@ -133,11 +134,7 @@ export function PersonnelDirectoryTable({
                   )}
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 text-xs tabular-nums text-faint">
-                  {new Date(person.created_at).toLocaleDateString(undefined, {
-                    year: "numeric",
-                    month: "short",
-                    day: "numeric",
-                  })}
+                  {formatMytDate(person.created_at)}
                 </td>
               </tr>
             );

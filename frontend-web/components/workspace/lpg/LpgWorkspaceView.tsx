@@ -31,22 +31,49 @@ export function LpgWorkspaceView({
 
   useEffect(() => {
     let active = true;
+    let inFlight = false;
+    let activeController: AbortController | null = null;
 
     async function poll() {
+      if (!active || inFlight) return;
       if (document.visibilityState !== "visible") return;
-      const result = await refreshBranchLpgSafety(branchId);
-      if (!active) return;
-      if (result.ok) {
-        setSnapshot(result.value);
-        setServiceError(null);
-      } else {
-        setServiceError(result.message);
+      inFlight = true;
+      const controller = new AbortController();
+      activeController = controller;
+      try {
+        const res = await fetch(
+          `/api/workspace/branches/${encodeURIComponent(branchId)}/lpg-safety`,
+          { method: "GET", cache: "no-store", signal: controller.signal },
+        );
+        const result = (await res.json()) as
+          | { ok: true; value: LpgSafetySnapshot }
+          | { ok: false; message: string };
+        if (!active) return;
+        if (result.ok) {
+          setSnapshot(result.value);
+          setServiceError(null);
+        } else {
+          setServiceError(result.message);
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          return;
+        }
+        if (active) {
+          setServiceError("The business service is unavailable. Please retry.");
+        }
+      } finally {
+        if (activeController === controller) {
+          activeController = null;
+        }
+        inFlight = false;
       }
     }
 
-    const timer = window.setInterval(poll, 4000);
+    const timer = window.setInterval(poll, 6000);
     return () => {
       active = false;
+      activeController?.abort();
       window.clearInterval(timer);
     };
   }, [branchId]);

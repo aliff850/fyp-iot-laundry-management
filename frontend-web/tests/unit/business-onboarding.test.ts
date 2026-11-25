@@ -239,4 +239,31 @@ describe("FastAPI onboarding boundary", () => {
       expect.objectContaining({ method: "PATCH" }),
     );
   });
+
+  it("prefers local getClaims verification over remote getUser when available", async () => {
+    const getClaimsSpy = vi.fn().mockResolvedValue({
+      data: { claims: { sub: "user-a", user_metadata: { email_verified: true } } },
+      error: null,
+    });
+    const getUserSpy = vi.fn();
+    const getSessionSpy = vi.fn().mockResolvedValue({
+      data: { session: { access_token: "claims-verified-token" } },
+      error: null,
+    });
+    createClient.mockResolvedValue({
+      auth: {
+        getClaims: getClaimsSpy,
+        getUser: getUserSpy,
+        getSession: getSessionSpy,
+      },
+    });
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ state: "pending", organization: null, role: null }));
+    vi.stubGlobal("fetch", fetcher);
+
+    const res = await businessRequest("/onboarding");
+    expect(res.ok).toBe(true);
+    expect(getClaimsSpy).toHaveBeenCalledTimes(1);
+    expect(getUserSpy).not.toHaveBeenCalled();
+    expect(getSessionSpy).toHaveBeenCalledTimes(1);
+  });
 });

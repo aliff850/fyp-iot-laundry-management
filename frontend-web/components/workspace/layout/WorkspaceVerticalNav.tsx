@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import {
+  AlertTriangle,
   Building2,
   Cpu,
   Flame,
@@ -19,6 +20,7 @@ import {
 
 export type NavIconName =
   | "overview"
+  | "incidents"
   | "machines"
   | "maintenance"
   | "lpg"
@@ -31,6 +33,7 @@ export type NavIconName =
 
 const ICON_MAP: Record<string, LucideIcon> = {
   overview: LayoutDashboard,
+  incidents: AlertTriangle,
   machines: WashingMachine,
   maintenance: Wrench,
   lpg: Flame,
@@ -183,6 +186,7 @@ export function WorkspaceVerticalNav({
             <Link
               key={item.id}
               href={item.href}
+              prefetch={false}
               onClick={() => setIsMobileOpen(false)}
               title={isCollapsed ? item.label : undefined}
               aria-label={isCollapsed ? item.label : undefined}

@@ -69,14 +69,127 @@ def _analytics_time_buckets(
     return granularity, first_local.astimezone(timezone.utc), buckets, MYT_ZONE
 
 
+def _as_utc_dt(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
 def _bucket_key_for_dt(dt: Any, granularity: Literal["hour", "day"], zone: ZoneInfo) -> str | None:
-    if not isinstance(dt, datetime):
+    aware = _as_utc_dt(dt)
+    if aware is None:
         return None
-    aware = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
     local_dt = aware.astimezone(zone)
     if granularity == "hour":
         return f"{local_dt.date().isoformat()}T{local_dt.hour:02d}:00"
     return local_dt.date().isoformat()
+
+
+def _aggregate_incident_metrics(
+    incident_rows: list[dict[str, Any]],
+    buckets: list[dict[str, str]],
+    granularity: Literal["hour", "day"],
+    zone: ZoneInfo,
+) -> dict[str, Any]:
+    """Aggregate deduplicated incident totals, MTTA/MTTR durations, and severity buckets."""
+    bucket_stats: dict[str, dict[str, int]] = {
+        entry["bucket"]: {"total": 0, "warning": 0, "critical": 0, "resolved": 0}
+        for entry in buckets
+    }
+    seen_ids: set[str] = set()
+    total_incidents = 0
+    open_count = 0
+    acknowledged_count = 0
+    resolved_count = 0
+    warning_count = 0
+    critical_count = 0
+    machine_count = 0
+    lpg_count = 0
+    ack_durations_min: list[float] = []
+    resolve_durations_min: list[float] = []
+
+    for row in incident_rows:
+        raw_id = row.get("id")
+        if raw_id is None:
+            continue
+        inc_id = str(raw_id).strip()
+        if not inc_id or inc_id in seen_ids:
+            continue
+
+        opened_dt = _as_utc_dt(row.get("opened_at"))
+        bucket_key = _bucket_key_for_dt(opened_dt, granularity, zone)
+        if opened_dt is None or bucket_key not in bucket_stats:
+            continue
+
+        seen_ids.add(inc_id)
+        total_incidents += 1
+
+        workflow_state = str(row.get("workflow_state") or "open").strip().lower()
+        if workflow_state == "open":
+            open_count += 1
+        elif workflow_state == "acknowledged":
+            acknowledged_count += 1
+        elif workflow_state == "resolved":
+            resolved_count += 1
+
+        severity = str(row.get("severity") or "").strip().lower()
+        if severity == "critical":
+            critical_count += 1
+            bucket_stats[bucket_key]["critical"] += 1
+        elif severity == "warning":
+            warning_count += 1
+            bucket_stats[bucket_key]["warning"] += 1
+
+        domain = str(row.get("domain") or "").strip().lower()
+        if domain == "machine":
+            machine_count += 1
+        elif domain == "lpg":
+            lpg_count += 1
+
+        bucket_stats[bucket_key]["total"] += 1
+        if workflow_state == "resolved":
+            bucket_stats[bucket_key]["resolved"] += 1
+
+        ack_dt = _as_utc_dt(row.get("acknowledged_at"))
+        if ack_dt is not None and ack_dt >= opened_dt:
+            ack_durations_min.append((ack_dt - opened_dt).total_seconds() / 60.0)
+
+        res_dt = _as_utc_dt(row.get("resolved_at"))
+        if workflow_state == "resolved" and res_dt is not None and res_dt >= opened_dt:
+            resolve_durations_min.append((res_dt - opened_dt).total_seconds() / 60.0)
+
+    return {
+        "total_incidents": total_incidents,
+        "open_count": open_count,
+        "acknowledged_count": acknowledged_count,
+        "resolved_count": resolved_count,
+        "warning_count": warning_count,
+        "critical_count": critical_count,
+        "machine_count": machine_count,
+        "lpg_count": lpg_count,
+        "avg_acknowledge_minutes": round(sum(ack_durations_min) / len(ack_durations_min), 1)
+        if ack_durations_min
+        else None,
+        "avg_resolve_minutes": round(sum(resolve_durations_min) / len(resolve_durations_min), 1)
+        if resolve_durations_min
+        else None,
+        "ack_sample_count": len(ack_durations_min),
+        "resolve_sample_count": len(resolve_durations_min),
+        "series": [
+            {
+                "bucket": entry["bucket"],
+                "label": entry["label"],
+                **bucket_stats[entry["bucket"]],
+            }
+            for entry in buckets
+        ],
+    }
 
 
 def _resolve_program_labels(
@@ -197,6 +310,7 @@ def aggregate_branch_overview_analytics(
     now_utc: datetime | None = None,
     branch_count: int | None = None,
     branches: list[dict[str, Any]] | None = None,
+    incident_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Aggregate machine metrics, branch/program breakdowns, reliability, hourly demand, revenue, and gas PPM."""
     granularity, _start_utc, buckets, zone = _analytics_time_buckets(period, now_utc=now_utc)
@@ -444,6 +558,12 @@ def aggregate_branch_overview_analytics(
     ]
 
     branch_breakdown = _build_branch_breakdown(machine_stats, total_revenue, branches=branches)
+    incident_metrics = _aggregate_incident_metrics(
+        incident_rows or [],
+        buckets=buckets,
+        granularity=granularity,
+        zone=zone,
+    )
 
     response: dict[str, Any] = {
         "branch_id": str(branch_id),
@@ -461,6 +581,7 @@ def aggregate_branch_overview_analytics(
             "total_lpg_nodes": len(lpg_nodes),
             "gas_aggregation_mode": gas_mode,
             "complaints_total": None,
+            "incidents_total": incident_metrics["total_incidents"],
         },
         "programs": programs_catalog,
         "machines": machine_list,
@@ -475,6 +596,7 @@ def aggregate_branch_overview_analytics(
             "nodes": nodes_summary,
             "series": gas_bucket_series,
         },
+        "incident_metrics": incident_metrics,
         "complaints": {
             "implemented": False,
             "source": "deferred_customer_app",
@@ -514,6 +636,7 @@ def _fetch_analytics_for_branches(
             now_utc=effective_now,
             branch_count=branch_count,
             branches=branches,
+            incident_rows=[],
         )
 
     _granularity, start_utc, buckets, _zone = _analytics_time_buckets(period, now_utc=effective_now)
@@ -537,15 +660,7 @@ def _fetch_analytics_for_branches(
                   coalesce((latest_obs.quality->>'ppm_calibrated')::boolean, false) as calibrated
            from public.devices d
            join public.branches b on b.id = d.branch_id and b.organization_id = d.organization_id
-           left join lateral (
-               select o.quality
-               from public.telemetry_observations o
-               where o.device_id = d.id
-                 and o.branch_id = d.branch_id
-                 and o.organization_id = d.organization_id
-               order by o.gateway_receipt_at desc, o.id desc
-               limit 1
-           ) latest_obs on true
+           left join public.lpg_latest latest_obs on latest_obs.device_id = d.id
            where d.branch_id = any(%s)
              and d.organization_id = %s
              and d.device_type = 'lpg_edge_node'
@@ -619,6 +734,18 @@ def _fetch_analytics_for_branches(
     else:
         telemetry_rows = []
 
+    incident_rows = conn.execute(
+        """select id, branch_id, source_id, domain, severity, workflow_state,
+                  opened_at, acknowledged_at, resolved_at
+           from public.incidents
+           where organization_id = %s
+             and branch_id = any(%s)
+             and opened_at >= %s
+             and opened_at <= %s
+           order by opened_at, id""",
+        (org_id, branch_ids, start_utc, effective_now),
+    ).fetchall()
+
     return aggregate_branch_overview_analytics(
         branch_id=branch_id_label,
         period=period,
@@ -630,6 +757,7 @@ def _fetch_analytics_for_branches(
         now_utc=effective_now,
         branch_count=branch_count,
         branches=branches,
+        incident_rows=[dict(i) for i in incident_rows],
     )
 
 

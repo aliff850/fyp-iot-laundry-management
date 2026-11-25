@@ -123,17 +123,21 @@ export function notificationVisuals(item: Pick<WorkspaceNotificationEvent, "seve
   return { badgeClass, borderClass, kindLabel };
 }
 
+const NOTIFICATION_TIME_FORMATTER = new Intl.DateTimeFormat("en-MY", {
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+  timeZone: "Asia/Kuala_Lumpur",
+});
+
 export function formatNotificationTimestamp(iso: string | null | undefined): string {
   if (!iso) return "—";
   const dt = new Date(iso);
   if (Number.isNaN(dt.getTime())) return String(iso);
-  return dt.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  return `${NOTIFICATION_TIME_FORMATTER.format(dt)} MYT`;
 }
 
 export function notificationHref(

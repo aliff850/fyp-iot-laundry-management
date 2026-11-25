@@ -304,8 +304,17 @@ def test_organization_analytics_queries_all_owner_branches(monkeypatch):
     res_cycles.fetchall.return_value = []
     res_telemetry = MagicMock()
     res_telemetry.fetchall.return_value = []
+    res_incidents = MagicMock()
+    res_incidents.fetchall.return_value = []
 
-    conn.execute.side_effect = [res_branches, res_machines, res_lpg, res_cycles, res_telemetry]
+    conn.execute.side_effect = [
+        res_branches,
+        res_machines,
+        res_lpg,
+        res_cycles,
+        res_telemetry,
+        res_incidents,
+    ]
 
     @contextmanager
     def db(**_kwargs):
@@ -318,6 +327,7 @@ def test_organization_analytics_queries_all_owner_branches(monkeypatch):
     assert result["branch_count"] == 2
     assert len(result["machines"]) == 1
     assert result["machines"][0]["branch_name"] == "Branch A"
+    assert result["incident_metrics"]["total_incidents"] == 0
     assert conn.execute.call_args_list[0].args[1] == (ORG_ID,)
     assert conn.execute.call_args_list[1].args[1] == ([BRANCH_A, BRANCH_B], ORG_ID)
 
@@ -327,3 +337,145 @@ def test_organization_analytics_route_not_retired_by_middleware():
     res = client.get("/organization/analytics?period=day")
     assert res.status_code != 410
     assert res.status_code in (401, 403)
+
+
+def test_incident_metrics_aggregation_deduplicates_and_computes_mtta_mttr():
+    from datetime import timedelta
+
+    now_utc = datetime(2026, 11, 16, 4, 0, tzinfo=timezone.utc)  # 12:00 MYT
+    opened_a = datetime(2026, 11, 16, 1, 0, tzinfo=timezone.utc)  # 09:00 MYT
+    opened_b = datetime(2026, 11, 16, 2, 10, tzinfo=timezone.utc)  # 10:10 MYT
+    opened_c = datetime(2026, 11, 16, 2, 40, tzinfo=timezone.utc)  # 10:40 MYT
+    stale_outside = datetime(2026, 11, 14, 1, 0, tzinfo=timezone.utc)
+
+    inc_a = {
+        "id": "11111111-1111-1111-1111-11111111111a",
+        "branch_id": str(BRANCH_A),
+        "source_id": "sim-washer-01",
+        "domain": "machine",
+        "severity": "critical",
+        "workflow_state": "resolved",
+        "opened_at": opened_a,
+        "acknowledged_at": opened_a + timedelta(minutes=5),
+        "resolved_at": opened_a + timedelta(minutes=30),
+    }
+    inc_b = {
+        "id": "11111111-1111-1111-1111-11111111111b",
+        "branch_id": str(BRANCH_B),
+        "source_id": "esp32-lpg-01",
+        "domain": "lpg",
+        "severity": "warning",
+        "workflow_state": "acknowledged",
+        "opened_at": opened_b,
+        "acknowledged_at": opened_b + timedelta(minutes=15),
+        "resolved_at": None,
+    }
+    inc_c = {
+        "id": "11111111-1111-1111-1111-11111111111c",
+        "branch_id": str(BRANCH_A),
+        "source_id": "sim-dryer-01",
+        "domain": "machine",
+        "severity": "warning",
+        "workflow_state": "open",
+        "opened_at": opened_c,
+        # Clock-skew negative duration must be excluded from average
+        "acknowledged_at": opened_c - timedelta(minutes=2),
+        "resolved_at": None,
+    }
+    inc_old = {
+        "id": "11111111-1111-1111-1111-11111111111d",
+        "branch_id": str(BRANCH_A),
+        "source_id": "sim-washer-01",
+        "domain": "machine",
+        "severity": "critical",
+        "workflow_state": "resolved",
+        "opened_at": stale_outside,
+        "acknowledged_at": stale_outside + timedelta(minutes=1),
+        "resolved_at": stale_outside + timedelta(minutes=2),
+    }
+
+    result = branch_analytics.aggregate_branch_overview_analytics(
+        branch_id="all",
+        period="day",
+        now_utc=now_utc,
+        machines=[],
+        lpg_nodes=[],
+        cycle_rows=[],
+        daily_runtime_rows=[],
+        telemetry_rows=[],
+        incident_rows=[inc_a, dict(inc_a), inc_b, inc_c, inc_old],
+    )
+
+    metrics = result["incident_metrics"]
+    assert result["summary"]["incidents_total"] == 3
+    assert metrics["total_incidents"] == 3
+    assert metrics["open_count"] == 1
+    assert metrics["acknowledged_count"] == 1
+    assert metrics["resolved_count"] == 1
+    assert metrics["critical_count"] == 1
+    assert metrics["warning_count"] == 2
+    assert metrics["machine_count"] == 2
+    assert metrics["lpg_count"] == 1
+    assert metrics["avg_acknowledge_minutes"] == 10.0  # (5 + 15) / 2
+    assert metrics["ack_sample_count"] == 2
+    assert metrics["avg_resolve_minutes"] == 30.0
+    assert metrics["resolve_sample_count"] == 1
+    by_label = {pt["label"]: pt for pt in metrics["series"]}
+    assert by_label["09:00"] == {
+        "bucket": "2026-11-16T09:00",
+        "label": "09:00",
+        "total": 1,
+        "warning": 0,
+        "critical": 1,
+        "resolved": 1,
+    }
+    assert by_label["10:00"] == {
+        "bucket": "2026-11-16T10:00",
+        "label": "10:00",
+        "total": 2,
+        "warning": 2,
+        "critical": 0,
+        "resolved": 0,
+    }
+
+
+def test_incident_metrics_returns_none_durations_when_unacknowledged(monkeypatch):
+    conn = MagicMock()
+    monkeypatch.setattr(branch_analytics, "_membership", lambda _c, _u: _member(role="machine_maintenance", state="active"))
+
+    @contextmanager
+    def db(**_kwargs):
+        yield conn
+
+    monkeypatch.setattr(branch_analytics, "_database", db)
+    with pytest.raises(HTTPException) as exc:
+        branch_analytics.get_branch_overview_analytics(branch_id=BRANCH_A, period="day", user={"id": USER_ID})
+    assert exc.value.status_code == 403
+
+    empty_res = branch_analytics.aggregate_branch_overview_analytics(
+        branch_id=str(BRANCH_A),
+        period="week",
+        now_utc=datetime(2026, 11, 16, 4, 0, tzinfo=timezone.utc),
+        machines=[],
+        lpg_nodes=[],
+        cycle_rows=[],
+        daily_runtime_rows=[],
+        telemetry_rows=[],
+        incident_rows=[
+            {
+                "id": "22222222-2222-2222-2222-22222222222a",
+                "branch_id": str(BRANCH_A),
+                "source_id": "sim-washer-01",
+                "domain": "machine",
+                "severity": "warning",
+                "workflow_state": "open",
+                "opened_at": datetime(2026, 11, 16, 3, 0, tzinfo=timezone.utc),
+                "acknowledged_at": None,
+                "resolved_at": None,
+            }
+        ],
+    )
+    assert empty_res["incident_metrics"]["avg_acknowledge_minutes"] is None
+    assert empty_res["incident_metrics"]["avg_resolve_minutes"] is None
+    assert empty_res["incident_metrics"]["ack_sample_count"] == 0
+    assert empty_res["incident_metrics"]["resolve_sample_count"] == 0

@@ -120,7 +120,7 @@ describe("live branch machine UI", () => {
     expect(html).not.toContain("Demo Washer 01");
   });
 
-  it("renders explainable fault diagnosis and enables CLEAR FAULT only for operators", () => {
+  it("renders explainable fault diagnosis and unified service/incident actions", () => {
     const faultedWasher: RemoteMachine = {
       ...washer,
       state: "error",
@@ -128,6 +128,14 @@ describe("live branch machine UI", () => {
         ...washer.data,
         fault_code: "E01",
         fault_name: "Water Inlet Failure",
+      },
+      active_incident: {
+        id: "inc-e01",
+        reference_code: "INC-E01",
+        severity: "critical",
+        fault_code: "E01",
+        workflow_state: "open",
+        edge_condition_state: "active",
       },
       diagnosis: {
         fault_code: "E01",
@@ -146,16 +154,17 @@ describe("live branch machine UI", () => {
       branchId: "branch-1",
       branchOpen: true,
       role: "owner",
+      onOpenServiceModal: () => {},
       onClose: () => {},
     }));
-    expect(ownerHtml).toContain("Water Inlet Failure");
-    expect(ownerHtml).toContain("Placeholder guide");
-    expect(ownerHtml).toContain("Verify floor dryness around outlets.");
-    expect(ownerHtml).toContain("Confirm water supply valve is fully open.");
-    expect(ownerHtml).toContain("CLEAR FAULT");
-    const clearFaultBtn = ownerHtml.match(/<button[^>]*>CLEAR FAULT<\/button>/)?.[0] ?? "";
-    expect(clearFaultBtn).toContain("type=\"button\"");
-    expect(clearFaultBtn).not.toMatch(/disabled="/);
+    const ownerText = ownerHtml.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
+    expect(ownerText).toContain("Water Inlet Failure");
+    expect(ownerText).toContain("Placeholder guide");
+    expect(ownerText).toContain("Verify floor dryness around outlets.");
+    expect(ownerText).toContain("Confirm water supply valve is fully open.");
+    expect(ownerText).toContain("Inspect Incident INC-E01");
+    expect(ownerText).toContain("Service & Resolve Issue");
+    expect(ownerText).not.toContain("CLEAR FAULT");
 
     const specialistHtml = renderToString(React.createElement(MachineDetailModal, {
       machine: {
@@ -171,19 +180,16 @@ describe("live branch machine UI", () => {
       branchId: "branch-1",
       branchOpen: true,
       role: "machine_maintenance",
+      onOpenServiceModal: () => {},
       onClose: () => {},
     }));
     expect(specialistHtml).toContain("Unverified vendor code (E14)");
     expect(specialistHtml).not.toContain("CLEAR FAULT");
-    expect(specialistHtml).toContain("Open maintenance form");
-    expect(specialistHtml).toContain("Put under maintenance");
-    expect(specialistHtml).toContain("Maintenance &amp; Repair Log");
-    expect(specialistHtml).toContain("Put this machine into maintenance mode before logging repair work.");
-    expect(specialistHtml).not.toContain("Log maintenance &amp; return to idle");
-    expect(specialistHtml).not.toContain("Save service log");
+    expect(specialistHtml).toContain("Service &amp; Resolve Issue");
+    expect(specialistHtml).not.toContain("Put under maintenance");
   });
 
-  it("renders amber maintenance badge, fault diagnosis, and pre-filled repair form for maintenance state", () => {
+  it("renders amber maintenance badge and floating modal launcher for maintenance state", () => {
     const maintenanceWasher: RemoteMachine = {
       ...washer,
       state: "maintenance",
@@ -227,16 +233,12 @@ describe("live branch machine UI", () => {
       branchOpen: true,
       role: "machine_maintenance",
       defaultTechnicianName: "Ali Technician",
+      onOpenServiceModal: () => {},
       onClose: () => {},
     }));
     expect(modalHtml).toContain("Machine under maintenance");
-    expect(modalHtml).toContain("Maintenance active");
     expect(modalHtml).toContain("Water Inlet Failure");
-    expect(modalHtml).toContain("Return to idle");
-    expect(modalHtml).toContain("Log maintenance &amp; return to idle");
-    expect(modalHtml).toContain("value=\"E01\"");
-    expect(modalHtml).toContain("value=\"Ali Technician\"");
-    expect(modalHtml).toContain("Tasks carried out");
+    expect(modalHtml).toContain("Continue Maintenance Log");
     expect(modalHtml).toContain("Machine Testing");
     expect(modalHtml).not.toContain("Statistics &amp; Revenue");
   });

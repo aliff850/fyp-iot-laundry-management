@@ -76,6 +76,12 @@ class _FakeCursor:
             self._result = rows[:20]
             return
 
+        if "FROM lpg_presence" in q:
+            gw_id, src = params
+            pres = self.state.get("lpg_presence", {}).get((gw_id, src))
+            self._result = [dict(pres)] if pres else []
+            return
+
         if "FROM sensor_telemetry" in q:
             gw_id, src, limit = params
             rows = [
@@ -88,12 +94,18 @@ class _FakeCursor:
             return
 
         if q.startswith("INSERT INTO lpg_maintenance_sessions"):
-            sid, gw_id, src, started_by, note, started_at = params
+            if len(params) == 8:
+                sid, gw_id, src, session_kind, incident_id, started_by, note, started_at = params
+            else:
+                sid, gw_id, src, started_by, note, started_at = params
+                session_kind, incident_id = "tank_swap", None
             self.state["sessions"].append({
                 "session_id": sid,
                 "gateway_id": gw_id,
                 "source_id": src,
                 "status": "active",
+                "session_kind": session_kind,
+                "incident_id": incident_id,
                 "started_by": started_by,
                 "service_note": note,
                 "started_at": started_at,
@@ -106,15 +118,22 @@ class _FakeCursor:
             return
 
         if q.startswith("UPDATE lpg_maintenance_sessions SET status='completed'"):
-            completed_at, completed_by, tare_kg, cap_kg, samples_json, sid = params
+            if "new_tare_kg" in q:
+                completed_at, completed_by, tare_kg, cap_kg, samples_json, sid = params
+            else:
+                completed_at, completed_by, sid = params
+                tare_kg, cap_kg, samples_json = None, None, None
             for row in self.state["sessions"]:
                 if row["session_id"] == sid and row["status"] == "active":
                     row["status"] = "completed"
                     row["completed_at"] = completed_at
                     row["completed_by"] = completed_by
-                    row["new_tare_kg"] = tare_kg
-                    row["new_capacity_kg"] = cap_kg
-                    row["verified_samples_json"] = samples_json
+                    if tare_kg is not None:
+                        row["new_tare_kg"] = tare_kg
+                    if cap_kg is not None:
+                        row["new_capacity_kg"] = cap_kg
+                    if samples_json is not None:
+                        row["verified_samples_json"] = samples_json
             return
 
         if q.startswith("INSERT INTO lpg_node_config"):
@@ -393,3 +412,32 @@ def test_sync_lpg_operations_polls_commands_and_uploads_digest_once(monkeypatch)
     get_res.json.return_value = {"commands": []}
     worker.sync_lpg_operations()
     assert [p for p in posted_urls if p[0].endswith("/edge/lpg-state")] == []
+
+
+def test_lpg_general_service_maintenance_start_and_complete_without_weight_check(monkeypatch):
+    worker, state, _ = _make_worker(monkeypatch)
+    status, reason, payload = worker._execute_lpg_command({
+        "command_id": str(uuid.uuid4()),
+        "source_id": "lpg-main",
+        "action": "start_maintenance",
+        "arguments": {
+            "started_by": "Farah LPG",
+            "service_note": "Inspecting regulator valve after PPM spike",
+            "session_kind": "incident_inspection",
+            "incident_id": "inc-123",
+        },
+    })
+    assert status == "succeeded" and reason is None
+    assert payload["session_kind"] == "incident_inspection"
+    assert state["sessions"][-1]["status"] == "active"
+
+    # Complete general maintenance even with zero scale samples recorded.
+    status2, reason2, payload2 = worker._execute_lpg_command({
+        "command_id": str(uuid.uuid4()),
+        "source_id": "lpg-main",
+        "action": "complete_maintenance",
+        "arguments": {"completed_by": "Farah LPG"},
+    })
+    assert status2 == "succeeded" and reason2 is None
+    assert payload2["completed_by"] == "Farah LPG"
+    assert state["sessions"][-1]["status"] == "completed"

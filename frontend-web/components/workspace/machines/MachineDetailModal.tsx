@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { AlertTriangle, X, WashingMachine, Wind, ShieldAlert, Wrench } from "lucide-react";
+import Link from "next/link";
+import { AlertTriangle, ArrowRight, X, WashingMachine, Wind, ShieldAlert, Wrench } from "lucide-react";
 import {
   refreshRemoteMachineCommands,
   requestRemoteMachineCommand,
@@ -17,7 +18,6 @@ import {
 } from "@/components/workspace/machines/MachineCard";
 import { MachineCountdownTimer } from "@/components/workspace/machines/MachineCountdownTimer";
 import { useActionToast } from "@/components/workspace/common/ActionToastContext";
-import { MachineMaintenancePanel } from "@/components/workspace/machines/MachineMaintenancePanel";
 import {
   MachineStatisticsChart,
   type ChartDataset,
@@ -77,6 +77,7 @@ export interface MachineDetailModalProps {
     sourceId: string,
     period: "day" | "week" | "month",
   ) => Promise<MachineStatisticsPayload | null>;
+  onOpenServiceModal?: (machine: RemoteMachine) => void;
   onClose: () => void;
   onCommandSent?: () => void;
 }
@@ -93,7 +94,6 @@ const COMMAND_ACTIONS = [
   "pause",
   "resume",
   "stop",
-  "clear_fault",
 ] as const;
 
 type HistoryPeriod = "today" | "week" | "month" | "all";
@@ -223,16 +223,15 @@ export function MachineDetailModal({
   branchId,
   branchOpen,
   role,
-  defaultTechnicianName = "",
   serviceError,
   initialTab = "diagnostics",
   onFetchStatistics,
+  onOpenServiceModal,
   onClose,
   onCommandSent,
 }: MachineDetailModalProps) {
   const { notify } = useActionToast();
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const maintenanceSectionRef = useRef<HTMLDivElement>(null);
   const postCommandTimersRef = useRef<number[]>([]);
   const [tab, setTab] = useState<MachineModalTab>(initialTab);
   const [selectedStartProgram, setSelectedStartProgram] = useState("");
@@ -342,16 +341,6 @@ export function MachineDetailModal({
     setConfirmStartOpen(false);
     setCommands([]);
     onClose();
-  };
-
-  const handleJumpToMaintenance = () => {
-    const container = maintenanceSectionRef.current;
-    if (!container) return;
-    container.scrollIntoView({ behavior: "smooth", block: "start" });
-    const focusTarget =
-      container.querySelector<HTMLElement>("[data-maint-primary-focus='true']") ??
-      container.querySelector<HTMLElement>("textarea, button:not(:disabled)");
-    focusTarget?.focus({ preventScroll: true });
   };
 
   const isFresh = machine?.freshness === "fresh";
@@ -993,16 +982,29 @@ export function MachineDetailModal({
                   </div>
                 )}
 
-                {effectiveStatus === "ERROR" && (
-                  <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:items-center">
-                    <button
-                      type="button"
-                      onClick={handleJumpToMaintenance}
-                      className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-4 py-2 text-xs font-semibold text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:w-auto"
-                    >
-                      <Wrench className="size-4 shrink-0 text-warning" aria-hidden="true" />
-                      <span>Open maintenance form</span>
-                    </button>
+                {(effectiveStatus === "ERROR" || Boolean(machine.active_incident)) && (
+                  <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center">
+                    {machine.active_incident && (
+                      <Link
+                        href={`/branches/${branchId}/incidents/${machine.active_incident.id}`}
+                        className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-4 py-2 text-xs font-semibold text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:w-auto"
+                      >
+                        <AlertTriangle className="size-4 shrink-0 text-negative" aria-hidden="true" />
+                        <span>Inspect Incident {machine.active_incident.reference_code}</span>
+                        <ArrowRight className="size-3.5 shrink-0" aria-hidden="true" />
+                      </Link>
+                    )}
+
+                    {onOpenServiceModal && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenServiceModal(machine)}
+                        className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-4 py-2 text-xs font-semibold text-surface transition-colors hover:border-muted hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:w-auto"
+                      >
+                        <Wrench className="size-4 shrink-0" aria-hidden="true" />
+                        <span>Service &amp; Resolve Issue</span>
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -1122,9 +1124,7 @@ export function MachineDetailModal({
                 </label>
 
                 <div className="flex flex-wrap items-center gap-2.5">
-                  {COMMAND_ACTIONS.filter(
-                    (action) => action !== "clear_fault" || isOperator,
-                  ).map((action) => {
+                  {COMMAND_ACTIONS.map((action) => {
                     const labelText = action.replaceAll("_", " ").toUpperCase();
                     const valid =
                       action === "start"
@@ -1133,10 +1133,7 @@ export function MachineDetailModal({
                           ? effectiveStatus === "RUNNING"
                           : action === "resume"
                             ? effectiveStatus === "PAUSED"
-                            : action === "stop"
-                              ? ["RUNNING", "PAUSED"].includes(effectiveStatus)
-                              : effectiveStatus === "ERROR" ||
-                                effectiveStatus === "MAINTENANCE";
+                            : ["RUNNING", "PAUSED"].includes(effectiveStatus);
 
                     const isStartUnavailable =
                       action === "start" && !selectedStartProgram;
@@ -1173,24 +1170,41 @@ export function MachineDetailModal({
               </section>
             )}
 
-            <div ref={maintenanceSectionRef}>
-              <MachineMaintenancePanel
-                machine={machine}
-                effectiveStatus={effectiveStatus}
-                branchId={branchId}
-                branchOpen={branchOpen}
-                serviceError={serviceError}
-                defaultTechnicianName={defaultTechnicianName}
-                onMaintenanceUpdated={() => {
-                  refreshRemoteMachineCommands(branchId, machine.source_id).then(
-                    (res) => {
-                      if (res.ok) setCommands(res.value);
-                    },
-                  );
-                  onCommandSent?.();
-                }}
-              />
-            </div>
+            <section className="flex flex-col gap-3 rounded-md border border-line bg-surface p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0 space-y-1">
+                <h3 className="text-base font-semibold tracking-tight text-ink">
+                  Maintenance &amp; Service
+                </h3>
+                <p className="text-xs text-muted">
+                  Put the unit into maintenance mode, log tasks performed, and return it to service.
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                {machine.active_incident && (
+                  <Link
+                    href={`/branches/${branchId}/incidents/${machine.active_incident.id}`}
+                    className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-4 py-2 text-xs font-semibold text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent sm:w-auto"
+                  >
+                    <span>Inspect Incident {machine.active_incident.reference_code}</span>
+                    <ArrowRight className="size-3.5 shrink-0" aria-hidden="true" />
+                  </Link>
+                )}
+                {onOpenServiceModal && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenServiceModal(machine)}
+                    className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-4 py-2 text-xs font-semibold text-surface transition-colors hover:border-muted hover:bg-muted focus-visible:outline-2 focus-visible:outline-accent sm:w-auto"
+                  >
+                    <Wrench className="size-4 shrink-0" aria-hidden="true" />
+                    <span>
+                      {effectiveStatus === "MAINTENANCE"
+                        ? "Continue Maintenance Log"
+                        : "Maintenance & Service"}
+                    </span>
+                  </button>
+                )}
+              </div>
+            </section>
 
             {/* Recent commands (inside Tab 1 matching Pi 5) */}
             <section className="space-y-4 rounded-md border border-line bg-surface p-4">

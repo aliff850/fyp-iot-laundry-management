@@ -17,10 +17,20 @@ interface BranchIncidentPageProps {
 export default async function BranchIncidentPage({ params }: BranchIncidentPageProps) {
   const { branchId, incidentId } = await params;
   const supabase = await createClient();
-  const authRes = supabase
-    ? await supabase.auth.getUser().catch(() => ({ data: { user: null } }))
-    : { data: { user: null } };
-  const userId = authRes.data?.user?.id ?? "";
+  let userId = "";
+  if (supabase) {
+    const auth = supabase.auth as unknown as {
+      getClaims?: () => Promise<{ data?: { claims?: { sub?: string } | null } | null }>;
+      getUser: () => Promise<{ data?: { user?: { id?: string } | null } | null }>;
+    };
+    if (typeof auth.getClaims === "function") {
+      const claimsRes = await auth.getClaims().catch(() => ({ data: { claims: null } }));
+      userId = String(claimsRes?.data?.claims?.sub ?? "");
+    } else {
+      const authRes = await auth.getUser().catch(() => ({ data: { user: null } }));
+      userId = authRes?.data?.user?.id ?? "";
+    }
+  }
   if (!userId) {
     redirect(`/login?next=%2Fbranches%2F${branchId}%2Fincidents%2F${incidentId}`);
   }
@@ -76,20 +86,24 @@ export default async function BranchIncidentPage({ params }: BranchIncidentPageP
     redirect(`/branches/${incident.branch_id}/incidents/${incident.id}`);
   }
 
-  const activeTab = incident.domain === "lpg" ? "lpg" : "machines";
   const orgName = membershipRes.value.organization?.name ?? "Your Organization";
+  const defaultTechnicianName =
+    membershipRes.value.profile?.full_name?.trim() || "";
 
   return (
     <BranchWorkspaceShell
       branch={branchRes.value}
-      activeTab={activeTab}
+      activeTab="incidents"
       userRole={role}
       organizationName={orgName}
+      hideIncidentsBanner
     >
       <IncidentDetailClient
         branchId={branchId}
+        branchOpen={branchRes.value.service_status === "open"}
         userId={userId}
         userRole={role}
+        defaultTechnicianName={defaultTechnicianName}
         initialIncident={incident}
       />
     </BranchWorkspaceShell>

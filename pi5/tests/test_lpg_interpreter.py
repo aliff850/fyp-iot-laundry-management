@@ -314,3 +314,54 @@ def test_ingest_machine_presence_accepts_maintenance_state():
     assert recorded == [("washer-sim-01", "maintenance")]
     inserts = [params for sql, params in executed if "INSERT INTO machine_presence" in sql]
     assert len(inserts) == 1 and '"maintenance"' in inserts[0][4]
+
+
+def test_lpg_maintenance_mode_pauses_gas_and_temp_and_low_fuel_does_not_open_incidents():
+    base = datetime(2026, 11, 25, 10, 0, tzinfo=timezone.utc)
+    tracker = lpg_interpreter.HysteresisStateTracker()
+    cfg = {"gas_warn_ppm": 20.0, "gas_crit_ppm": 80.0}
+
+    # Gas alert evaluation is paused while maintenance_mode=True
+    gas_st = lpg_interpreter.ConditionTrackerState("gw-1", "lpg_1", "gas_concentration")
+    for idx in range(4):
+        gas_st, g_tr = tracker.evaluate_gas_concentration(
+            gas_st,
+            gas_info={"gas_condition": "critical", "estimated_ppm": 150.0},
+            node_config=cfg,
+            sample_identity=f"gm:{idx}",
+            sample_at=base + timedelta(seconds=idx * 5),
+            maintenance_mode=True,
+        )
+        assert g_tr is None
+        assert gas_st.active_episode_id is None
+
+    # High temperature evaluation is also paused while maintenance_mode=True
+    temp_st = lpg_interpreter.ConditionTrackerState("gw-1", "lpg_1", "high_temperature")
+    for idx in range(4):
+        temp_st, t_tr = tracker.evaluate_high_temperature(
+            temp_st,
+            temperature_c=60.0,
+            sample_identity=f"tm:{idx}",
+            sample_at=base + timedelta(seconds=idx * 5),
+            maintenance_mode=True,
+        )
+        assert t_tr is None
+        assert temp_st.active_episode_id is None
+
+    # Low fuel clears any legacy open lpg_fuel episode instead of keeping/opening low-fuel incidents
+    legacy_fuel = lpg_interpreter.ConditionTrackerState(
+        gateway_id="gw-1",
+        source_id="lpg_1",
+        condition_key="lpg_fuel",
+        active_episode_id="ep-legacy-low",
+        active_severity="warning",
+        active_fault_code="LPG_LOW",
+        revision=1,
+    )
+    cleared_fuel, fuel_tr = tracker.clear_legacy_lpg_fuel_episode(
+        legacy_fuel,
+        sample_identity="f:1",
+        sample_at=base,
+    )
+    assert fuel_tr is not None and fuel_tr["transition_type"] == "cleared"
+    assert cleared_fuel.active_episode_id is None

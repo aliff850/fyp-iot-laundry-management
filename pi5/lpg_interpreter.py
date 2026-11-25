@@ -4,6 +4,7 @@ Implements one edge interpretation used by MQTT ingestion, the Pi 5 local dashbo
 and synced telemetry payloads (PRD Section 6.4 FE-04..FE-07, S-08, S-09).
 """
 
+import json
 import math
 import uuid
 from dataclasses import dataclass
@@ -16,6 +17,16 @@ DEFAULT_MQ6_DIVIDER_RATIO = 1.0
 DEFAULT_GAS_WARN_PPM = 20.0
 DEFAULT_GAS_CRIT_PPM = 80.0
 DEFAULT_STABILITY_TOLERANCE_KG = 0.25
+
+DEFAULT_LPG_HISTORY_CHECKPOINT_SECONDS = 900
+DEFAULT_DEADBAND_WEIGHT_KG = 0.10
+DEFAULT_DEADBAND_PERCENT = 1.0
+DEFAULT_DEADBAND_VOLTAGE_V = 0.08
+DEFAULT_DEADBAND_PPM = 3.0
+DEFAULT_DEADBAND_TEMP_C = 1.0
+DEFAULT_DEADBAND_HUMIDITY_PCT = 5.0
+MAX_PRESENCE_RECENT_SAMPLES = 12
+GAS_BURST_CONDITIONS = frozenset({"warning", "critical", "out_of_range"})
 
 # Winsen MQ-6 LPG log-log curve fit (~2.0 at 200 ppm, 1.0 at 1000 ppm, ~0.4 at 10000 ppm)
 # and datasheet clean-air Rs/R0 ratio (~10.0).
@@ -231,6 +242,200 @@ def evaluate_swap_stability(
         "mean_gross_kg": mean_gross_kg,
         "samples": valid_samples,
     }
+
+
+def is_lpg_sensor_payload(sensor_data: Any) -> bool:
+    """Return True when a telemetry payload belongs to an LPG/environment safety node."""
+    if not isinstance(sensor_data, dict) or "state" in sensor_data:
+        return False
+    return any(
+        k in sensor_data
+        for k in ("voltage", "gas_voltage_v", "mq6_raw_adc", "lpg_weight_kg", "gross_weight_kg", "lpg_percent")
+    )
+
+
+def _extract_first_float(payload: Dict[str, Any], *keys: str) -> Optional[float]:
+    for key in keys:
+        if key in payload:
+            val = finite_float(payload.get(key))
+            if val is not None:
+                return val
+    return None
+
+
+def _presence_delta_exceeded(current: Optional[float], previous: Optional[float], threshold: float) -> bool:
+    if current is None and previous is None:
+        return False
+    if (current is None) != (previous is None):
+        return True
+    assert current is not None and previous is not None
+    return abs(current - previous) >= threshold
+
+
+def update_recent_lpg_samples(
+    existing: Any,
+    *,
+    record_id: str,
+    sample_at: datetime,
+    sensor_data: Dict[str, Any],
+    quality: Dict[str, Any],
+    max_samples: int = MAX_PRESENCE_RECENT_SAMPLES,
+) -> List[Dict[str, Any]]:
+    """Maintain a newest-first capped rolling window of valid LPG stability/calibration readings."""
+    if isinstance(existing, str) and existing.strip():
+        try:
+            parsed_existing = json.loads(existing)
+        except ValueError:
+            parsed_existing = []
+    elif isinstance(existing, list):
+        parsed_existing = existing
+    else:
+        parsed_existing = []
+
+    utc_sample = sample_at.replace(tzinfo=timezone.utc) if sample_at.tzinfo is None else sample_at.astimezone(timezone.utc)
+    entry = {
+        "record_id": str(record_id),
+        "sample_at": utc_sample.isoformat().replace("+00:00", "Z"),
+        "gross_weight_kg": finite_float(sensor_data.get("gross_weight_kg")),
+        "weight_valid": quality.get("weight_valid") is not False and sensor_data.get("weight_valid") is not False,
+        "voltage": _extract_first_float(sensor_data, "voltage", "gas_voltage_v"),
+    }
+
+    items: List[Dict[str, Any]] = [entry]
+    seen_ids = {entry["record_id"]}
+    for item in parsed_existing:
+        if not isinstance(item, dict):
+            continue
+        rid = str(item.get("record_id") or "")
+        if rid and rid in seen_ids:
+            continue
+        if rid:
+            seen_ids.add(rid)
+        items.append(item)
+
+    items.sort(key=lambda item: (_to_utc_datetime(item.get("sample_at")) or datetime.min.replace(tzinfo=timezone.utc), str(item.get("record_id") or "")), reverse=True)
+    return items[: max(1, int(max_samples))]
+
+
+def parse_recent_lpg_samples(raw: Any, limit: int = MAX_PRESENCE_RECENT_SAMPLES) -> List[Dict[str, Any]]:
+    """Parse rolling presence samples into the shape expected by evaluate_swap_stability and calibration."""
+    if isinstance(raw, str) and raw.strip():
+        try:
+            items = json.loads(raw)
+        except ValueError:
+            return []
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        return []
+    if not isinstance(items, list):
+        return []
+
+    parsed: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        sample_dt = _to_utc_datetime(item.get("sample_at"))
+        if sample_dt is None:
+            continue
+        parsed.append({
+            "record_id": item.get("record_id"),
+            "sample_at": sample_dt,
+            "recorded_at": sample_dt,
+            "gross_weight_kg": finite_float(item.get("gross_weight_kg")),
+            "weight_valid": item.get("weight_valid") is not False,
+            "voltage": finite_float(item.get("voltage")),
+        })
+    parsed.sort(key=lambda row: (row["sample_at"], str(row.get("record_id") or "")), reverse=True)
+    return parsed[: max(1, int(limit))]
+
+
+def should_persist_lpg_history(
+    sensor_data: Dict[str, Any],
+    quality: Dict[str, Any],
+    sample_at: datetime,
+    *,
+    boot_id: Optional[str] = None,
+    last_saved_at: Optional[datetime] = None,
+    last_saved_boot_id: Optional[str] = None,
+    last_saved_payload: Optional[Dict[str, Any]] = None,
+    last_saved_quality: Optional[Dict[str, Any]] = None,
+    checkpoint_seconds: int = DEFAULT_LPG_HISTORY_CHECKPOINT_SECONDS,
+    weight_deadband_kg: float = DEFAULT_DEADBAND_WEIGHT_KG,
+    percent_deadband: float = DEFAULT_DEADBAND_PERCENT,
+    voltage_deadband_v: float = DEFAULT_DEADBAND_VOLTAGE_V,
+    ppm_deadband: float = DEFAULT_DEADBAND_PPM,
+    temp_deadband_c: float = DEFAULT_DEADBAND_TEMP_C,
+    humidity_deadband_pct: float = DEFAULT_DEADBAND_HUMIDITY_PCT,
+) -> Tuple[bool, str]:
+    """Decide whether an LPG sample warrants a durable history row vs deadband suppression."""
+    saved_at_utc = _to_utc_datetime(last_saved_at)
+    if saved_at_utc is None or not isinstance(last_saved_payload, dict) or not isinstance(last_saved_quality, dict):
+        return True, "initial"
+
+    if boot_id and last_saved_boot_id and str(boot_id) != str(last_saved_boot_id):
+        return True, "boot_changed"
+
+    curr_gas = str(quality.get("gas_condition") or "").strip().lower()
+    prev_gas = str(last_saved_quality.get("gas_condition") or "").strip().lower()
+    if curr_gas in GAS_BURST_CONDITIONS or prev_gas in GAS_BURST_CONDITIONS:
+        return True, "non_normal_gas"
+
+    state_keys = (
+        "operating_mode",
+        "maintenance_mode",
+        "maintenance_session_kind",
+        "gas_condition",
+        "ppm_calibrated",
+        "weight_valid",
+        "temperature_valid",
+        "humidity_valid",
+    )
+    for key in state_keys:
+        if quality.get(key) != last_saved_quality.get(key):
+            return True, "mode_or_quality_change"
+
+    if quality.get("maintenance_mode") is True and str(quality.get("maintenance_session_kind") or "") == "tank_swap":
+        return True, "tank_swap_active"
+
+    if _presence_delta_exceeded(
+        finite_float(sensor_data.get("gross_weight_kg")),
+        finite_float(last_saved_payload.get("gross_weight_kg")),
+        weight_deadband_kg,
+    ) or _presence_delta_exceeded(
+        finite_float(sensor_data.get("lpg_percent")),
+        finite_float(last_saved_payload.get("lpg_percent")),
+        percent_deadband,
+    ):
+        return True, "weight_change"
+
+    if _presence_delta_exceeded(
+        _extract_first_float(sensor_data, "voltage", "gas_voltage_v"),
+        _extract_first_float(last_saved_payload, "voltage", "gas_voltage_v"),
+        voltage_deadband_v,
+    ) or _presence_delta_exceeded(
+        finite_float(sensor_data.get("estimated_ppm")),
+        finite_float(last_saved_payload.get("estimated_ppm")),
+        ppm_deadband,
+    ):
+        return True, "gas_delta"
+
+    if _presence_delta_exceeded(
+        _extract_first_float(sensor_data, "temperature", "temperature_c", "temp_c", "ambient_temp_c"),
+        _extract_first_float(last_saved_payload, "temperature", "temperature_c", "temp_c", "ambient_temp_c"),
+        temp_deadband_c,
+    ) or _presence_delta_exceeded(
+        finite_float(sensor_data.get("humidity")),
+        finite_float(last_saved_payload.get("humidity")),
+        humidity_deadband_pct,
+    ):
+        return True, "env_delta"
+
+    now_utc = _to_utc_datetime(sample_at) or datetime.now(timezone.utc)
+    if (now_utc - saved_at_utc).total_seconds() >= max(60, int(checkpoint_seconds)):
+        return True, "checkpoint"
+
+    return False, "deadband_suppressed"
 
 
 INCIDENT_RULE_VERSION = "edge-hysteresis-v1"
@@ -494,6 +699,47 @@ class HysteresisStateTracker:
             sample_at=ts,
         )
 
+    def clear_legacy_lpg_fuel_episode(
+        self,
+        state: ConditionTrackerState,
+        *,
+        sample_identity: str,
+        sample_at: datetime,
+    ) -> Tuple[ConditionTrackerState, Optional[Dict[str, Any]]]:
+        """Clear any prior lpg_fuel episode without opening low-fuel incidents (low fuel is a reminder)."""
+        ts = _to_utc_datetime(sample_at) or datetime.now(timezone.utc)
+        if state.active_episode_id is None:
+            return state, None
+        if self._is_stale_or_duplicate(state, sample_identity, ts):
+            return state, None
+
+        next_state = ConditionTrackerState(**state.__dict__)
+        episode_id = state.active_episode_id
+        prev_sev = state.active_severity or "warning"
+        prev_code = state.active_fault_code or "LPG_LOW"
+        next_state.pending_state = None
+        next_state.pending_count = 0
+        next_state.last_sample_identity = sample_identity
+        next_state.last_sample_at = ts
+        next_state.revision += 1
+        next_state.active_episode_id = None
+        next_state.active_severity = None
+        next_state.active_fault_code = None
+        next_state.active_fault_name = None
+        return next_state, self._build_transition(
+            next_state,
+            domain="lpg",
+            episode_id=episode_id,
+            transition_type="cleared",
+            severity=prev_sev,
+            fault_code=prev_code,
+            fault_name=None,
+            summary="Low fuel level tracked as reminder rather than incident",
+            revision=next_state.revision,
+            evidence={"policy": "low_fuel_reminder_only"},
+            occurred_at=ts,
+        )
+
     def evaluate_gas_concentration(
         self,
         state: ConditionTrackerState,
@@ -502,9 +748,10 @@ class HysteresisStateTracker:
         node_config: Optional[Dict[str, Any]],
         sample_identity: str,
         sample_at: datetime,
+        maintenance_mode: bool = False,
     ) -> Tuple[ConditionTrackerState, Optional[Dict[str, Any]]]:
         ts = _to_utc_datetime(sample_at) or datetime.now(timezone.utc)
-        if self._is_stale_or_duplicate(state, sample_identity, ts):
+        if maintenance_mode or self._is_stale_or_duplicate(state, sample_identity, ts):
             return state, None
 
         condition = str(gas_info.get("gas_condition") or "")
@@ -572,9 +819,10 @@ class HysteresisStateTracker:
         temperature_c: Any,
         sample_identity: str,
         sample_at: datetime,
+        maintenance_mode: bool = False,
     ) -> Tuple[ConditionTrackerState, Optional[Dict[str, Any]]]:
         ts = _to_utc_datetime(sample_at) or datetime.now(timezone.utc)
-        if self._is_stale_or_duplicate(state, sample_identity, ts):
+        if maintenance_mode or self._is_stale_or_duplicate(state, sample_identity, ts):
             return state, None
 
         temp = finite_float(temperature_c)

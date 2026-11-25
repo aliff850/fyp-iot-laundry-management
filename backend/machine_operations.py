@@ -279,8 +279,24 @@ def list_machine_state(branch_id: UUID, user=Depends(_user)):
         member, _ = _authorize_branch_access(conn, user["id"], branch_id,
             ("owner", "branch_manager", "machine_maintenance"))
         rows = conn.execute("""select d.source_id,d.device_type,d.source_kind,d.label,d.capacity_kg,
-            m.state_payload,m.cloud_seen_at,m.gateway_seen_at
-            from public.devices d left join public.machine_latest m on m.device_id=d.id
+            m.state_payload,m.cloud_seen_at,m.gateway_seen_at,
+            inc.id as active_incident_id,
+            inc.reference_code as active_incident_ref,
+            inc.severity as active_incident_severity,
+            inc.fault_code as active_incident_fault_code,
+            inc.workflow_state as active_incident_workflow_state,
+            inc.edge_condition_state as active_incident_edge_state
+            from public.devices d
+            left join public.machine_latest m on m.device_id=d.id
+            left join lateral (
+                select id, reference_code, severity, fault_code, workflow_state, edge_condition_state
+                from public.incidents i
+                where i.device_id = d.id
+                  and i.domain = 'machine'
+                  and (i.edge_condition_state = 'active' or i.workflow_state <> 'resolved')
+                order by i.opened_at desc
+                limit 1
+            ) inc on true
             where d.branch_id=%s and d.organization_id=%s and d.status='active'
             and d.device_type in ('washer','dryer','washer_dryer')
             order by d.device_type,d.label,d.source_id""",
@@ -304,11 +320,24 @@ def list_machine_state(branch_id: UUID, user=Depends(_user)):
             if fault_code
             else None
         )
+        active_incident = (
+            {
+                "id": str(row["active_incident_id"]),
+                "reference_code": row.get("active_incident_ref") or "",
+                "severity": row.get("active_incident_severity") or "critical",
+                "fault_code": row.get("active_incident_fault_code"),
+                "workflow_state": row.get("active_incident_workflow_state") or "open",
+                "edge_condition_state": row.get("active_incident_edge_state") or "active",
+            }
+            if row.get("active_incident_id")
+            else None
+        )
         items.append({"source_id": row["source_id"], "type": row["device_type"], "source": row["source_kind"],
             "label": row["label"], "capacity_kg": row["capacity_kg"],
             "state": payload.get("state") if payload else "unknown",
             "freshness": "fresh" if fresh else "stale" if row["cloud_seen_at"] else "missing",
-            "last_update": row["cloud_seen_at"], "data": payload, "diagnosis": diagnosis})
+            "last_update": row["cloud_seen_at"], "data": payload, "diagnosis": diagnosis,
+            "active_incident": active_incident})
     return {"machines": items}
 
 

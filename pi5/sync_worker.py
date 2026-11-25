@@ -90,6 +90,7 @@ class EdgeSyncWorker:
         self.last_machine_state: Dict[str, Tuple[str, int]] = {}
         self.reported_machine_results: Dict[str, str] = {}
         self.last_lpg_state_digest: Optional[str] = None
+        self.last_lpg_presence_push: Dict[str, Dict[str, Any]] = {}
 
     def sync_machine_operations(self):
         """Exchange current state and durable commands through the gateway identity."""
@@ -237,6 +238,23 @@ class EdgeSyncWorker:
         return None
 
     def _load_recent_lpg_samples(self, cursor: Any, source_id: str, limit: int = 12) -> List[Dict[str, Any]]:
+        try:
+            cursor.execute(
+                """SELECT recent_samples_json
+                   FROM lpg_presence
+                   WHERE gateway_id=%s AND source_id=%s""",
+                (self.gateway_id, source_id),
+            )
+            pres_row = cursor.fetchone()
+            if isinstance(pres_row, dict) and pres_row.get("recent_samples_json"):
+                parsed = lpg_interpreter.parse_recent_lpg_samples(pres_row.get("recent_samples_json"), limit=limit)
+                if parsed:
+                    return parsed
+        except Exception as err:
+            err_code = err.args[0] if getattr(err, "args", None) else None
+            if err_code != 1146:
+                raise
+
         cursor.execute(
             """SELECT record_id, recorded_at, gateway_receipt_at, source_time_quality,
                       quality_metadata, data_payload
@@ -287,7 +305,7 @@ class EdgeSyncWorker:
             )
             cfg_rows = cursor.fetchall()
             cursor.execute(
-                """SELECT session_id, source_id, status, started_by, service_note,
+                """SELECT session_id, source_id, status, session_kind, incident_id, started_by, service_note,
                           started_at, completed_at, completed_by, new_tare_kg,
                           new_capacity_kg, verified_samples_json
                    FROM lpg_maintenance_sessions
@@ -297,7 +315,7 @@ class EdgeSyncWorker:
             )
             active_rows = cursor.fetchall()
             cursor.execute(
-                """SELECT session_id, source_id, status, started_by, service_note,
+                """SELECT session_id, source_id, status, session_kind, incident_id, started_by, service_note,
                           started_at, completed_at, completed_by, new_tare_kg,
                           new_capacity_kg, verified_samples_json
                    FROM lpg_maintenance_sessions
@@ -331,6 +349,8 @@ class EdgeSyncWorker:
                 "session_id": sid,
                 "source_id": row["source_id"],
                 "status": row["status"],
+                "session_kind": str(row.get("session_kind") or "tank_swap"),
+                "incident_id": str(row["incident_id"]) if row.get("incident_id") else None,
                 "started_by": str(row.get("started_by") or "Local staff")[:80],
                 "service_note": str(row["service_note"])[:240] if row.get("service_note") else None,
                 "started_at": started_iso,
@@ -363,6 +383,126 @@ class EdgeSyncWorker:
                 logger.warning("LPG state sync returned HTTP %s", response.status_code)
         except (requests.exceptions.RequestException, ValueError) as error:
             logger.warning("LPG state sync failed: %s", type(error).__name__)
+
+    def sync_lpg_presence(self) -> int:
+        """Push throttled live LPG snapshots so cloud lpg_latest stays fresh without telemetry bloat."""
+        if self.status != "active" or not self.gateway_id or not self.credential:
+            return 0
+        try:
+            read_conn = self.get_state_db_connection()
+            with read_conn.cursor() as cursor:
+                cursor.execute(
+                    """SELECT p.source_id, p.boot_id, p.sequence, p.source_kind, p.source_time_quality,
+                              p.recorded_at, p.gateway_receipt_at, p.data_payload, p.quality_metadata,
+                              p.recent_samples_json
+                       FROM lpg_presence p
+                       JOIN device_registry d
+                         ON d.gateway_id=p.gateway_id AND d.source_id=p.source_id
+                       WHERE p.gateway_id=%s
+                         AND d.device_type='lpg_edge_node'
+                         AND d.status IN ('active', 'maintenance')
+                         AND p.gateway_receipt_at >= UTC_TIMESTAMP(6) - INTERVAL 120 SECOND""",
+                    (self.gateway_id,),
+                )
+                rows = cursor.fetchall()
+        except Exception as err:
+            err_code = err.args[0] if getattr(err, "args", None) else None
+            if err_code == 1146:
+                return 0
+            logger.warning("LPG presence query failed: %s", type(err).__name__)
+            return 0
+
+        if not rows:
+            return 0
+
+        now_utc = datetime.now(timezone.utc)
+        min_push_interval = max(5, int(os.getenv("LPG_PRESENCE_PUSH_INTERVAL_SECONDS", "15")))
+        to_send: List[Tuple[str, Dict[str, Any], Dict[str, Any]]] = []
+        for row in rows:
+            src = row["source_id"]
+            boot = str(row["boot_id"])
+            seq = int(row["sequence"])
+            payload_obj = self._parse_json_obj(row.get("data_payload"))
+            quality_obj = self._parse_json_obj(row.get("quality_metadata"))
+            stq = str(row.get("source_time_quality") or quality_obj.get("source_time_quality") or "unknown")
+            quality_wire = {**quality_obj, "source_time_quality": stq}
+
+            prev = self.last_lpg_presence_push.get(src)
+            if prev and prev.get("boot_id") == boot and prev.get("sequence") == seq:
+                continue
+
+            mode_changed = prev is None or (
+                prev.get("operating_mode") != quality_wire.get("operating_mode")
+                or prev.get("gas_condition") != quality_wire.get("gas_condition")
+                or prev.get("maintenance_mode") != quality_wire.get("maintenance_mode")
+            )
+            curr_weight = lpg_interpreter.finite_float(payload_obj.get("gross_weight_kg"))
+            curr_volt = lpg_interpreter.finite_float(payload_obj.get("voltage"))
+            value_shifted = prev is not None and (
+                (curr_weight is not None and prev.get("weight") is not None and abs(curr_weight - prev["weight"]) >= lpg_interpreter.DEFAULT_DEADBAND_WEIGHT_KG)
+                or (curr_volt is not None and prev.get("voltage") is not None and abs(curr_volt - prev["voltage"]) >= lpg_interpreter.DEFAULT_DEADBAND_VOLTAGE_V)
+            )
+            elapsed_ok = prev is None or (now_utc - prev["pushed_at"]).total_seconds() >= min_push_interval
+            if not (mode_changed or value_shifted or elapsed_ok):
+                continue
+
+            recent_list = self._parse_json_list(row.get("recent_samples_json")) or []
+            if recent_list:
+                quality_wire["recent_samples"] = [
+                    {
+                        "sample_at": s.get("sample_at"),
+                        "gross_weight_kg": s.get("gross_weight_kg"),
+                        "weight_valid": s.get("weight_valid", True),
+                    }
+                    for s in recent_list[:6]
+                    if isinstance(s, dict)
+                ]
+
+            receipt_iso = self._utc_iso(row.get("gateway_receipt_at")) or now_utc.isoformat()
+            recorded_iso = self._utc_iso(row.get("recorded_at"))
+            det_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lpg-presence:{self.gateway_id}:{src}:{boot}:{seq}"))
+            wire_item = {
+                "record_id": det_id,
+                "source_id": src,
+                "source_kind": row.get("source_kind") or "physical",
+                "boot_id": boot,
+                "sequence": seq,
+                "gateway_receipt_at": receipt_iso,
+                "source_recorded_at": recorded_iso,
+                "payload": payload_obj,
+                "quality": quality_wire,
+            }
+            meta = {
+                "boot_id": boot,
+                "sequence": seq,
+                "pushed_at": now_utc,
+                "operating_mode": quality_wire.get("operating_mode"),
+                "gas_condition": quality_wire.get("gas_condition"),
+                "maintenance_mode": quality_wire.get("maintenance_mode"),
+                "weight": curr_weight,
+                "voltage": curr_volt,
+            }
+            to_send.append((src, wire_item, meta))
+
+        if not to_send:
+            return 0
+
+        try:
+            response = self.session.post(
+                f"{CLOUD_BASE_URL}/edge/lpg-presence",
+                headers={"Authorization": f"Bearer {self.credential}"},
+                json={"gateway_id": self.gateway_id, "nodes": [item for _, item, _ in to_send]},
+                timeout=API_TIMEOUT_SECONDS,
+            )
+            if response.status_code == 200:
+                for src, _, meta in to_send:
+                    self.last_lpg_presence_push[src] = meta
+                return len(to_send)
+            logger.warning("LPG presence sync returned HTTP %s", response.status_code)
+            return 0
+        except (requests.exceptions.RequestException, ValueError) as error:
+            logger.warning("LPG presence sync failed: %s", type(error).__name__)
+            return 0
 
     def _execute_lpg_command(
         self, command: Dict[str, Any]
@@ -398,7 +538,7 @@ class EdgeSyncWorker:
                 cfg = lpg_interpreter.normalize_node_config(cfg_row)
 
                 cursor.execute(
-                    """SELECT session_id, started_by, service_note, started_at
+                    """SELECT session_id, session_kind, incident_id, started_by, service_note, started_at
                        FROM lpg_maintenance_sessions
                        WHERE gateway_id=%s AND source_id=%s AND status='active'
                        ORDER BY started_at DESC
@@ -407,7 +547,7 @@ class EdgeSyncWorker:
                 )
                 active = cursor.fetchone()
 
-                if action == "start_tank_swap":
+                if action in {"start_tank_swap", "start_maintenance"}:
                     if active:
                         conn.rollback()
                         return (
@@ -415,6 +555,8 @@ class EdgeSyncWorker:
                             "Maintenance mode already active",
                             {
                                 "session_id": active["session_id"],
+                                "session_kind": active.get("session_kind") or "tank_swap",
+                                "incident_id": active.get("incident_id"),
                                 "started_by": active.get("started_by"),
                                 "service_note": active.get("service_note"),
                                 "started_at": self._utc_iso(active.get("started_at")),
@@ -424,15 +566,21 @@ class EdgeSyncWorker:
                     started_by = str(args.get("started_by") or "Operator").strip()[:80] or "Operator"
                     note_raw = args.get("service_note")
                     service_note = str(note_raw).strip()[:240] if isinstance(note_raw, str) and note_raw.strip() else None
+                    raw_kind = str(args.get("session_kind") or ("tank_swap" if action == "start_tank_swap" else "maintenance")).strip()
+                    session_kind = raw_kind if raw_kind in {"tank_swap", "maintenance", "incident_inspection"} else "maintenance"
+                    raw_inc = args.get("incident_id")
+                    incident_id = str(raw_inc).strip()[:36] if isinstance(raw_inc, str) and raw_inc.strip() else None
                     started_at = datetime.now(timezone.utc)
                     cursor.execute(
                         """INSERT INTO lpg_maintenance_sessions
-                           (session_id, gateway_id, source_id, status, started_by, service_note, started_at)
-                           VALUES (%s, %s, %s, 'active', %s, %s, %s)""",
+                           (session_id, gateway_id, source_id, status, session_kind, incident_id, started_by, service_note, started_at)
+                           VALUES (%s, %s, %s, 'active', %s, %s, %s, %s, %s)""",
                         (
                             session_id,
                             self.gateway_id,
                             source_id,
+                            session_kind,
+                            incident_id,
                             started_by,
                             service_note,
                             started_at.replace(tzinfo=None),
@@ -445,9 +593,41 @@ class EdgeSyncWorker:
                         None,
                         {
                             "session_id": session_id,
+                            "session_kind": session_kind,
+                            "incident_id": incident_id,
                             "started_by": started_by,
                             "service_note": service_note,
                             "started_at": started_at.isoformat(),
+                        },
+                    )
+
+                if action == "complete_maintenance":
+                    if not active:
+                        conn.rollback()
+                        return "failed", "Maintenance session is not active on gateway", {}
+                    completed_by = str(args.get("completed_by") or "Operator").strip()[:80] or "Operator"
+                    completed_at = datetime.now(timezone.utc)
+                    cursor.execute(
+                        """UPDATE lpg_maintenance_sessions
+                           SET status='completed',
+                               completed_at=%s,
+                               completed_by=%s
+                           WHERE session_id=%s AND status='active'""",
+                        (
+                            completed_at.replace(tzinfo=None),
+                            completed_by,
+                            active["session_id"],
+                        ),
+                    )
+                    conn.commit()
+                    self.last_lpg_state_digest = None
+                    return (
+                        "succeeded",
+                        None,
+                        {
+                            "session_id": active["session_id"],
+                            "completed_by": completed_by,
+                            "completed_at": completed_at.isoformat(),
                         },
                     )
 
@@ -704,7 +884,13 @@ class EdgeSyncWorker:
                 if (
                     expires_at.tzinfo is None
                     or expires_at <= datetime.now(timezone.utc)
-                    or action not in {"start_tank_swap", "complete_tank_swap", "calibrate_gas_baseline"}
+                    or action not in {
+                        "start_tank_swap",
+                        "complete_tank_swap",
+                        "calibrate_gas_baseline",
+                        "start_maintenance",
+                        "complete_maintenance",
+                    }
                     or not isinstance(arguments, dict)
                 ):
                     continue
@@ -1352,6 +1538,7 @@ def run_worker_iteration(worker: EdgeSyncWorker) -> None:
     worker.refresh_gateway_state()
     worker.sync_machine_operations()
     worker.sync_lpg_operations()
+    worker.sync_lpg_presence()
     worker.run_sync_cycle()
     if worker.status == "active":
         worker.sync_machine_cycles()

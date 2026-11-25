@@ -550,7 +550,7 @@ def _build_machine_maintenance_log_events(
             "id": f"maintlog:{log_id}",
             "branch_id": branch_id_str,
             "branch_name": branch_name,
-            "category": "machine",
+            "category": row.get("domain") or "machine",
             "kind": "machine_maintenance_logged",
             "severity": "positive" if is_completed else "warning",
             "title": "Maintenance completed" if is_completed else "Maintenance logged",
@@ -580,6 +580,8 @@ def _build_lpg_maintenance_session_events(
         source_id = row["source_id"]
         label = row.get("label") or source_id
         status = str(row.get("status") or "").strip().lower()
+        sess_kind = str(row.get("session_kind") or "tank_swap").strip().lower()
+        action_label = "tank swap" if sess_kind == "tank_swap" else "maintenance"
         started_by = str(row.get("started_by_label") or "Staff").strip()
         completed_by = str(row.get("completed_by_label") or started_by).strip()
         note = str(row.get("service_note") or "").strip()
@@ -587,7 +589,7 @@ def _build_lpg_maintenance_session_events(
         if status == "active":
             covered_active_keys.add((branch_id_str, source_id))
             occurred_at = _utc_iso(_utc_dt(row.get("started_at"))) or checked_at_iso
-            detail = f"{label} tank swap started by {started_by}"
+            detail = f"{label} {action_label} started by {started_by}"
             if note:
                 detail = f"{detail} ({note})"
             events.append({
@@ -618,7 +620,7 @@ def _build_lpg_maintenance_session_events(
                 "kind": "lpg_maintenance_completed",
                 "severity": "positive",
                 "title": "LPG maintenance completed",
-                "detail": f"{label} tank swap completed by {completed_by}",
+                "detail": f"{label} {action_label} completed by {completed_by}",
                 "source_id": source_id,
                 "device_label": label,
                 "occurred_at": occurred_at,
@@ -734,17 +736,19 @@ def get_notifications(
             )
             events.extend(maint_cmd_events)
 
-            maint_log_rows = conn.execute(
-                """select id, reference_code, branch_id, source_id, asset_name,
-                          incident_id, error_code, technician_name, outcome, created_at
-                   from public.machine_maintenance_logs
-                   where organization_id = %s
-                     and branch_id = any(%s)
-                   order by created_at desc, id desc
-                   limit %s""",
-                (organization_id, target_branch_ids, limit),
-            ).fetchall()
-            events.extend(_build_machine_maintenance_log_events(maint_log_rows, branch_names, checked_at_iso))
+        maint_log_rows = conn.execute(
+            """select id, reference_code, branch_id, source_id, asset_name,
+                      domain, log_kind,
+                      incident_id, error_code, technician_name, outcome, created_at
+               from public.machine_maintenance_logs
+               where organization_id = %s
+                 and branch_id = any(%s)
+                 and domain = any(%s)
+               order by created_at desc, id desc
+               limit %s""",
+            (organization_id, target_branch_ids, allowed_categories, limit),
+        ).fetchall()
+        events.extend(_build_machine_maintenance_log_events(maint_log_rows, branch_names, checked_at_iso))
 
         if "lpg" in allowed_categories:
             lpg_rows = conn.execute(
@@ -753,24 +757,7 @@ def get_notifications(
                           o.cloud_received_at, o.payload, o.quality,
                           inc.id as active_incident_id
                    from public.devices d
-                   left join lateral (
-                       select record_id, gateway_receipt_at, source_recorded_at,
-                              cloud_received_at, payload, quality
-                       from public.telemetry_observations o
-                       where o.device_id = d.id
-                         and o.branch_id = d.branch_id
-                         and o.organization_id = d.organization_id
-                       order by
-                           case
-                               when coalesce(o.quality->>'source_time_quality', '') in ('device_reported', 'assumed_utc')
-                                    and o.source_recorded_at is not null
-                                    and o.source_recorded_at <= o.gateway_receipt_at + interval '60 seconds'
-                               then least(o.source_recorded_at, o.gateway_receipt_at)
-                               else o.gateway_receipt_at
-                           end desc,
-                           o.id desc
-                       limit 1
-                   ) o on true
+                   left join public.lpg_latest o on o.device_id = d.id
                    left join lateral (
                        select id from public.incidents inc
                        where inc.device_id = d.id
@@ -792,7 +779,7 @@ def get_notifications(
             live_events.extend(lpg_events)
 
             lpg_maint_rows = conn.execute(
-                """select s.id, s.branch_id, s.source_id, d.label, s.status,
+                """select s.id, s.branch_id, s.source_id, d.label, s.status, s.session_kind,
                           s.started_by_label, s.completed_by_label, s.service_note,
                           s.started_at, s.completed_at
                    from public.lpg_maintenance_sessions s

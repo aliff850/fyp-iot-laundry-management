@@ -9,6 +9,7 @@ import type {
 } from "@/lib/auth/business";
 import { LpgGasBaselineModal } from "./LpgGasBaselineModal";
 import { LpgTankSwapModal } from "./LpgTankSwapModal";
+import { ServiceAndIncidentModal } from "@/components/workspace/common/ServiceAndIncidentModal";
 
 export interface LpgCylinderCardProps {
   device: SafetyNodeDevice;
@@ -144,12 +145,17 @@ export function LpgCylinderCard({
 }: LpgCylinderCardProps) {
   const [swapModalOpen, setSwapModalOpen] = useState(false);
   const [gasModalOpen, setGasModalOpen] = useState(false);
+  const [serviceModalOpen, setServiceModalOpen] = useState(false);
   const observation = device.observation;
   const freshness = getFreshnessInfo(observation);
   const isMaintenance = Boolean(
-    device.maintenance_mode || device.status === "maintenance",
+    device.operating_mode === "maintenance" ||
+      device.maintenance_mode ||
+      device.status === "maintenance",
   );
   const maintSession = device.maintenance_session ?? null;
+  const isTankSwapSession =
+    !maintSession?.session_kind || maintSession.session_kind === "tank_swap";
 
   const readMetric = (key: keyof SafetyNodeValues): number | null => {
     if (!freshness.isFresh || !observation) return null;
@@ -222,6 +228,39 @@ export function LpgCylinderCard({
     ? `Cloud delivery ${observation.sync_state}`
     : "Cloud delivery unknown";
 
+  const operatingMode =
+    device.operating_mode ??
+    (isMaintenance
+      ? "maintenance"
+      : freshness.isFresh && validPercent && percent < 15
+        ? "low"
+        : freshness.isFresh
+          ? "online"
+          : observation?.freshness === "stale"
+            ? "stale"
+            : "offline");
+
+  const modeBadge =
+    operatingMode === "maintenance"
+      ? {
+          label: "Maintenance",
+          className: "border-warning/30 bg-raised text-warning",
+          showWrench: true,
+        }
+      : operatingMode === "low"
+        ? {
+            label: "Low — Replace soon",
+            className: "border-warning/40 bg-warning/10 text-warning",
+            showWrench: false,
+          }
+        : operatingMode === "online"
+          ? {
+              label: "Online",
+              className: "border-positive/30 bg-positive/10 text-positive",
+              showWrench: false,
+            }
+          : null;
+
   const renderMetricPair = (
     label: string,
     key: keyof SafetyNodeValues,
@@ -266,10 +305,14 @@ export function LpgCylinderCard({
 
           <div className="flex shrink-0 flex-col items-start gap-1.5 sm:items-end">
             <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-              {isMaintenance && (
-                <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-warning/30 bg-raised px-2.5 py-1 text-xs font-medium text-warning">
-                  <Wrench className="size-3.5 shrink-0" aria-hidden="true" />
-                  <span>Maintenance</span>
+              {modeBadge && (
+                <span
+                  className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border px-2.5 py-1 text-xs font-medium ${modeBadge.className}`}
+                >
+                  {modeBadge.showWrench && (
+                    <Wrench className="size-3.5 shrink-0" aria-hidden="true" />
+                  )}
+                  <span>{modeBadge.label}</span>
                 </span>
               )}
               <span
@@ -294,7 +337,7 @@ export function LpgCylinderCard({
               <dl className="flex flex-wrap items-baseline justify-between gap-2">
                 <dt className="text-xs leading-normal text-muted">Fuel level</dt>
                 <dd className="text-sm font-semibold leading-normal text-warning">
-                  Paused (Tank swap)
+                  {isTankSwapSession ? "Paused (Tank swap)" : "Paused (Maintenance)"}
                 </dd>
               </dl>
               <dl className="grid grid-cols-2 gap-3 border-t border-rule/60 pt-2.5">
@@ -395,7 +438,7 @@ export function LpgCylinderCard({
         </dl>
 
         {branchId && (
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
             <button
               type="button"
               onClick={() => setGasModalOpen(true)}
@@ -409,14 +452,47 @@ export function LpgCylinderCard({
               </span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => setSwapModalOpen(true)}
-              className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-3.5 py-2 text-sm font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted motion-reduce:transition-none sm:w-auto"
-            >
-              <Wrench className="size-4 shrink-0" aria-hidden="true" />
-              <span>{isMaintenance ? "Complete tank swap" : "Start tank swap"}</span>
-            </button>
+            {isMaintenance ? (
+              isTankSwapSession ? (
+                <button
+                  type="button"
+                  onClick={() => setSwapModalOpen(true)}
+                  className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-3.5 py-2 text-sm font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted motion-reduce:transition-none sm:w-auto"
+                >
+                  <Wrench className="size-4 shrink-0" aria-hidden="true" />
+                  <span>Complete tank swap</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setServiceModalOpen(true)}
+                  className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-3.5 py-2 text-sm font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted motion-reduce:transition-none sm:w-auto"
+                >
+                  <Wrench className="size-4 shrink-0" aria-hidden="true" />
+                  <span>Complete maintenance &amp; log</span>
+                </button>
+              )
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setServiceModalOpen(true)}
+                  className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-sm font-medium text-ink transition-colors duration-150 enabled:hover:bg-navy-hover enabled:active:bg-navy-selected motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted motion-reduce:transition-none sm:w-auto"
+                >
+                  <Wrench className="size-4 shrink-0 text-warning" aria-hidden="true" />
+                  <span>Maintenance / Log service</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSwapModalOpen(true)}
+                  className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-3.5 py-2 text-sm font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted motion-reduce:transition-none sm:w-auto"
+                >
+                  <Wrench className="size-4 shrink-0" aria-hidden="true" />
+                  <span>Swap tank</span>
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -430,6 +506,30 @@ export function LpgCylinderCard({
           defaultActorName={defaultActorName}
           onClose={() => setSwapModalOpen(false)}
           onConfirmed={async () => {
+            if (onRefresh) await onRefresh();
+          }}
+        />
+      )}
+
+      {serviceModalOpen && branchId && (
+        <ServiceAndIncidentModal
+          open
+          branchId={branchId}
+          domain="lpg"
+          sourceId={device.source_id}
+          assetLabel={device.label}
+          assetStatus={operatingMode.toUpperCase()}
+          isMaintenanceMode={isMaintenance}
+          defaultTechnicianName={defaultActorName ?? ""}
+          defaultErrorCode={
+            gasInfo?.gas_condition === "critical"
+              ? "GAS_CRITICAL"
+              : gasInfo?.gas_condition === "warning"
+                ? "GAS_WARNING"
+                : null
+          }
+          onClose={() => setServiceModalOpen(false)}
+          onCompleted={async () => {
             if (onRefresh) await onRefresh();
           }}
         />

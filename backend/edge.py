@@ -18,6 +18,20 @@ router = APIRouter(prefix="/edge", tags=["edge"])
 logger = logging.getLogger(__name__)
 
 
+def _effective_observation_time(
+    source_recorded_at: Optional[datetime],
+    gateway_receipt_at: datetime,
+    quality: Optional[Dict[str, Any]],
+) -> datetime:
+    gw_dt = gateway_receipt_at if gateway_receipt_at.tzinfo else gateway_receipt_at.replace(tzinfo=timezone.utc)
+    stq = str((quality or {}).get("source_time_quality") or "")
+    if stq in ("device_reported", "assumed_utc") and source_recorded_at is not None:
+        src_dt = source_recorded_at if source_recorded_at.tzinfo else source_recorded_at.replace(tzinfo=timezone.utc)
+        if src_dt <= gw_dt + timedelta(seconds=60):
+            return min(src_dt, gw_dt)
+    return gw_dt
+
+
 def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.strip().encode("utf-8")).hexdigest()
 
@@ -101,6 +115,23 @@ class EdgeSyncBatch(BaseModel):
     batch_id: UUID
     heartbeat: bool = False
     records: List[EdgeTelemetryRecord] = Field(default_factory=list)
+
+
+class EdgeLpgPresenceItem(BaseModel):
+    record_id: UUID
+    source_id: str = Field(min_length=1, max_length=100)
+    source_kind: Optional[str] = "physical"
+    boot_id: Optional[str] = None
+    sequence: Optional[int] = None
+    gateway_receipt_at: datetime
+    source_recorded_at: Optional[datetime] = None
+    payload: Dict[str, Any]
+    quality: Dict[str, Any] = Field(default_factory=dict)
+
+
+class EdgeLpgPresenceBatch(BaseModel):
+    gateway_id: UUID
+    nodes: List[EdgeLpgPresenceItem] = Field(default_factory=list, max_length=25)
 
 
 def _limit_claim_attempts(request: Request) -> None:
@@ -339,6 +370,81 @@ def ingest_device_discoveries(batch: EdgeDiscoveriesBatch, gw=Depends(_gateway))
     return {"status": "success", "accepted_ids": accepted_ids, "rejected": rejected}
 
 
+def _upsert_lpg_latest_and_dispatch(
+    conn,
+    gw: dict,
+    latest_lpg_by_device: Dict[Any, tuple[datetime, str, Dict[str, Any], Any]],
+) -> None:
+    if not latest_lpg_by_device:
+        return
+    for effective_ts, _rec_key, dev, rec in latest_lpg_by_device.values():
+        conn.execute(
+            """insert into public.lpg_latest
+               (device_id, organization_id, branch_id, gateway_id, record_id,
+                effective_at, gateway_receipt_at, source_recorded_at, cloud_received_at,
+                payload, quality)
+               values (%s, %s, %s, %s, %s, %s, %s, %s, now(), %s, %s)
+               on conflict (device_id) do update set
+                   gateway_id = excluded.gateway_id,
+                   branch_id = excluded.branch_id,
+                   organization_id = excluded.organization_id,
+                   record_id = excluded.record_id,
+                   effective_at = excluded.effective_at,
+                   gateway_receipt_at = excluded.gateway_receipt_at,
+                   source_recorded_at = excluded.source_recorded_at,
+                   cloud_received_at = excluded.cloud_received_at,
+                   payload = excluded.payload,
+                   quality = excluded.quality
+               where (excluded.effective_at, excluded.record_id)
+                     >= (public.lpg_latest.effective_at, public.lpg_latest.record_id)""",
+            (
+                dev["id"],
+                gw["organization_id"],
+                gw["branch_id"],
+                gw["id"],
+                rec.record_id,
+                effective_ts,
+                rec.gateway_receipt_at,
+                rec.source_recorded_at,
+                Jsonb(rec.payload),
+                Jsonb(rec.quality),
+            ),
+        )
+    try:
+        from lpg_operations import _gas_interpretation_from_observation, _project_safety_observation
+        from push_notifications import evaluate_and_dispatch_lpg_observation
+
+        eval_now = datetime.now(timezone.utc)
+        for _ts, _rec_key, dev, rec in latest_lpg_by_device.values():
+            obs_row = {
+                "record_id": rec.record_id,
+                "source_id": dev["source_id"],
+                "source_kind": dev["source_kind"],
+                "gateway_receipt_at": rec.gateway_receipt_at,
+                "source_recorded_at": rec.source_recorded_at,
+                "cloud_received_at": eval_now,
+                "payload": rec.payload,
+                "quality": rec.quality,
+            }
+            obs = _project_safety_observation(obs_row, eval_now)
+            gas_info = _gas_interpretation_from_observation(obs)
+            evaluate_and_dispatch_lpg_observation(
+                conn,
+                device={
+                    "id": dev["id"],
+                    "organization_id": gw["organization_id"],
+                    "branch_id": gw["branch_id"],
+                    "source_id": dev["source_id"],
+                    "label": dev.get("label") or dev["source_id"],
+                    "status": dev.get("status") or "active",
+                },
+                observation=obs,
+                gas_info=gas_info,
+            )
+    except Exception as exc:
+        logger.warning("LPG Web Push evaluation skipped (%s)", type(exc).__name__)
+
+
 @router.post("/sync")
 def sync_telemetry_batch(batch: EdgeSyncBatch, gw=Depends(_gateway)):
     if gw["status"] != "active":
@@ -365,7 +471,7 @@ def sync_telemetry_batch(batch: EdgeSyncBatch, gw=Depends(_gateway)):
             (gw["id"],),
         ).fetchall()
         device_map = {d["source_id"]: d for d in devices}
-        latest_lpg_by_device: Dict[Any, tuple[datetime, Dict[str, Any], EdgeTelemetryRecord]] = {}
+        latest_lpg_by_device: Dict[Any, tuple[datetime, str, Dict[str, Any], EdgeTelemetryRecord]] = {}
 
         for record in batch.records:
             src_id = record.source_id or record.device_id
@@ -415,50 +521,78 @@ def sync_telemetry_batch(batch: EdgeSyncBatch, gw=Depends(_gateway)):
                     continue
             accepted_ids.append(record.edge_id)
             if dev.get("device_type") == "lpg_edge_node":
-                rec_ts = record.source_recorded_at or record.gateway_receipt_at
-                if rec_ts.tzinfo is None:
-                    rec_ts = rec_ts.replace(tzinfo=timezone.utc)
+                effective_ts = _effective_observation_time(
+                    record.source_recorded_at,
+                    record.gateway_receipt_at,
+                    record.quality,
+                )
+                rec_key = str(record.record_id)
                 prev_best = latest_lpg_by_device.get(dev["id"])
-                if prev_best is None or rec_ts >= prev_best[0]:
-                    latest_lpg_by_device[dev["id"]] = (rec_ts, dev, record)
+                if prev_best is None or (effective_ts, rec_key) >= (prev_best[0], prev_best[1]):
+                    latest_lpg_by_device[dev["id"]] = (effective_ts, rec_key, dev, record)
 
-        if latest_lpg_by_device:
-            try:
-                from lpg_operations import _gas_interpretation_from_observation, _project_safety_observation
-                from push_notifications import evaluate_and_dispatch_lpg_observation
-
-                eval_now = datetime.now(timezone.utc)
-                for _ts, dev, rec in latest_lpg_by_device.values():
-                    obs_row = {
-                        "record_id": rec.record_id,
-                        "source_id": dev["source_id"],
-                        "source_kind": dev["source_kind"],
-                        "gateway_receipt_at": rec.gateway_receipt_at,
-                        "source_recorded_at": rec.source_recorded_at,
-                        "cloud_received_at": eval_now,
-                        "payload": rec.payload,
-                        "quality": rec.quality,
-                    }
-                    obs = _project_safety_observation(obs_row, eval_now)
-                    gas_info = _gas_interpretation_from_observation(obs)
-                    evaluate_and_dispatch_lpg_observation(
-                        conn,
-                        device={
-                            "id": dev["id"],
-                            "organization_id": gw["organization_id"],
-                            "branch_id": gw["branch_id"],
-                            "source_id": dev["source_id"],
-                            "label": dev.get("label") or dev["source_id"],
-                            "status": dev.get("status") or "active",
-                        },
-                        observation=obs,
-                        gas_info=gas_info,
-                    )
-            except Exception as exc:
-                logger.warning("LPG Web Push evaluation skipped (%s)", type(exc).__name__)
+        _upsert_lpg_latest_and_dispatch(conn, gw, latest_lpg_by_device)
 
     return {
         "accepted_ids": accepted_ids,
+        "rejected": rejected,
+        "config_revision": gw["config_revision"],
+    }
+
+
+@router.post("/lpg-presence")
+def sync_lpg_presence_batch(batch: EdgeLpgPresenceBatch, gw=Depends(_gateway)):
+    """Upsert live LPG presence into public.lpg_latest without appending telemetry history rows."""
+    if gw["status"] != "active":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Gateway is not active")
+
+    if batch.gateway_id != gw["id"]:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Gateway identity mismatch in presence payload")
+
+    accepted_source_ids: List[str] = []
+    rejected: List[Dict[str, Any]] = []
+
+    with _database() as conn:
+        conn.execute(
+            "update public.gateways set last_contact_at=now(), last_sync_at=now() where id=%s",
+            (gw["id"],),
+        )
+        if not batch.nodes:
+            return {
+                "accepted_source_ids": [],
+                "rejected": [],
+                "config_revision": gw["config_revision"],
+            }
+
+        devices = conn.execute(
+            """select id, source_id, source_kind, device_type, label, status
+               from public.devices
+               where gateway_id=%s and device_type='lpg_edge_node' and status in ('active', 'maintenance')""",
+            (gw["id"],),
+        ).fetchall()
+        device_map = {d["source_id"]: d for d in devices}
+        latest_lpg_by_device: Dict[Any, tuple[datetime, str, Dict[str, Any], Any]] = {}
+
+        for node in batch.nodes:
+            dev = device_map.get(node.source_id)
+            if not dev:
+                rejected.append({"source_id": node.source_id, "reason": "Unregistered or inactive LPG device"})
+                continue
+            effective_ts = _effective_observation_time(
+                node.source_recorded_at,
+                node.gateway_receipt_at,
+                node.quality,
+            )
+            rec_key = str(node.record_id)
+            prev_best = latest_lpg_by_device.get(dev["id"])
+            if prev_best is None or (effective_ts, rec_key) >= (prev_best[0], prev_best[1]):
+                latest_lpg_by_device[dev["id"]] = (effective_ts, rec_key, dev, node)
+            accepted_source_ids.append(node.source_id)
+
+        _upsert_lpg_latest_and_dispatch(conn, gw, latest_lpg_by_device)
+
+    return {
+        "accepted_source_ids": accepted_source_ids,
         "rejected": rejected,
         "config_revision": gw["config_revision"],
     }

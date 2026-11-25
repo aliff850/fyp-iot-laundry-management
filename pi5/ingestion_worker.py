@@ -14,7 +14,7 @@ import sys
 import time
 import uuid
 from decimal import Decimal, InvalidOperation
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, Optional, Tuple
 
@@ -75,6 +75,7 @@ class EdgeIngestionWorker:
         self.is_active = False
         self._subscribed_branch: Optional[str] = None
         self.hysteresis_tracker = lpg_interpreter.HysteresisStateTracker()
+        self._last_lpg_mode_by_source: Dict[str, str] = {}
 
         # Setup MQTT Client
         if mqtt is not None:
@@ -265,7 +266,7 @@ class EdgeIngestionWorker:
                 if isinstance(row, dict):
                     cfg_row = row
                 cursor.execute(
-                    """SELECT session_id FROM lpg_maintenance_sessions
+                    """SELECT session_id, session_kind FROM lpg_maintenance_sessions
                        WHERE gateway_id=%s AND source_id=%s AND status='active'
                        ORDER BY started_at DESC LIMIT 1""",
                     (self.gateway_id, source_id),
@@ -280,6 +281,8 @@ class EdgeIngestionWorker:
         if maint_row and maint_row.get("session_id"):
             quality["maintenance_mode"] = True
             quality["maintenance_session_id"] = maint_row["session_id"]
+            quality["maintenance_session_kind"] = maint_row.get("session_kind") or "tank_swap"
+            quality["alerts_paused"] = True
 
         norm_cfg = lpg_interpreter.normalize_node_config(cfg_row)
         if quality.get("weight_valid") is not False:
@@ -298,6 +301,26 @@ class EdgeIngestionWorker:
             quality["mq6_baseline_v"] = gas_info["mq6_baseline_v"]
         if gas_info["estimated_ppm"] is not None:
             sensor_data["estimated_ppm"] = gas_info["estimated_ppm"]
+
+        pct_val = lpg_interpreter.finite_float(sensor_data.get("lpg_percent"))
+        if quality.get("maintenance_mode"):
+            node_mode = "maintenance"
+        elif quality.get("weight_valid") is not False and pct_val is not None and pct_val < lpg_interpreter.LPG_LOW_ENTRY_PCT:
+            node_mode = "low"
+        else:
+            node_mode = "online"
+        quality["operating_mode"] = node_mode
+        if self.branch_id and self.client is not None and self._last_lpg_mode_by_source.get(source_id) != node_mode:
+            self._last_lpg_mode_by_source[source_id] = node_mode
+            try:
+                self.client.publish(
+                    f"branches/{self.branch_id}/devices/{source_id}/mode",
+                    json.dumps({"mode": node_mode, "paused": bool(quality.get("maintenance_mode"))}),
+                    qos=1,
+                    retain=True,
+                )
+            except Exception:
+                logger.debug("Optional MQTT LPG mode publish skipped for %s", source_id)
         return gas_info, norm_cfg
 
     def _persist_condition_step(self, conn, source_id: str, condition_key: str, evaluator) -> None:
@@ -414,15 +437,14 @@ class EdgeIngestionWorker:
             k in sensor_data for k in ("lpg_percent", "temperature_c", "temp_c", "ambient_temp_c")
         ):
             return
+        maint_mode = bool(quality.get("maintenance_mode"))
+        # Low LPG fuel level serves as an operator replacement reminder only, not an incident.
         self._persist_condition_step(
             conn,
             source_id,
             "lpg_fuel",
-            lambda st: self.hysteresis_tracker.evaluate_lpg_fuel(
+            lambda st: self.hysteresis_tracker.clear_legacy_lpg_fuel_episode(
                 st,
-                lpg_percent=sensor_data.get("lpg_percent"),
-                weight_valid=quality.get("weight_valid") is not False,
-                maintenance_mode=bool(quality.get("maintenance_mode")),
                 sample_identity=sample_identity,
                 sample_at=sample_at,
             ),
@@ -438,6 +460,7 @@ class EdgeIngestionWorker:
                     node_config=norm_cfg,
                     sample_identity=sample_identity,
                     sample_at=sample_at,
+                    maintenance_mode=maint_mode,
                 ),
             )
         raw_temp = (
@@ -457,6 +480,7 @@ class EdgeIngestionWorker:
                     temperature_c=raw_temp,
                     sample_identity=sample_identity,
                     sample_at=sample_at,
+                    maintenance_mode=maint_mode,
                 ),
             )
 
@@ -545,37 +569,189 @@ class EdgeIngestionWorker:
             if msg.topic != TOPIC_LEGACY and approved:
                 gas_info, norm_cfg = self.apply_lpg_edge_state(conn, source_id, sensor_data, quality)
             source_time_quality = self.source_time_quality(parsed.get("recorded_at") or parsed.get("timestamp"))
+            is_legacy = msg.topic == TOPIC_LEGACY
+            is_lpg_live = (
+                not is_legacy
+                and approved
+                and quarantine is None
+                and lpg_interpreter.is_lpg_sensor_payload(sensor_data)
+            )
+            persist_history = True
+            persist_reason = "telemetry"
+            presence_supported = False
+            pres_recent_json: Optional[str] = None
+            receipt_dt = datetime.strptime(receipt_at, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc)
+            recorded_dt = datetime.strptime(recorded_at, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc)
+            effective_sample_dt = (
+                min(recorded_dt, receipt_dt)
+                if source_time_quality in ("device_reported", "assumed_utc")
+                and recorded_dt <= receipt_dt + timedelta(seconds=60)
+                else receipt_dt
+            )
 
-            # Insert observation
+            if is_lpg_live:
+                try:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            """SELECT boot_id, sequence, data_payload, recent_samples_json,
+                                      last_history_saved_at, last_history_boot_id,
+                                      last_history_payload, last_history_quality
+                               FROM lpg_presence
+                               WHERE gateway_id=%s AND source_id=%s
+                               FOR UPDATE""",
+                            (self.gateway_id, source_id),
+                        )
+                        pres_row = cursor.fetchone()
+                    presence_supported = True
+                except Exception as err:
+                    err_code = err.args[0] if getattr(err, "args", None) else None
+                    if err_code == 1146:
+                        logger.debug("Optional lpg_presence table not installed yet")
+                        pres_row = None
+                    else:
+                        raise
+
+                if presence_supported:
+                    if isinstance(pres_row, dict) and "boot_id" in pres_row and "sequence" in pres_row:
+                        try:
+                            prev_seq = int(pres_row["sequence"])
+                            curr_seq = int(sequence)
+                        except (TypeError, ValueError):
+                            prev_seq, curr_seq = -1, -2
+                        if pres_row.get("boot_id") == boot_id and curr_seq >= 0 and prev_seq >= curr_seq:
+                            conn.rollback()
+                            if prev_seq == curr_seq:
+                                try:
+                                    prev_payload = json.loads(pres_row.get("data_payload") or "{}")
+                                except ValueError:
+                                    prev_payload = None
+                                if prev_payload == sensor_data:
+                                    client.publish(
+                                        f"branches/{self.branch_id}/devices/{source_id}/telemetry-acks",
+                                        json.dumps({"boot_id": boot_id, "sequence": sequence}),
+                                        qos=1,
+                                    )
+                            return
+
+                        def _json_dict(raw_val: Any) -> Optional[Dict[str, Any]]:
+                            if isinstance(raw_val, dict):
+                                return raw_val
+                            if isinstance(raw_val, str) and raw_val.strip():
+                                try:
+                                    obj = json.loads(raw_val)
+                                    return obj if isinstance(obj, dict) else None
+                                except ValueError:
+                                    return None
+                            return None
+
+                        checkpoint_seconds = int(
+                            os.getenv(
+                                "LPG_HISTORY_CHECKPOINT_SECONDS",
+                                str(lpg_interpreter.DEFAULT_LPG_HISTORY_CHECKPOINT_SECONDS),
+                            )
+                        )
+                        persist_history, persist_reason = lpg_interpreter.should_persist_lpg_history(
+                            sensor_data,
+                            quality,
+                            effective_sample_dt,
+                            boot_id=str(boot_id),
+                            last_saved_at=pres_row.get("last_history_saved_at"),
+                            last_saved_boot_id=pres_row.get("last_history_boot_id"),
+                            last_saved_payload=_json_dict(pres_row.get("last_history_payload")),
+                            last_saved_quality=_json_dict(pres_row.get("last_history_quality")),
+                            checkpoint_seconds=checkpoint_seconds,
+                        )
+                        existing_recent = pres_row.get("recent_samples_json")
+                    else:
+                        existing_recent = None
+                        persist_history, persist_reason = True, "initial"
+
+                    pres_recent_json = json.dumps(
+                        lpg_interpreter.update_recent_lpg_samples(
+                            existing_recent,
+                            record_id=record_id,
+                            sample_at=effective_sample_dt,
+                            sensor_data=sensor_data,
+                            quality=quality,
+                        )
+                    )
+
+            payload_json = json.dumps(sensor_data)
+            quality_json = json.dumps(quality)
+            source_kind = parsed.get("source_kind", "physical")
+
             with conn.cursor() as cursor:
-                sql = """
-                    INSERT INTO sensor_telemetry
-                    (record_id, gateway_id, source_id, boot_id, sequence, source_kind,
-                     source_time_quality, quality_metadata, device_id, recorded_at,
-                     gateway_receipt_at, data_payload, is_synced, quarantine_reason)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-                """
-                cursor.execute(
-                    sql,
-                    (
-                        record_id,
-                        self.gateway_id if self.is_active and msg.topic != TOPIC_LEGACY else None,
-                        source_id,
-                        boot_id,
-                        sequence,
-                        parsed.get("source_kind", "physical"),
-                        source_time_quality,
-                        json.dumps(quality),
-                        source_id,
-                        recorded_at,
-                        receipt_at,
-                        json.dumps(sensor_data),
-                        0 if quarantine is None else -1,
-                        quarantine,
-                    ),
-                )
-            if msg.topic != TOPIC_LEGACY and approved and quarantine is None:
-                sample_at_dt = datetime.strptime(recorded_at, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc)
+                if persist_history:
+                    sql = """
+                        INSERT INTO sensor_telemetry
+                        (record_id, gateway_id, source_id, boot_id, sequence, source_kind,
+                         source_time_quality, quality_metadata, device_id, recorded_at,
+                         gateway_receipt_at, data_payload, is_synced, quarantine_reason)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    """
+                    cursor.execute(
+                        sql,
+                        (
+                            record_id,
+                            self.gateway_id if self.is_active and not is_legacy else None,
+                            source_id,
+                            boot_id,
+                            sequence,
+                            source_kind,
+                            source_time_quality,
+                            quality_json,
+                            source_id,
+                            recorded_at,
+                            receipt_at,
+                            payload_json,
+                            0 if quarantine is None else -1,
+                            quarantine,
+                        ),
+                    )
+                if is_lpg_live and presence_supported:
+                    cursor.execute(
+                        """INSERT INTO lpg_presence
+                           (gateway_id, source_id, boot_id, sequence, source_kind,
+                            source_time_quality, recorded_at, gateway_receipt_at,
+                            data_payload, quality_metadata, recent_samples_json,
+                            last_history_saved_at, last_history_boot_id,
+                            last_history_payload, last_history_quality, updated_at)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(6))
+                           ON DUPLICATE KEY UPDATE
+                             boot_id=VALUES(boot_id),
+                             sequence=VALUES(sequence),
+                             source_kind=VALUES(source_kind),
+                             source_time_quality=VALUES(source_time_quality),
+                             recorded_at=VALUES(recorded_at),
+                             gateway_receipt_at=VALUES(gateway_receipt_at),
+                             data_payload=VALUES(data_payload),
+                             quality_metadata=VALUES(quality_metadata),
+                             recent_samples_json=VALUES(recent_samples_json),
+                             last_history_saved_at=COALESCE(VALUES(last_history_saved_at), last_history_saved_at),
+                             last_history_boot_id=COALESCE(VALUES(last_history_boot_id), last_history_boot_id),
+                             last_history_payload=COALESCE(VALUES(last_history_payload), last_history_payload),
+                             last_history_quality=COALESCE(VALUES(last_history_quality), last_history_quality),
+                             updated_at=UTC_TIMESTAMP(6)""",
+                        (
+                            self.gateway_id,
+                            source_id,
+                            boot_id,
+                            sequence,
+                            source_kind,
+                            source_time_quality,
+                            recorded_at,
+                            receipt_at,
+                            payload_json,
+                            quality_json,
+                            pres_recent_json,
+                            receipt_at if persist_history else None,
+                            boot_id if persist_history else None,
+                            payload_json if persist_history else None,
+                            quality_json if persist_history else None,
+                        ),
+                    )
+
+            if not is_legacy and approved and quarantine is None:
                 self._record_lpg_conditions(
                     conn,
                     source_id,
@@ -584,15 +760,18 @@ class EdgeIngestionWorker:
                     gas_info,
                     norm_cfg,
                     f"{boot_id}:{sequence}",
-                    sample_at_dt,
+                    recorded_dt,
                 )
             conn.commit()
 
-            if msg.topic != TOPIC_LEGACY and approved and boot_id and sequence is not None:
+            if not is_legacy and approved and boot_id and sequence is not None:
                 client.publish(f"branches/{self.branch_id}/devices/{source_id}/telemetry-acks",
                                json.dumps({"boot_id": boot_id, "sequence": sequence}), qos=1)
 
-            logger.info("Ingested telemetry [%s] from %s (record_id=%s)", msg.topic, source_id, record_id)
+            if persist_history:
+                logger.info("Ingested telemetry (%s) [%s] from %s (record_id=%s)", persist_reason, msg.topic, source_id, record_id)
+            else:
+                logger.debug("Updated LPG presence (%s) for %s (seq=%s)", persist_reason, source_id, sequence)
 
         except json.JSONDecodeError as err:
             logger.warning("Discarded non-JSON MQTT payload on '%s': %s", msg.topic, err)

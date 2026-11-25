@@ -313,6 +313,8 @@ def load_branch_safety_nodes(
                   cfg.cylinder_tare_kg, cfg.rated_capacity_kg as cfg_rated_capacity_kg,
                   cfg.stability_tolerance_kg,
                   ms.session_id as maintenance_session_id,
+                  ms.session_kind as maintenance_session_kind,
+                  ms.incident_id as maintenance_incident_id,
                   ms.started_by_label as maintenance_started_by,
                   ms.service_note as maintenance_service_note,
                   ms.started_at as maintenance_started_at,
@@ -321,27 +323,10 @@ def load_branch_safety_nodes(
                   lc.status as pending_command_status,
                   lc.issued_at as pending_command_issued_at
            from public.devices d
-           left join lateral (
-               select record_id, gateway_receipt_at, source_recorded_at,
-                      cloud_received_at, payload, quality
-               from public.telemetry_observations o
-               where o.device_id = d.id
-                 and o.branch_id = d.branch_id
-                 and o.organization_id = d.organization_id
-               order by
-                   case
-                       when coalesce(o.quality->>'source_time_quality', '') in ('device_reported', 'assumed_utc')
-                            and o.source_recorded_at is not null
-                            and o.source_recorded_at <= o.gateway_receipt_at + interval '60 seconds'
-                       then least(o.source_recorded_at, o.gateway_receipt_at)
-                       else o.gateway_receipt_at
-                   end desc,
-                   o.id desc
-               limit 1
-           ) o on true
+           left join public.lpg_latest o on o.device_id = d.id
            left join public.lpg_node_config cfg on cfg.device_id = d.id
            left join lateral (
-               select id as session_id, started_by_label, service_note, started_at
+               select id as session_id, session_kind, incident_id, started_by_label, service_note, started_at
                from public.lpg_maintenance_sessions ms
                where ms.device_id = d.id
                  and ms.status = 'active'
@@ -379,6 +364,8 @@ def load_branch_safety_nodes(
         maint_session = (
             {
                 "session_id": str(row["maintenance_session_id"]),
+                "session_kind": row.get("maintenance_session_kind") or "tank_swap",
+                "incident_id": str(row["maintenance_incident_id"]) if row.get("maintenance_incident_id") else None,
                 "started_by": row.get("maintenance_started_by") or "Local staff",
                 "service_note": row.get("maintenance_service_note") or "",
                 "started_at": _utc_iso(row.get("maintenance_started_at")),
@@ -386,6 +373,26 @@ def load_branch_safety_nodes(
             if has_active_session
             else None
         )
+        obs_values = (obs or {}).get("values") or {}
+        lpg_pct = obs_values.get("lpg_percent")
+        is_fresh_obs = bool(obs and obs.get("freshness") == "fresh")
+        is_low_fuel = bool(
+            not is_maint
+            and is_fresh_obs
+            and isinstance(lpg_pct, (int, float))
+            and math.isfinite(lpg_pct)
+            and float(lpg_pct) < 15.0
+        )
+        if is_maint:
+            operating_mode = "maintenance"
+        elif is_low_fuel:
+            operating_mode = "low"
+        elif is_fresh_obs:
+            operating_mode = "online"
+        elif obs and obs.get("freshness") == "stale":
+            operating_mode = "stale"
+        else:
+            operating_mode = "offline"
         pending_command = (
             {
                 "command_id": str(row["pending_command_id"]),
@@ -404,6 +411,8 @@ def load_branch_safety_nodes(
             "label": row["label"],
             "capacity_kg": float(row["capacity_kg"]) if row.get("capacity_kg") is not None else None,
             "status": device_status,
+            "operating_mode": operating_mode,
+            "low_fuel_reminder": is_low_fuel,
             "maintenance_mode": is_maint,
             "maintenance_session": maint_session,
             "lpg_config": _serialize_lpg_config(row),
@@ -482,6 +491,20 @@ class LpgStartSwapRequest(BaseModel):
     service_note: str | None = Field(default=None, max_length=240)
 
 
+class LpgStartServiceMaintenanceRequest(BaseModel):
+    request_id: UUID
+    started_by: str | None = Field(default=None, max_length=80)
+    service_note: str | None = Field(default=None, max_length=240)
+    session_kind: Literal["maintenance", "incident_inspection"] = "maintenance"
+    incident_id: UUID | None = None
+
+
+class LpgCompleteServiceMaintenanceRequest(BaseModel):
+    request_id: UUID
+    completed_by: str | None = Field(default=None, max_length=80)
+    service_note: str | None = Field(default=None, max_length=240)
+
+
 class LpgCompleteSwapRequest(BaseModel):
     request_id: UUID
     completed_by: str | None = Field(default=None, max_length=80)
@@ -539,6 +562,8 @@ class EdgeLpgSessionSync(BaseModel):
     session_id: UUID
     source_id: str = Field(min_length=1, max_length=100)
     status: Literal["active", "completed", "cancelled"]
+    session_kind: Literal["tank_swap", "maintenance", "incident_inspection"] = "tank_swap"
+    incident_id: UUID | None = None
     started_by: str = Field(default="Local staff", max_length=80)
     service_note: str | None = Field(default=None, max_length=240)
     started_at: datetime
@@ -564,11 +589,21 @@ def _load_lpg_device_for_branch(
     for_update: bool = False,
 ) -> dict[str, Any]:
     lock_clause = " for update of d" if for_update else ""
+    latest_cols = (
+        ""
+        if for_update
+        else """, o.gateway_receipt_at as latest_gateway_receipt_at,
+               o.source_recorded_at as latest_source_recorded_at,
+               o.cloud_received_at as latest_cloud_received_at,
+               o.payload as latest_payload,
+               o.quality as latest_quality"""
+    )
+    latest_join = "" if for_update else " left join public.lpg_latest o on o.device_id = d.id"
     device = conn.execute(
         f"""select d.id, d.gateway_id, d.source_id, d.label, d.capacity_kg, d.status,
-                   g.status as gateway_status
+                   g.status as gateway_status{latest_cols}
             from public.devices d
-            join public.gateways g on g.id = d.gateway_id
+            join public.gateways g on g.id = d.gateway_id{latest_join}
             where d.branch_id=%s
               and d.organization_id=%s
               and d.source_id=%s
@@ -689,7 +724,7 @@ def get_lpg_maintenance_status(branch_id: UUID, source_id: str, user=Depends(_us
             (device["id"],),
         ).fetchone()
         session_row = conn.execute(
-            """select id, started_by_label, service_note, started_at
+            """select id, session_kind, incident_id, started_by_label, service_note, started_at
                from public.lpg_maintenance_sessions
                where device_id=%s and status='active'
                order by started_at desc
@@ -714,16 +749,46 @@ def get_lpg_maintenance_status(branch_id: UUID, source_id: str, user=Depends(_us
         ).fetchall()
 
     lpg_config = _serialize_lpg_config({**(cfg_row or {}), "capacity_kg": device.get("capacity_kg")})
+    presence_quality = device.get("latest_quality") if isinstance(device.get("latest_quality"), dict) else {}
+    raw_recent = presence_quality.get("recent_samples")
+    stability_rows: list[dict[str, Any]] = []
+    if isinstance(raw_recent, list) and raw_recent:
+        for item in raw_recent:
+            if not isinstance(item, dict):
+                continue
+            sample_at = _utc_dt(item.get("sample_at"))
+            if sample_at is None:
+                continue
+            stability_rows.append({
+                "gateway_receipt_at": sample_at,
+                "source_recorded_at": sample_at,
+                "payload": {"gross_weight_kg": item.get("gross_weight_kg")},
+                "quality": {
+                    "source_time_quality": "device_reported",
+                    "weight_valid": item.get("weight_valid", True),
+                },
+            })
     stability = _evaluate_swap_stability_from_observations(
-        obs_rows,
+        stability_rows if stability_rows else obs_rows,
         tolerance_kg=lpg_config["stability_tolerance_kg"],
         now=now,
     )
-    latest_quality = (obs_rows[0].get("quality") or {}) if obs_rows and isinstance(obs_rows[0].get("quality"), dict) else {}
-    latest_obs = _project_safety_observation(
-        {**(obs_rows[0] or {}), "record_id": "preview", "source_id": source_id},
-        now,
-    ) if obs_rows else None
+    has_presence_snapshot = device.get("latest_gateway_receipt_at") is not None
+    latest_row = (
+        {
+            "record_id": "presence",
+            "source_id": source_id,
+            "gateway_receipt_at": device.get("latest_gateway_receipt_at"),
+            "source_recorded_at": device.get("latest_source_recorded_at"),
+            "cloud_received_at": device.get("latest_cloud_received_at") or device.get("latest_gateway_receipt_at"),
+            "payload": device.get("latest_payload") if isinstance(device.get("latest_payload"), dict) else {},
+            "quality": presence_quality,
+        }
+        if has_presence_snapshot
+        else ({**(obs_rows[0] or {}), "record_id": "preview", "source_id": source_id} if obs_rows else None)
+    )
+    latest_quality = (latest_row.get("quality") or {}) if latest_row and isinstance(latest_row.get("quality"), dict) else {}
+    latest_obs = _project_safety_observation(latest_row, now) if latest_row else None
     telemetry_maint = bool(latest_obs and latest_obs["freshness"] in ("fresh", "stale") and latest_quality.get("maintenance_mode") is True)
     maintenance_mode = (
         session_row is not None
@@ -736,6 +801,8 @@ def get_lpg_maintenance_status(branch_id: UUID, source_id: str, user=Depends(_us
         "session": (
             {
                 "session_id": str(session_row["id"]),
+                "session_kind": session_row.get("session_kind") or "tank_swap",
+                "incident_id": str(session_row["incident_id"]) if session_row.get("incident_id") else None,
                 "started_by": session_row.get("started_by_label") or "Local staff",
                 "service_note": session_row.get("service_note") or "",
                 "started_at": _utc_iso(session_row.get("started_at")),
@@ -819,9 +886,8 @@ def complete_lpg_tank_swap(branch_id: UUID, source_id: str, body: LpgCompleteSwa
             if not active_session and str(device.get("status") or "").lower() != "maintenance":
                 latest = conn.execute(
                     """select gateway_receipt_at, quality
-                       from public.telemetry_observations
-                       where device_id=%s
-                       order by gateway_receipt_at desc, id desc limit 1""",
+                       from public.lpg_latest
+                       where device_id=%s""",
                     (device["id"],),
                 ).fetchone()
                 if latest and isinstance(latest.get("quality"), dict):
@@ -842,6 +908,102 @@ def complete_lpg_tank_swap(branch_id: UUID, source_id: str, body: LpgCompleteSwa
             organization_id=organization_id,
             branch_id=branch_id,
             action="complete_tank_swap",
+            arguments=args,
+            actor_user_id=user["id"],
+            actor_label=actor_label,
+        )
+    return resp
+
+
+@router.post("/branches/{branch_id}/lpg/{source_id}/service-maintenance/start", status_code=202)
+def start_lpg_service_maintenance(
+    branch_id: UUID,
+    source_id: str,
+    body: LpgStartServiceMaintenanceRequest,
+    user=Depends(_user),
+):
+    source_id = _validate_source_id(source_id)
+    with _database() as conn:
+        member, _ = _authorize_lpg_access(
+            conn, user["id"], branch_id, ("owner", "branch_manager", "lpg_maintenance")
+        )
+        organization_id = member["organization_id"]
+        device = _load_lpg_device_for_branch(conn, organization_id, branch_id, source_id, for_update=True)
+        actor_label = _actor_label(conn, user["id"], body.started_by)
+        service_note = " ".join((body.service_note or "").strip().split())[:240]
+        args: dict[str, Any] = {
+            "started_by": actor_label,
+            "service_note": service_note,
+            "session_kind": body.session_kind,
+        }
+        if body.incident_id:
+            args["incident_id"] = str(body.incident_id)
+
+        existing = conn.execute(
+            "select id from public.lpg_commands where id=%s",
+            (body.request_id,),
+        ).fetchone()
+        if not existing:
+            active_session = conn.execute(
+                """select id from public.lpg_maintenance_sessions
+                   where device_id=%s and status='active' limit 1""",
+                (device["id"],),
+            ).fetchone()
+            if active_session or str(device.get("status") or "").lower() == "maintenance":
+                raise HTTPException(409, "Maintenance mode is already active for this LPG node")
+
+        resp, _created = _enqueue_lpg_command(
+            conn,
+            request_id=body.request_id,
+            device=device,
+            organization_id=organization_id,
+            branch_id=branch_id,
+            action="start_maintenance",
+            arguments=args,
+            actor_user_id=user["id"],
+            actor_label=actor_label,
+        )
+    return resp
+
+
+@router.post("/branches/{branch_id}/lpg/{source_id}/service-maintenance/complete", status_code=202)
+def complete_lpg_service_maintenance(
+    branch_id: UUID,
+    source_id: str,
+    body: LpgCompleteServiceMaintenanceRequest,
+    user=Depends(_user),
+):
+    source_id = _validate_source_id(source_id)
+    with _database() as conn:
+        member, _ = _authorize_lpg_access(
+            conn, user["id"], branch_id, ("owner", "branch_manager", "lpg_maintenance")
+        )
+        organization_id = member["organization_id"]
+        device = _load_lpg_device_for_branch(conn, organization_id, branch_id, source_id, for_update=True)
+        actor_label = _actor_label(conn, user["id"], body.completed_by)
+        service_note = " ".join((body.service_note or "").strip().split())[:240]
+        args = {"completed_by": actor_label, "service_note": service_note}
+
+        existing = conn.execute(
+            "select id from public.lpg_commands where id=%s",
+            (body.request_id,),
+        ).fetchone()
+        if not existing:
+            active_session = conn.execute(
+                """select id from public.lpg_maintenance_sessions
+                   where device_id=%s and status='active' limit 1""",
+                (device["id"],),
+            ).fetchone()
+            if not active_session and str(device.get("status") or "").lower() != "maintenance":
+                raise HTTPException(409, "Maintenance mode is not active for this LPG node")
+
+        resp, _created = _enqueue_lpg_command(
+            conn,
+            request_id=body.request_id,
+            device=device,
+            organization_id=organization_id,
+            branch_id=branch_id,
+            action="complete_maintenance",
             arguments=args,
             actor_user_id=user["id"],
             actor_label=actor_label,
@@ -1016,7 +1178,7 @@ def report_edge_lpg_command_result(body: EdgeLpgCommandResult, gateway=Depends(_
         if body.status == "succeeded":
             action = cmd["action"]
             args = cmd.get("arguments") if isinstance(cmd.get("arguments"), dict) else {}
-            if action == "start_tank_swap":
+            if action in ("start_tank_swap", "start_maintenance"):
                 session_raw = result_payload.get("session_id")
                 try:
                     session_uuid = UUID(str(session_raw)) if session_raw else uuid4()
@@ -1025,6 +1187,21 @@ def report_edge_lpg_command_result(body: EdgeLpgCommandResult, gateway=Depends(_
                 started_at = _utc_dt(result_payload.get("started_at")) or datetime.now(timezone.utc)
                 started_by = _clean_label(result_payload.get("started_by") or cmd.get("actor_label"), "Operator")
                 service_note = (result_payload.get("service_note") or args.get("service_note") or "")[:240] or None
+                raw_kind = str(
+                    result_payload.get("session_kind")
+                    or args.get("session_kind")
+                    or ("tank_swap" if action == "start_tank_swap" else "maintenance")
+                ).strip()
+                session_kind = (
+                    raw_kind
+                    if raw_kind in ("tank_swap", "maintenance", "incident_inspection")
+                    else "maintenance"
+                )
+                raw_inc = result_payload.get("incident_id") or args.get("incident_id")
+                try:
+                    session_incident_id = UUID(str(raw_inc)) if raw_inc else None
+                except ValueError:
+                    session_incident_id = None
                 conn.execute(
                     """update public.lpg_maintenance_sessions
                        set status='cancelled'
@@ -1034,10 +1211,12 @@ def report_edge_lpg_command_result(body: EdgeLpgCommandResult, gateway=Depends(_
                 conn.execute(
                     """insert into public.lpg_maintenance_sessions
                        (id, device_id, gateway_id, branch_id, organization_id, source_id,
-                        status, origin, started_by_label, started_by_user_id, service_note, started_at)
-                       values (%s, %s, %s, %s, %s, %s, 'active', 'cloud', %s, %s, %s, %s)
+                        status, origin, session_kind, incident_id, started_by_label, started_by_user_id, service_note, started_at)
+                       values (%s, %s, %s, %s, %s, %s, 'active', 'cloud', %s, %s, %s, %s, %s, %s)
                        on conflict (id) do update set
                            status='active',
+                           session_kind=excluded.session_kind,
+                           incident_id=coalesce(excluded.incident_id, public.lpg_maintenance_sessions.incident_id),
                            started_by_label=excluded.started_by_label,
                            service_note=excluded.service_note,
                            started_at=excluded.started_at""",
@@ -1048,10 +1227,29 @@ def report_edge_lpg_command_result(body: EdgeLpgCommandResult, gateway=Depends(_
                         cmd["branch_id"],
                         cmd["organization_id"],
                         cmd["source_id"],
+                        session_kind,
+                        session_incident_id,
                         started_by,
                         cmd["actor_user_id"],
                         service_note,
                         started_at,
+                    ),
+                )
+            elif action == "complete_maintenance":
+                completed_at = _utc_dt(result_payload.get("completed_at")) or datetime.now(timezone.utc)
+                completed_by = _clean_label(result_payload.get("completed_by") or cmd.get("actor_label"), "Operator")
+                conn.execute(
+                    """update public.lpg_maintenance_sessions
+                       set status='completed',
+                           completed_at=%s,
+                           completed_by_label=%s,
+                           completed_by_user_id=%s
+                       where device_id=%s and status='active'""",
+                    (
+                        completed_at,
+                        completed_by,
+                        cmd["actor_user_id"],
+                        cmd["device_id"],
                     ),
                 )
             elif action == "complete_tank_swap":
@@ -1060,7 +1258,7 @@ def report_edge_lpg_command_result(body: EdgeLpgCommandResult, gateway=Depends(_
                 tare_kg = _finite_number(result_payload.get("tare_kg") if "tare_kg" in result_payload else args.get("tare_kg"))
                 cap_kg = _finite_number(result_payload.get("rated_capacity_kg") if "rated_capacity_kg" in result_payload else args.get("rated_capacity_kg"))
                 verified_samples = result_payload.get("verified_samples")
-                conn.execute(
+                completed_session = conn.execute(
                     """update public.lpg_maintenance_sessions
                        set status='completed',
                            completed_at=%s,
@@ -1069,7 +1267,8 @@ def report_edge_lpg_command_result(body: EdgeLpgCommandResult, gateway=Depends(_
                            new_tare_kg=%s,
                            new_capacity_kg=%s,
                            verified_samples=%s
-                       where device_id=%s and status='active'""",
+                       where device_id=%s and status='active'
+                       returning id, service_note""",
                     (
                         completed_at,
                         completed_by,
@@ -1079,7 +1278,7 @@ def report_edge_lpg_command_result(body: EdgeLpgCommandResult, gateway=Depends(_
                         Jsonb(verified_samples) if verified_samples is not None else None,
                         cmd["device_id"],
                     ),
-                )
+                ).fetchone()
                 conn.execute(
                     """insert into public.lpg_node_config
                        (device_id, organization_id, branch_id, gateway_id, source_id,
@@ -1108,6 +1307,40 @@ def report_edge_lpg_command_result(body: EdgeLpgCommandResult, gateway=Depends(_
                         "update public.devices set capacity_kg=%s, updated_at=now() where id=%s",
                         (cap_kg, cmd["device_id"]),
                     )
+                swap_note_parts = ["Completed physical LPG cylinder swap."]
+                if tare_kg is not None:
+                    swap_note_parts.append(f"Tare: {tare_kg:.2f} kg.")
+                if cap_kg is not None:
+                    swap_note_parts.append(f"Rated capacity: {cap_kg:.2f} kg.")
+                if isinstance(completed_session, dict) and completed_session.get("service_note"):
+                    swap_note_parts.append(str(completed_session["service_note"]))
+                swap_session_id = (
+                    completed_session.get("id")
+                    if isinstance(completed_session, dict) and completed_session.get("id") != cmd["id"]
+                    else None
+                )
+                conn.execute(
+                    """insert into public.machine_maintenance_logs
+                       (reference_code, organization_id, branch_id, device_id, gateway_id,
+                        source_id, asset_name, domain, log_kind, lpg_session_id,
+                        error_code, fault_name, technician_name, performed_by_user_id,
+                        performed_by_role, work_done, outcome)
+                       values (%s, %s, %s, %s, %s, %s, %s, 'lpg', 'tank_swap', %s,
+                               'TANK_SWAP', 'LPG Cylinder Swap', %s, %s, 'lpg_maintenance', %s, 'completed')""",
+                    (
+                        f"MNT-{uuid4().hex[:6].upper()}",
+                        cmd["organization_id"],
+                        cmd["branch_id"],
+                        cmd["device_id"],
+                        cmd["gateway_id"],
+                        cmd["source_id"],
+                        cmd.get("label") or cmd["source_id"],
+                        swap_session_id,
+                        completed_by,
+                        cmd["actor_user_id"],
+                        " ".join(swap_note_parts)[:4000],
+                    ),
+                )
             elif action == "calibrate_gas_baseline":
                 vcc_v = _finite_number(result_payload.get("mq6_vcc_v")) or 5.0
                 rl_kohm = _finite_number(result_payload.get("mq6_rl_kohm")) or 20.0
@@ -1255,11 +1488,13 @@ def sync_edge_lpg_state(body: EdgeLpgStateSyncRequest, gateway=Depends(_gateway)
             conn.execute(
                 """insert into public.lpg_maintenance_sessions
                    (id, device_id, gateway_id, branch_id, organization_id, source_id,
-                    status, origin, started_by_label, service_note, started_at,
+                    status, origin, session_kind, incident_id, started_by_label, service_note, started_at,
                     completed_at, completed_by_label, new_tare_kg, new_capacity_kg, verified_samples)
-                   values (%s, %s, %s, %s, %s, %s, %s, 'gateway', %s, %s, %s, %s, %s, %s, %s, %s)
+                   values (%s, %s, %s, %s, %s, %s, %s, 'gateway', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    on conflict (id) do update set
                        status=excluded.status,
+                       session_kind=excluded.session_kind,
+                       incident_id=coalesce(excluded.incident_id, public.lpg_maintenance_sessions.incident_id),
                        completed_at=coalesce(excluded.completed_at, public.lpg_maintenance_sessions.completed_at),
                        completed_by_label=coalesce(excluded.completed_by_label, public.lpg_maintenance_sessions.completed_by_label),
                        new_tare_kg=coalesce(excluded.new_tare_kg, public.lpg_maintenance_sessions.new_tare_kg),
@@ -1273,6 +1508,8 @@ def sync_edge_lpg_state(body: EdgeLpgStateSyncRequest, gateway=Depends(_gateway)
                     gateway["organization_id"],
                     sess.source_id,
                     sess.status,
+                    sess.session_kind,
+                    sess.incident_id,
                     _clean_label(sess.started_by, "Local staff"),
                     (sess.service_note or "")[:240] or None,
                     _utc_dt(sess.started_at) or datetime.now(timezone.utc),

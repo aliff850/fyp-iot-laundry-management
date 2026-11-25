@@ -17,6 +17,7 @@ import {
   type ResolvedTheme,
 } from "@/components/workspace/branches/ChartCanvas";
 import { BusinessInsightsSections } from "@/components/workspace/branches/BusinessInsightsSections";
+import { IncidentMetricsSection } from "@/components/workspace/branches/IncidentMetricsSection";
 
 export type MachineMetricView = "cycles" | "runtime" | "revenue";
 
@@ -62,6 +63,7 @@ function emptyFallbackAnalytics(branchId: string, period: OverviewAnalyticsPerio
       total_lpg_nodes: 0,
       gas_aggregation_mode: "uncalibrated",
       complaints_total: null,
+      incidents_total: 0,
     },
     programs: [],
     machines: [],
@@ -743,7 +745,14 @@ export function PerformanceChart({
         )}
       </div>
 
-      {/* Section 4: Customer Complaints */}
+      {/* Section 4: Incident Metrics */}
+      <IncidentMetricsSection
+        incidentMetrics={activeData.incident_metrics}
+        granularity={activeData.granularity}
+        hasLoadedData={analytics !== null}
+      />
+
+      {/* Section 5: Customer Complaints */}
       <div className="rounded-md border border-rule bg-raised p-4 sm:p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-base font-bold text-ink">Customer complaints</h3>

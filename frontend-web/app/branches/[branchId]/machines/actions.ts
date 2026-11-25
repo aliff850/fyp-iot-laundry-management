@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import {
+  createDeviceMaintenanceLog,
   createMachineMaintenanceLog,
   getBranchMaintenanceLogs,
   getRemoteMachines,
@@ -43,7 +44,9 @@ export async function requestRemoteMachineCommand(branchId: string, sourceId: st
 export async function loadBranchMaintenanceLogs(
   branchId: string,
   options?: {
+    domain?: "machine" | "lpg";
     source_id?: string;
+    incident_id?: string;
     error_code?: string;
     search?: string;
     page?: number;
@@ -51,6 +54,25 @@ export async function loadBranchMaintenanceLogs(
   },
 ) {
   return getBranchMaintenanceLogs(branchId, options);
+}
+
+export async function submitDeviceMaintenanceLog(
+  branchId: string,
+  sourceId: string,
+  payload: MaintenanceLogCreateInput,
+) {
+  const result = await createDeviceMaintenanceLog(branchId, sourceId, payload);
+  if (result.ok) {
+    revalidatePath(`/branches/${branchId}/machines`);
+    revalidatePath(`/branches/${branchId}/lpg`);
+    revalidatePath(`/branches/${branchId}/maintenance`);
+    revalidatePath(`/branches/${branchId}/incidents`);
+    if (payload.incident_id) {
+      revalidatePath(`/branches/${branchId}/incidents/${payload.incident_id}`);
+    }
+    revalidatePath(`/branches/${branchId}/overview`);
+  }
+  return result;
 }
 
 export async function submitMachineMaintenanceLog(

@@ -13,6 +13,7 @@ import {
   type MachineModalTab,
 } from "@/components/workspace/machines/MachineCard";
 import { MachineDetailModal } from "@/components/workspace/machines/MachineDetailModal";
+import { ServiceAndIncidentModal } from "@/components/workspace/common/ServiceAndIncidentModal";
 
 export interface RemoteMachineFleetProps {
   branchId: string;
@@ -42,11 +43,15 @@ export function RemoteMachineFleet({
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [serviceSourceId, setServiceSourceId] = useState<string | null>(null);
   const [modalTab, setModalTab] = useState<MachineModalTab>("diagnostics");
   const [serviceError, setServiceError] = useState<string | null>(null);
 
   const selectedMachine =
     machines.find((machine) => machine.source_id === selectedId) ?? null;
+  const serviceMachine =
+    machines.find((machine) => machine.source_id === serviceSourceId) ?? null;
+  const serviceBadge = serviceMachine ? getMachineStatusBadge(serviceMachine) : null;
 
   const refreshMachinesNow = async () => {
     const result = await refreshRemoteMachines(branchId);
@@ -60,20 +65,48 @@ export function RemoteMachineFleet({
 
   useEffect(() => {
     let active = true;
+    let inFlight = false;
+    let activeController: AbortController | null = null;
+
     async function poll() {
+      if (!active || inFlight) return;
       if (document.visibilityState !== "visible") return;
-      const result = await refreshRemoteMachines(branchId);
-      if (!active) return;
-      if (result.ok) {
-        setMachines(result.value);
-        setServiceError(null);
-      } else {
-        setServiceError(result.message);
+      inFlight = true;
+      const controller = new AbortController();
+      activeController = controller;
+      try {
+        const res = await fetch(
+          `/api/workspace/branches/${encodeURIComponent(branchId)}/machines`,
+          { method: "GET", cache: "no-store", signal: controller.signal },
+        );
+        const result = (await res.json()) as
+          | { ok: true; value: RemoteMachine[] }
+          | { ok: false; message: string };
+        if (!active) return;
+        if (result.ok) {
+          setMachines(result.value);
+          setServiceError(null);
+        } else {
+          setServiceError(result.message);
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          return;
+        }
+        if (active) {
+          setServiceError("The business service is unavailable. Please retry.");
+        }
+      } finally {
+        if (activeController === controller) {
+          activeController = null;
+        }
+        inFlight = false;
       }
     }
-    const timer = window.setInterval(poll, 4000);
+    const timer = window.setInterval(poll, 6000);
     return () => {
       active = false;
+      activeController?.abort();
       window.clearInterval(timer);
     };
   }, [branchId]);
@@ -299,9 +332,42 @@ export function RemoteMachineFleet({
           if (!result.ok) throw new Error(result.message);
           return result.value;
         }}
+        onOpenServiceModal={(machine) => {
+          setSelectedId(null);
+          setServiceSourceId(machine.source_id);
+        }}
         onClose={() => setSelectedId(null)}
         onCommandSent={refreshMachinesNow}
       />
+
+      {serviceMachine && (
+        <ServiceAndIncidentModal
+          open
+          branchId={branchId}
+          domain="machine"
+          sourceId={serviceMachine.source_id}
+          assetLabel={serviceMachine.label}
+          assetStatus={serviceBadge?.effectiveStatus ?? "OFFLINE"}
+          isMaintenanceMode={serviceBadge?.effectiveStatus === "MAINTENANCE"}
+          branchOpen={branchOpen}
+          canControlHardware={!serviceError && serviceMachine.source === "simulated"}
+          defaultTechnicianName={defaultTechnicianName}
+          defaultErrorCode={serviceMachine.data?.fault_code ?? null}
+          incident={
+            serviceMachine.active_incident
+              ? {
+                  id: serviceMachine.active_incident.id,
+                  reference_code: serviceMachine.active_incident.reference_code,
+                  fault_code: serviceMachine.active_incident.fault_code,
+                  workflow_state: serviceMachine.active_incident.workflow_state,
+                  edge_condition_state: serviceMachine.active_incident.edge_condition_state,
+                }
+              : null
+          }
+          onClose={() => setServiceSourceId(null)}
+          onCompleted={refreshMachinesNow}
+        />
+      )}
     </div>
   );
 }
