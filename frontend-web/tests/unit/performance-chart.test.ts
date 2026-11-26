@@ -4,12 +4,9 @@ import { renderToString } from "react-dom/server";
 import Chart from "chart.js/auto";
 import {
   PerformanceChart,
+  formatIncidentDuration,
   selectRevenueSeriesValues,
 } from "@/components/workspace/branches/PerformanceChart";
-import {
-  IncidentMetricsSection,
-  formatIncidentDuration,
-} from "@/components/workspace/branches/IncidentMetricsSection";
 import type { BranchOverviewAnalytics } from "@/lib/auth/business";
 
 const BRANCH_ID = "22222222-2222-2222-2222-222222222222";
@@ -475,21 +472,20 @@ describe("PerformanceChart (Pi-aligned Chart.js Branch Overview Analytics)", () 
     const text = html.replace(/<!--.*?-->/g, "");
     expect(text).toContain("Incident metrics");
     expect(text).toContain("Critical alerts");
-    expect(text).toContain("Avg acknowledge");
-    expect(text).toContain("10.0 min");
-    expect(text).toContain("2 acknowledged");
+    expect(text).toContain("Unresolved");
+    expect(text).toContain("Resolved");
     expect(text).toContain("Avg resolution");
     expect(text).toContain("30.0 min");
-    expect(text).toContain("1 resolved");
-    expect(text).toContain("Machine domain");
-    expect(text).toContain("LPG domain");
+    expect(text).toContain("By domain");
+    expect(text).toContain("2 Machine / 1 LPG");
+    expect(text).not.toContain("Avg acknowledge");
     expect(text).not.toContain("·");
     expect(text).not.toMatch(/WF-0\d|CR-0\d|FM-0\d|RP-0\d|IM-0\d/);
 
     const emptyHtml = renderToString(
-      React.createElement(IncidentMetricsSection, {
-        granularity: "day",
-        hasLoadedData: true,
+      React.createElement(PerformanceChart, {
+        branchId: BRANCH_ID,
+        initialAnalytics: buildAnalytics({ period: "week", granularity: "day" }),
       })
     );
     const emptyText = emptyHtml.replace(/<!--.*?-->/g, "");

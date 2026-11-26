@@ -353,17 +353,7 @@ export function RemoteMachineFleet({
           canControlHardware={!serviceError && serviceMachine.source === "simulated"}
           defaultTechnicianName={defaultTechnicianName}
           defaultErrorCode={serviceMachine.data?.fault_code ?? null}
-          incident={
-            serviceMachine.active_incident
-              ? {
-                  id: serviceMachine.active_incident.id,
-                  reference_code: serviceMachine.active_incident.reference_code,
-                  fault_code: serviceMachine.active_incident.fault_code,
-                  workflow_state: serviceMachine.active_incident.workflow_state,
-                  edge_condition_state: serviceMachine.active_incident.edge_condition_state,
-                }
-              : null
-          }
+          incident={null}
           onClose={() => setServiceSourceId(null)}
           onCompleted={refreshMachinesNow}
         />

@@ -86,6 +86,7 @@ def test_get_branch_lpg_safety_projects_real_telemetry_and_no_ppm(monkeypatch):
     assert dev["source_id"] == "esp32-lpg-01"
     assert dev["type"] == "lpg_edge_node"
     assert dev["source_kind"] == "physical"
+    assert dev["active_incidents_count"] == 0
     obs = dev["observation"]
     assert obs["freshness"] == "fresh"
     assert obs["sync_state"] == "synced"
@@ -519,3 +520,124 @@ def test_lpg_maintenance_status_uses_lpg_latest_recent_samples_when_history_supp
     assert res["stability"]["stable"] is True
     assert res["stability"]["sample_count"] == 3
     assert res["stability"]["spread_kg"] == 0.04
+
+
+def test_set_lpg_tare_weight_requires_maintenance_and_reconciles_result(monkeypatch):
+    # Rejects when maintenance mode is not active
+    conn_blocked = MagicMock()
+    conn_blocked.execute.return_value.fetchone.side_effect = [
+        _member("lpg_maintenance", "active"),
+        {"id": BRANCH, "name": "MSU Shah Alam", "organization_id": ORG},
+        {"?column?": 1},
+        {"id": DEVICE, "gateway_id": GW, "source_id": "lpg-01", "label": "Tank 01", "capacity_kg": 14.0, "status": "active", "gateway_status": "active"},
+        {"full_name": "Farah"},
+        None,  # no existing command
+        None,  # no active session
+        None,  # no maintenance lpg_latest
+    ]
+    monkeypatch.setattr(lpg, "_database", _mock_db(conn_blocked))
+    with pytest.raises(HTTPException) as exc:
+        lpg.set_lpg_tare_weight(
+            BRANCH,
+            "lpg-01",
+            lpg.LpgTareWeightRequest(request_id=REQ_1, tare_kg=0.0, rated_capacity_kg=5.0),
+            {"id": USER},
+        )
+    assert exc.value.status_code == 409
+
+    # Enqueues set_tare_weight when active session exists
+    conn_ok = MagicMock()
+    conn_ok.execute.return_value.fetchone.side_effect = [
+        _member("owner", "active"),
+        {"id": BRANCH, "name": "MSU Shah Alam", "organization_id": ORG},
+        {"id": DEVICE, "gateway_id": GW, "source_id": "lpg-01", "label": "Tank 01", "capacity_kg": 14.0, "status": "active", "gateway_status": "active"},
+        {"full_name": "Owner"},
+        None,  # no existing command
+        {"id": SESS_1},  # active maintenance session
+        None,  # _enqueue existing check
+        None,  # _enqueue pending check
+    ]
+    monkeypatch.setattr(lpg, "_database", _mock_db(conn_ok))
+    queued = lpg.set_lpg_tare_weight(
+        BRANCH,
+        "lpg-01",
+        lpg.LpgTareWeightRequest(request_id=REQ_1, tare_kg=15.2, rated_capacity_kg=14.0),
+        {"id": USER},
+    )
+    assert queued["command_id"] == str(REQ_1)
+    assert queued["status"] == "queued"
+
+    # Gateway result updates lpg_node_config and never auto-creates maintenance logs
+    conn_res = MagicMock()
+    conn_res.execute.return_value.fetchone.side_effect = [
+        {
+            "id": REQ_1,
+            "device_id": DEVICE,
+            "gateway_id": GW,
+            "branch_id": BRANCH,
+            "organization_id": ORG,
+            "action": "complete_tank_swap",
+            "arguments": {"completed_by": "Farah", "tare_kg": 15.2, "rated_capacity_kg": 14.0},
+            "status": "dispatched",
+            "actor_user_id": USER,
+            "actor_label": "Farah",
+            "source_id": "lpg-01",
+            "label": "Tank 01",
+        },
+    ]
+    monkeypatch.setattr(lpg, "_database", _mock_db(conn_res))
+    ack = lpg.report_edge_lpg_command_result(
+        lpg.EdgeLpgCommandResult(
+            command_id=REQ_1,
+            status="succeeded",
+            result_payload={"tare_kg": 15.2, "rated_capacity_kg": 14.0},
+        ),
+        gateway={"id": GW, "status": "active", "organization_id": ORG, "branch_id": BRANCH},
+    )
+    assert ack == {"accepted": True}
+    sql_log = "\n".join(call.args[0].lower() for call in conn_res.execute.call_args_list)
+    assert "insert into public.machine_maintenance_logs" not in sql_log
+
+
+def test_latest_sql_migrations_permit_all_runtime_lpg_actions_and_log_kinds():
+    from pathlib import Path
+    import re
+    from typing import get_args
+    import maintenance_logs
+
+    migrations_dir = Path(__file__).resolve().parents[1] / "migrations"
+    sql_files = sorted(migrations_dir.glob("*.sql"))
+
+    latest_lpg_cmd_check = ""
+    latest_log_kind_check = ""
+    for path in sql_files:
+        text = path.read_text(encoding="utf-8")
+        cmd_matches = re.findall(
+            r"add\s+constraint\s+lpg_commands_action_check\s+check\s*\(\s*action\s+in\s*\(([^)]+)\)\s*\)",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if cmd_matches:
+            latest_lpg_cmd_check = cmd_matches[-1]
+        kind_matches = re.findall(
+            r"add\s+constraint\s+machine_maintenance_logs_log_kind_check\s+check\s*\(\s*log_kind\s+in\s*\(([^)]+)\)\s*\)",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if kind_matches:
+            latest_log_kind_check = kind_matches[-1]
+
+    allowed_cmd_actions = set(re.findall(r"'([^']+)'", latest_lpg_cmd_check))
+    expected_cmd_actions = {
+        "start_tank_swap",
+        "complete_tank_swap",
+        "calibrate_gas_baseline",
+        "set_tare_weight",
+        "start_maintenance",
+        "complete_maintenance",
+    }
+    assert expected_cmd_actions.issubset(allowed_cmd_actions)
+
+    allowed_log_kinds = set(re.findall(r"'([^']+)'", latest_log_kind_check))
+    expected_log_kinds = set(get_args(maintenance_logs.MaintenanceLogCreateRequest.model_fields["log_kind"].annotation))
+    assert expected_log_kinds.issubset(allowed_log_kinds)

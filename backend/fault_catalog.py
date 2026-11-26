@@ -39,7 +39,7 @@ _MACHINE_ENTRIES: dict[str, FaultCatalogEntry] = {
     "E01": FaultCatalogEntry(
         title="Water Inlet Failure",
         source_status="placeholder_washer_guide",
-        disclaimer="Placeholder troubleshooting guide pending vendor manual.",
+        disclaimer="",
         plain_explanation=(
             "The washer did not detect the expected water fill level within the intake window."
         ),
@@ -62,7 +62,7 @@ _MACHINE_ENTRIES: dict[str, FaultCatalogEntry] = {
     "E02": FaultCatalogEntry(
         title="Drain Pump Blockage",
         source_status="placeholder_washer_guide",
-        disclaimer="Placeholder troubleshooting guide pending vendor manual.",
+        disclaimer="",
         plain_explanation=(
             "Wash water failed to drain from the drum before the spin or rinse transition."
         ),
@@ -86,7 +86,7 @@ _MACHINE_ENTRIES: dict[str, FaultCatalogEntry] = {
     "E03": FaultCatalogEntry(
         title="Door Lock Interlock Fault",
         source_status="placeholder_washer_guide",
-        disclaimer="Placeholder troubleshooting guide pending vendor manual.",
+        disclaimer="",
         plain_explanation=(
             "The door hatch interlock switch did not confirm a safe locked state before starting or spinning."
         ),
@@ -109,7 +109,7 @@ _MACHINE_ENTRIES: dict[str, FaultCatalogEntry] = {
     "E04": FaultCatalogEntry(
         title="Heater / Thermal Cutoff",
         source_status="placeholder_washer_guide",
-        disclaimer="Placeholder troubleshooting guide pending vendor manual.",
+        disclaimer="",
         plain_explanation=(
             "Water heating did not progress normally or the high-limit thermal safety cutoff tripped."
         ),
@@ -132,7 +132,7 @@ _MACHINE_ENTRIES: dict[str, FaultCatalogEntry] = {
     "E05": FaultCatalogEntry(
         title="Drum Imbalance / Spin Trip",
         source_status="placeholder_washer_guide",
-        disclaimer="Placeholder troubleshooting guide pending vendor manual.",
+        disclaimer="",
         plain_explanation=(
             "Excessive drum vibration or an uneven heavy load tripped the high-speed spin protection switch."
         ),
@@ -155,7 +155,7 @@ _MACHINE_ENTRIES: dict[str, FaultCatalogEntry] = {
     "SIM_INTERRUPTED": FaultCatalogEntry(
         title="Power / Boot Interruption",
         source_status="spinsense_safety_rule",
-        disclaimer="SpinSense edge recovery safety state triggered after reboot mid-cycle.",
+        disclaimer="",
         plain_explanation=(
             "The washer terminal rebooted or lost power while a wash cycle was active and entered a safe fault lock."
         ),
@@ -180,7 +180,7 @@ _LPG_ENTRIES: dict[str, FaultCatalogEntry] = {
     "LPG_LOW": FaultCatalogEntry(
         title="LPG Fuel Low Warning",
         source_status="spinsense_safety_rule",
-        disclaimer="SpinSense edge fuel continuity safety rule.",
+        disclaimer="",
         plain_explanation=(
             "Usable LPG weight in the active cylinder dropped below the 15% warning threshold across consecutive valid samples."
         ),
@@ -200,7 +200,7 @@ _LPG_ENTRIES: dict[str, FaultCatalogEntry] = {
     "LPG_CRITICAL": FaultCatalogEntry(
         title="LPG Fuel Critical Reserve",
         source_status="spinsense_safety_rule",
-        disclaimer="SpinSense edge fuel continuity safety rule.",
+        disclaimer="",
         plain_explanation=(
             "Usable LPG weight in the active cylinder fell below 5% across consecutive valid samples; dryer continuity is at immediate risk."
         ),
@@ -218,63 +218,64 @@ _LPG_ENTRIES: dict[str, FaultCatalogEntry] = {
         ),
     ),
     "GAS_WARNING": FaultCatalogEntry(
-        title="Gas Concentration Elevated",
+        title="Elevated LPG Gas in Cylinder Room",
         source_status="spinsense_safety_rule",
-        disclaimer="SpinSense ambient gas safety rule.",
+        disclaimer="",
         plain_explanation=(
-            "Ambient gas sensor readings reached the warning level across consecutive valid samples."
+            "MQ-6 gas sensor inside the enclosed fireproof LPG cylinder room detected concentration above the warning threshold."
         ),
         likely_causes=(
-            "Minor manifold fitting seepage after a cylinder change",
-            "Reduced exhaust/utility room ventilation",
+            "Brief residual gas pocket after cylinder coupling or valve operation",
+            "Developing regulator, hose, or manifold fitting leak inside the enclosed LPG room",
+            "Blocked or insufficient exhaust ventilation in the LPG cylinder enclosure",
         ),
         safety_precautions=(
-            "Avoid ignition sources and ensure utility room exhaust ventilation is running."
+            "FIRE & EXPLOSION HAZARD IF SUSTAINED: Do not enter the enclosed LPG cylinder room with any ignition source or operate electrical switches while gas readings remain elevated."
         ),
         troubleshooting_steps=(
-            "Increase ventilation around the manifold and dryer area immediately.",
-            "Inspect cylinder regulator joints and flexible hoses with soapy leak-check solution.",
-            "Escalate to emergency shutoff if readings rise toward critical thresholds.",
+            "Monitor live PPM remotely from outside the cylinder room to verify whether the reading drops rapidly below threshold.",
+            "If readings remain elevated, treat as an active gas leak — shut off the external main LPG emergency valve if safely accessible and evacuate.",
+            "Only after gas readings return safely below the danger threshold and the room has ventilated, have a qualified LPG technician soap-test all cylinder and manifold joints.",
         ),
     ),
     "GAS_CRITICAL": FaultCatalogEntry(
-        title="Gas Concentration Critical",
+        title="Sustained / Critical LPG Leak — Fire & Explosion Hazard",
         source_status="spinsense_safety_rule",
-        disclaimer="SpinSense ambient gas safety rule.",
+        disclaimer="",
         plain_explanation=(
-            "Ambient gas sensor readings reached the critical emergency level across consecutive valid samples."
+            "Critical or sustained elevated LPG gas is accumulating inside the enclosed fireproof cylinder room. Imminent fire and explosion danger."
         ),
         likely_causes=(
-            "Active LPG leak at regulator, manifold valve, or dryer line",
-            "Severe gas accumulation inside enclosed utility space",
+            "Active pressurized LPG leak from a cylinder valve, regulator, manifold, or dryer supply line",
+            "Continuous heavier-than-air LPG accumulation trapped inside the enclosed fireproof room",
         ),
         safety_precautions=(
-            "Evacuate the utility area immediately. Do not operate switches, open flames, or electrical tools inside the room."
+            "IMMINENT FIRE & EXPLOSION DANGER: Evacuate immediately. Do not enter the LPG cylinder room, flip light/power switches, or operate dryers."
         ),
         troubleshooting_steps=(
-            "Isolate the main cylinder/manifold gas supply from a safe ventilated access point if possible.",
-            "Evacuate customers and staff from affected zones and ventilate naturally.",
-            "Contact qualified gas/LPG emergency technicians; do not resume dryer operation until clearance is verified.",
+            "Evacuate all customers and staff from the laundry premises immediately.",
+            "Isolate the main LPG supply only if an external emergency shutoff valve can be reached safely from outside the room.",
+            "Call emergency fire services and a licensed LPG responder from a safe outdoor distance; do not re-enter until gas concentration clears safely below threshold.",
         ),
     ),
     "HIGH_TEMPERATURE": FaultCatalogEntry(
         title="Enclosure Over-Temperature Alert",
         source_status="spinsense_safety_rule",
-        disclaimer="SpinSense thermal safety rule.",
+        disclaimer="",
         plain_explanation=(
-            "Ambient temperature near the LPG/dryer enclosure exceeded 45 C across consecutive valid samples."
+            "Ambient temperature inside the LPG cylinder room exceeded 45 C across consecutive valid samples."
         ),
         likely_causes=(
-            "Utility room ventilation fan failure or blocked exhaust duct",
-            "Continuous dryer operation with restricted airflow",
+            "Cylinder room exhaust ventilation failure or blocked louver",
+            "Excessive heat transfer from adjacent dryer exhaust ductwork",
         ),
         safety_precautions=(
-            "Do not open hot dryer flues abruptly; verify ambient airflow and gas sensor readings are safe."
+            "Verify gas concentration is normal before approaching the enclosure; never expose LPG cylinders to elevated heat."
         ),
         troubleshooting_steps=(
-            "Check utility room exhaust fans, louvers, and dryer lint ducts for obstruction.",
-            "Inspect cylinder manifold clearance from hot exhaust lines.",
-            "Wait for ambient temperature to recover below 43 C across consecutive valid readings before clearing.",
+            "Confirm ambient LPG PPM readings are normal from remote telemetry first.",
+            "Check cylinder room exhaust louvers, fans, and adjacent dryer exhaust insulation.",
+            "Wait for enclosure temperature to recover below 43 C across consecutive valid readings before resolving.",
         ),
     ),
 }
@@ -311,11 +312,9 @@ def explain_fault(
         "fault_code": raw,
         "title": fallback_title,
         "source_status": "unverified_vendor_code",
-        "disclaimer": (
-            "Unverified vendor fault code — no verified manufacturer documentation is loaded for this code."
-        ),
+        "disclaimer": "",
         "plain_explanation": (
-            f"The device reported code '{raw}', which is not mapped in SpinSense's verified or placeholder manuals."
+            f"The device reported code '{raw}', which is not mapped in SpinSense's fault catalog."
         ),
         "likely_causes": [
             "Manufacturer-specific condition outside verified SpinSense documentation.",

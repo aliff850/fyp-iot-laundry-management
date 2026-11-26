@@ -149,6 +149,12 @@ describe("live branch machine UI", () => {
       },
     };
 
+    const cardWithIncidentHtml = renderToString(React.createElement(MachineCard, {
+      ...cardProps,
+      machine: faultedWasher,
+    }));
+    expect(cardWithIncidentHtml).toContain("Attention!");
+
     const ownerHtml = renderToString(React.createElement(MachineDetailModal, {
       machine: faultedWasher,
       branchId: "branch-1",
@@ -158,23 +164,29 @@ describe("live branch machine UI", () => {
       onClose: () => {},
     }));
     const ownerText = ownerHtml.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
+    expect(ownerText).toContain("Machine has 1 active incident.");
+    expect(ownerText).toContain("View Incidents");
+    expect(ownerHtml).toContain('href="/branches/branch-1/incidents"');
     expect(ownerText).toContain("Water Inlet Failure");
-    expect(ownerText).toContain("Placeholder guide");
+    expect(ownerText).not.toContain("Placeholder guide");
+    expect(ownerText).not.toContain("Placeholder troubleshooting guide");
     expect(ownerText).toContain("Verify floor dryness around outlets.");
     expect(ownerText).toContain("Confirm water supply valve is fully open.");
-    expect(ownerText).toContain("Inspect Incident INC-E01");
-    expect(ownerText).toContain("Service & Resolve Issue");
+    expect(ownerText).not.toContain("Inspect Incident INC-E01");
+    expect(ownerText).not.toContain("Service & Resolve Issue");
+    expect(ownerText).toContain("Maintenance & Service");
     expect(ownerText).not.toContain("CLEAR FAULT");
 
     const specialistHtml = renderToString(React.createElement(MachineDetailModal, {
       machine: {
         ...faultedWasher,
+        active_incidents_count: 2,
         diagnosis: {
           ...faultedWasher.diagnosis!,
           fault_code: "E14",
           title: "Unverified vendor code (E14)",
           source_status: "unverified_vendor_code",
-          disclaimer: "Unverified vendor fault code — no verified manufacturer documentation is loaded.",
+          disclaimer: "",
         },
       },
       branchId: "branch-1",
@@ -183,10 +195,14 @@ describe("live branch machine UI", () => {
       onOpenServiceModal: () => {},
       onClose: () => {},
     }));
-    expect(specialistHtml).toContain("Unverified vendor code (E14)");
-    expect(specialistHtml).not.toContain("CLEAR FAULT");
-    expect(specialistHtml).toContain("Service &amp; Resolve Issue");
-    expect(specialistHtml).not.toContain("Put under maintenance");
+    const specialistText = specialistHtml.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
+    expect(specialistText).toContain("Machine has 2 active incidents.");
+    expect(specialistText).toContain("View Incidents");
+    expect(specialistText).toContain("Unverified vendor code (E14)");
+    expect(specialistText).not.toContain("Placeholder guide");
+    expect(specialistText).not.toContain("CLEAR FAULT");
+    expect(specialistText).not.toContain("Service & Resolve Issue");
+    expect(specialistText).toContain("Maintenance & Service");
   });
 
   it("renders amber maintenance badge and floating modal launcher for maintenance state", () => {

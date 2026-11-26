@@ -479,3 +479,36 @@ def test_incident_metrics_returns_none_durations_when_unacknowledged(monkeypatch
     assert empty_res["incident_metrics"]["avg_resolve_minutes"] is None
     assert empty_res["incident_metrics"]["ack_sample_count"] == 0
     assert empty_res["incident_metrics"]["resolve_sample_count"] == 0
+
+    fuel_filtered = branch_analytics.aggregate_branch_overview_analytics(
+        branch_id=str(BRANCH_A),
+        period="week",
+        now_utc=datetime(2026, 11, 16, 4, 0, tzinfo=timezone.utc),
+        machines=[],
+        lpg_nodes=[],
+        cycle_rows=[],
+        daily_runtime_rows=[],
+        telemetry_rows=[],
+        incident_rows=[
+            {
+                "id": "33333333-3333-3333-3333-33333333333a",
+                "branch_id": str(BRANCH_A),
+                "source_id": "esp32-lpg-01",
+                "domain": "lpg",
+                "condition_key": "lpg_fuel",
+                "severity": "critical",
+                "workflow_state": "open",
+                "opened_at": datetime(2026, 11, 16, 3, 0, tzinfo=timezone.utc),
+                "acknowledged_at": None,
+                "resolved_at": None,
+            }
+        ],
+    )
+    assert fuel_filtered["incident_metrics"]["total_incidents"] == 0
+    assert "condition_key <> 'lpg_fuel'" in inspect_source_fetch_sql()
+
+
+def inspect_source_fetch_sql() -> str:
+    import inspect
+
+    return inspect.getsource(branch_analytics._fetch_analytics_for_branches).lower()

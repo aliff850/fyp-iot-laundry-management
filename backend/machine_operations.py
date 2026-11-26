@@ -261,7 +261,7 @@ def report_machine_result(body: EdgeCommandResult, gateway=Depends(_gateway)):
     if gateway["status"] != "active":
         raise HTTPException(403, "Gateway is not active")
     with _database() as conn:
-        row = conn.execute("""select status from public.machine_commands
+        row = conn.execute("""select status, action, device_id from public.machine_commands
             where id=%s and gateway_id=%s for update""", (body.command_id, gateway["id"])).fetchone()
         if not row:
             raise HTTPException(404, "Command not found for gateway")
@@ -270,6 +270,10 @@ def report_machine_result(body: EdgeCommandResult, gateway=Depends(_gateway)):
                 where id=%s""", (body.status, body.reason, body.command_id))
         elif row["status"] != body.status:
             raise HTTPException(409, "Conflicting command result")
+        if row.get("action") == "clear_fault" and body.status == "succeeded" and row.get("device_id"):
+            from incidents import auto_resolve_machine_incident_from_log
+
+            auto_resolve_machine_incident_from_log(conn, device_id=row["device_id"])
     return {"accepted": True}
 
 
@@ -285,7 +289,8 @@ def list_machine_state(branch_id: UUID, user=Depends(_user)):
             inc.severity as active_incident_severity,
             inc.fault_code as active_incident_fault_code,
             inc.workflow_state as active_incident_workflow_state,
-            inc.edge_condition_state as active_incident_edge_state
+            inc.edge_condition_state as active_incident_edge_state,
+            coalesce(inc_cnt.active_count, 0) as active_incidents_count
             from public.devices d
             left join public.machine_latest m on m.device_id=d.id
             left join lateral (
@@ -297,6 +302,13 @@ def list_machine_state(branch_id: UUID, user=Depends(_user)):
                 order by i.opened_at desc
                 limit 1
             ) inc on true
+            left join lateral (
+                select count(*)::int as active_count
+                from public.incidents ic
+                where ic.device_id = d.id
+                  and ic.domain = 'machine'
+                  and (ic.edge_condition_state = 'active' or ic.workflow_state <> 'resolved')
+            ) inc_cnt on true
             where d.branch_id=%s and d.organization_id=%s and d.status='active'
             and d.device_type in ('washer','dryer','washer_dryer')
             order by d.device_type,d.label,d.source_id""",
@@ -332,12 +344,35 @@ def list_machine_state(branch_id: UUID, user=Depends(_user)):
             if row.get("active_incident_id")
             else None
         )
+        raw_inc_count = row.get("active_incidents_count")
+        active_incidents_count = (
+            int(raw_inc_count)
+            if isinstance(raw_inc_count, int)
+            else (1 if active_incident else 0)
+        )
+        if (
+            active_incident
+            and active_incident.get("workflow_state") != "resolved"
+            and (
+                active_incident.get("edge_condition_state") == "cleared"
+                or (isinstance(payload, dict) and payload.get("state") == "idle")
+            )
+        ):
+            from incidents import reconcile_cleared_machine_incident
+
+            rec = reconcile_cleared_machine_incident(
+                incident_id=row["active_incident_id"]
+            )
+            if rec and rec.get("resolved"):
+                active_incident = None
+                active_incidents_count = max(0, active_incidents_count - 1)
         items.append({"source_id": row["source_id"], "type": row["device_type"], "source": row["source_kind"],
             "label": row["label"], "capacity_kg": row["capacity_kg"],
             "state": payload.get("state") if payload else "unknown",
             "freshness": "fresh" if fresh else "stale" if row["cloud_seen_at"] else "missing",
             "last_update": row["cloud_seen_at"], "data": payload, "diagnosis": diagnosis,
-            "active_incident": active_incident})
+            "active_incident": active_incident,
+            "active_incidents_count": active_incidents_count})
     return {"machines": items}
 
 
@@ -356,6 +391,15 @@ def list_machine_commands(branch_id: UUID, source_id: str, user=Depends(_user)):
         rows = conn.execute("""select id,action,status,reason,issued_at,result_at
             from public.machine_commands where device_id=%s
             order by issued_at desc limit 20""", (device["id"],)).fetchall()
+    if any(
+        isinstance(row, dict)
+        and row.get("action") == "clear_fault"
+        and row.get("status") == "succeeded"
+        for row in rows
+    ):
+        from incidents import reconcile_cleared_machine_incident
+
+        reconcile_cleared_machine_incident(device_id=device["id"])
     return {"commands": [{"command_id": str(row["id"]), "action": row["action"],
         "status": row["status"], "reason": row["reason"],
         "issued_at": row["issued_at"], "result_at": row["result_at"]} for row in rows]}

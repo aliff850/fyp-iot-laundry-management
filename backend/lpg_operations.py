@@ -321,7 +321,8 @@ def load_branch_safety_nodes(
                   lc.command_id as pending_command_id,
                   lc.action as pending_command_action,
                   lc.status as pending_command_status,
-                  lc.issued_at as pending_command_issued_at
+                  lc.issued_at as pending_command_issued_at,
+                  coalesce(inc_cnt.active_count, 0) as active_incidents_count
            from public.devices d
            left join public.lpg_latest o on o.device_id = d.id
            left join public.lpg_node_config cfg on cfg.device_id = d.id
@@ -342,6 +343,13 @@ def load_branch_safety_nodes(
                order by lc.issued_at desc
                limit 1
            ) lc on true
+           left join lateral (
+               select count(*)::int as active_count
+               from public.incidents ic
+               where ic.device_id = d.id
+                 and ic.domain = 'lpg'
+                 and (ic.edge_condition_state = 'active' or ic.workflow_state <> 'resolved')
+           ) inc_cnt on true
            where d.branch_id=%s
              and d.organization_id=%s
              and d.status in ('active', 'maintenance')
@@ -418,6 +426,7 @@ def load_branch_safety_nodes(
             "lpg_config": _serialize_lpg_config(row),
             "pending_command": pending_command,
             "gas_interpretation": _gas_interpretation_from_observation(obs),
+            "active_incidents_count": int(row.get("active_incidents_count") or 0),
             "observation": obs,
         })
     return devices
@@ -495,7 +504,7 @@ class LpgStartServiceMaintenanceRequest(BaseModel):
     request_id: UUID
     started_by: str | None = Field(default=None, max_length=80)
     service_note: str | None = Field(default=None, max_length=240)
-    session_kind: Literal["maintenance", "incident_inspection"] = "maintenance"
+    session_kind: Literal["tank_swap", "maintenance", "incident_inspection"] = "maintenance"
     incident_id: UUID | None = None
 
 
@@ -510,6 +519,13 @@ class LpgCompleteSwapRequest(BaseModel):
     completed_by: str | None = Field(default=None, max_length=80)
     tare_kg: float | None = Field(default=None, ge=0.5, le=200.0)
     rated_capacity_kg: float | None = Field(default=None, ge=1.0, le=500.0)
+
+
+class LpgTareWeightRequest(BaseModel):
+    request_id: UUID
+    tare_kg: float = Field(..., ge=0.0, le=200.0)
+    rated_capacity_kg: float = Field(..., ge=0.1, le=500.0)
+    updated_by: str | None = Field(default=None, max_length=80)
 
 
 class LpgGasBaselineRequest(BaseModel):
@@ -1064,6 +1080,65 @@ def calibrate_lpg_gas_baseline(branch_id: UUID, source_id: str, body: LpgGasBase
     return resp
 
 
+@router.post("/branches/{branch_id}/lpg/{source_id}/tare-weight", status_code=202)
+def set_lpg_tare_weight(branch_id: UUID, source_id: str, body: LpgTareWeightRequest, user=Depends(_user)):
+    source_id = _validate_source_id(source_id)
+    with _database() as conn:
+        member, _ = _authorize_lpg_access(
+            conn, user["id"], branch_id, ("owner", "branch_manager", "lpg_maintenance")
+        )
+        organization_id = member["organization_id"]
+        device = _load_lpg_device_for_branch(conn, organization_id, branch_id, source_id, for_update=True)
+        actor_label = _actor_label(conn, user["id"], body.updated_by)
+
+        existing = conn.execute(
+            "select id from public.lpg_commands where id=%s",
+            (body.request_id,),
+        ).fetchone()
+        if not existing:
+            active_session = conn.execute(
+                """select id from public.lpg_maintenance_sessions
+                   where device_id=%s and status='active' limit 1""",
+                (device["id"],),
+            ).fetchone()
+            has_maint_telemetry = False
+            if not active_session and str(device.get("status") or "").lower() != "maintenance":
+                latest = conn.execute(
+                    """select gateway_receipt_at, quality
+                       from public.lpg_latest
+                       where device_id=%s""",
+                    (device["id"],),
+                ).fetchone()
+                if latest and isinstance(latest.get("quality"), dict):
+                    receipt = _utc_dt(latest.get("gateway_receipt_at"))
+                    if (
+                        latest["quality"].get("maintenance_mode") is True
+                        and receipt is not None
+                        and (datetime.now(timezone.utc) - receipt).total_seconds() <= STALE_WINDOW_SECONDS
+                    ):
+                        has_maint_telemetry = True
+                if not has_maint_telemetry:
+                    raise HTTPException(409, "Put the LPG node into maintenance mode before updating tare weight")
+
+        args = {
+            "tare_kg": round(body.tare_kg, 3),
+            "rated_capacity_kg": round(body.rated_capacity_kg, 3),
+            "updated_by": actor_label,
+        }
+        resp, _created = _enqueue_lpg_command(
+            conn,
+            request_id=body.request_id,
+            device=device,
+            organization_id=organization_id,
+            branch_id=branch_id,
+            action="set_tare_weight",
+            arguments=args,
+            actor_user_id=user["id"],
+            actor_label=actor_label,
+        )
+    return resp
+
+
 @router.get("/branches/{branch_id}/lpg/{source_id}/commands/{command_id}")
 def get_lpg_command_status(branch_id: UUID, source_id: str, command_id: UUID, user=Depends(_user)):
     source_id = _validate_source_id(source_id)
@@ -1258,7 +1333,7 @@ def report_edge_lpg_command_result(body: EdgeLpgCommandResult, gateway=Depends(_
                 tare_kg = _finite_number(result_payload.get("tare_kg") if "tare_kg" in result_payload else args.get("tare_kg"))
                 cap_kg = _finite_number(result_payload.get("rated_capacity_kg") if "rated_capacity_kg" in result_payload else args.get("rated_capacity_kg"))
                 verified_samples = result_payload.get("verified_samples")
-                completed_session = conn.execute(
+                conn.execute(
                     """update public.lpg_maintenance_sessions
                        set status='completed',
                            completed_at=%s,
@@ -1267,8 +1342,7 @@ def report_edge_lpg_command_result(body: EdgeLpgCommandResult, gateway=Depends(_
                            new_tare_kg=%s,
                            new_capacity_kg=%s,
                            verified_samples=%s
-                       where device_id=%s and status='active'
-                       returning id, service_note""",
+                       where device_id=%s and status='active'""",
                     (
                         completed_at,
                         completed_by,
@@ -1278,7 +1352,7 @@ def report_edge_lpg_command_result(body: EdgeLpgCommandResult, gateway=Depends(_
                         Jsonb(verified_samples) if verified_samples is not None else None,
                         cmd["device_id"],
                     ),
-                ).fetchone()
+                )
                 conn.execute(
                     """insert into public.lpg_node_config
                        (device_id, organization_id, branch_id, gateway_id, source_id,
@@ -1307,40 +1381,38 @@ def report_edge_lpg_command_result(body: EdgeLpgCommandResult, gateway=Depends(_
                         "update public.devices set capacity_kg=%s, updated_at=now() where id=%s",
                         (cap_kg, cmd["device_id"]),
                     )
-                swap_note_parts = ["Completed physical LPG cylinder swap."]
-                if tare_kg is not None:
-                    swap_note_parts.append(f"Tare: {tare_kg:.2f} kg.")
-                if cap_kg is not None:
-                    swap_note_parts.append(f"Rated capacity: {cap_kg:.2f} kg.")
-                if isinstance(completed_session, dict) and completed_session.get("service_note"):
-                    swap_note_parts.append(str(completed_session["service_note"]))
-                swap_session_id = (
-                    completed_session.get("id")
-                    if isinstance(completed_session, dict) and completed_session.get("id") != cmd["id"]
-                    else None
-                )
+            elif action == "set_tare_weight":
+                tare_kg = _finite_number(result_payload.get("tare_kg") if "tare_kg" in result_payload else args.get("tare_kg"))
+                cap_kg = _finite_number(result_payload.get("rated_capacity_kg") if "rated_capacity_kg" in result_payload else args.get("rated_capacity_kg"))
+                updated_by = _clean_label(result_payload.get("updated_by") or cmd.get("actor_label"), "Operator")
                 conn.execute(
-                    """insert into public.machine_maintenance_logs
-                       (reference_code, organization_id, branch_id, device_id, gateway_id,
-                        source_id, asset_name, domain, log_kind, lpg_session_id,
-                        error_code, fault_name, technician_name, performed_by_user_id,
-                        performed_by_role, work_done, outcome)
-                       values (%s, %s, %s, %s, %s, %s, %s, 'lpg', 'tank_swap', %s,
-                               'TANK_SWAP', 'LPG Cylinder Swap', %s, %s, 'lpg_maintenance', %s, 'completed')""",
+                    """insert into public.lpg_node_config
+                       (device_id, organization_id, branch_id, gateway_id, source_id,
+                        cylinder_tare_kg, rated_capacity_kg, updated_by_label, updated_by_user_id, updated_at)
+                       values (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                       on conflict (device_id) do update set
+                           cylinder_tare_kg=coalesce(excluded.cylinder_tare_kg, public.lpg_node_config.cylinder_tare_kg),
+                           rated_capacity_kg=coalesce(excluded.rated_capacity_kg, public.lpg_node_config.rated_capacity_kg),
+                           updated_by_label=excluded.updated_by_label,
+                           updated_by_user_id=excluded.updated_by_user_id,
+                           updated_at=now()""",
                     (
-                        f"MNT-{uuid4().hex[:6].upper()}",
+                        cmd["device_id"],
                         cmd["organization_id"],
                         cmd["branch_id"],
-                        cmd["device_id"],
                         cmd["gateway_id"],
                         cmd["source_id"],
-                        cmd.get("label") or cmd["source_id"],
-                        swap_session_id,
-                        completed_by,
+                        tare_kg,
+                        cap_kg,
+                        updated_by,
                         cmd["actor_user_id"],
-                        " ".join(swap_note_parts)[:4000],
                     ),
                 )
+                if cap_kg is not None and cap_kg > 0:
+                    conn.execute(
+                        "update public.devices set capacity_kg=%s, updated_at=now() where id=%s",
+                        (cap_kg, cmd["device_id"]),
+                    )
             elif action == "calibrate_gas_baseline":
                 vcc_v = _finite_number(result_payload.get("mq6_vcc_v")) or 5.0
                 rl_kohm = _finite_number(result_payload.get("mq6_rl_kohm")) or 20.0

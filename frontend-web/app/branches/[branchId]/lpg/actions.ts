@@ -4,17 +4,15 @@ import { revalidatePath } from "next/cache";
 import {
   calibrateLpgGasBaseline,
   completeLpgServiceMaintenance,
-  completeLpgTankSwap,
   getBranchLpgSafety,
   getLpgCommandStatus,
   getLpgMaintenanceStatus,
+  setLpgTareWeight,
   startLpgServiceMaintenance,
-  startLpgTankSwap,
   type LpgCompleteServiceMaintenancePayload,
-  type LpgCompleteTankSwapPayload,
   type LpgGasBaselinePayload,
   type LpgStartServiceMaintenancePayload,
-  type LpgStartTankSwapPayload,
+  type LpgTareWeightPayload,
 } from "@/lib/auth/business";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -42,34 +40,17 @@ export async function fetchLpgMaintenanceStatus(branchId: string, sourceId: stri
   return getLpgMaintenanceStatus(branchId, sourceId);
 }
 
-export async function startBranchLpgTankSwap(
+export async function setBranchLpgTareWeight(
   branchId: string,
   sourceId: string,
-  payload: LpgStartTankSwapPayload,
+  payload: LpgTareWeightPayload,
 ) {
   if (!validBranch(branchId) || !validSource(sourceId) || !UUID_RE.test(payload.request_id)) {
-    return { ok: false as const, status: 400, message: "Invalid tank swap request identity." };
+    return { ok: false as const, status: 400, message: "Invalid tare weight request identity." };
   }
-  const result = await startLpgTankSwap(branchId, sourceId, payload);
+  const result = await setLpgTareWeight(branchId, sourceId, payload);
   if (result.ok) {
     revalidatePath(`/branches/${branchId}/lpg`);
-    revalidatePath(`/branches/${branchId}/overview`);
-  }
-  return result;
-}
-
-export async function completeBranchLpgTankSwap(
-  branchId: string,
-  sourceId: string,
-  payload: LpgCompleteTankSwapPayload,
-) {
-  if (!validBranch(branchId) || !validSource(sourceId) || !UUID_RE.test(payload.request_id)) {
-    return { ok: false as const, status: 400, message: "Invalid tank swap completion request identity." };
-  }
-  const result = await completeLpgTankSwap(branchId, sourceId, payload);
-  if (result.ok) {
-    revalidatePath(`/branches/${branchId}/lpg`);
-    revalidatePath(`/branches/${branchId}/maintenance`);
     revalidatePath(`/branches/${branchId}/overview`);
   }
   return result;

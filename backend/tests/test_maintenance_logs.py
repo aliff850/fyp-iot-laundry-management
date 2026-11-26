@@ -115,10 +115,30 @@ def test_create_maintenance_log_validates_trimmed_inputs(monkeypatch):
     conn.execute.assert_not_called()
 
 
+def test_create_maintenance_log_rejects_in_progress_and_requires_return_to_service():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        maintenance_logs.MaintenanceLogCreateRequest(
+            error_code="E01",
+            technician_name="Ali Technician",
+            work_done="Partial work.",
+            outcome="in_progress",  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValidationError):
+        maintenance_logs.MaintenanceLogCreateRequest(
+            error_code="E01",
+            technician_name="Ali Technician",
+            work_done="Stay in maintenance.",
+            return_to_service=False,  # type: ignore[arg-type]
+        )
+
+
 def test_create_maintenance_log_persists_and_records_incident_event(monkeypatch):
     conn = MagicMock()
     created_at = datetime(2026, 11, 23, 6, 45, tzinfo=timezone.utc)
     log_id = uuid4()
+    cmd_id = uuid4()
     conn.execute.return_value.fetchone.side_effect = [
         {
             "id": DEVICE,
@@ -132,6 +152,9 @@ def test_create_maintenance_log_persists_and_records_incident_event(monkeypatch)
             "state_payload": {"state": "maintenance", "fault_code": "E01"},
             "cloud_seen_at": datetime.now(timezone.utc),
         },
+        {"service_status": "open"},
+        None,
+        {"status": "queued", "action": "clear_fault", "device_id": DEVICE},
         {"id": INCIDENT},
         {
             "id": log_id,
@@ -147,7 +170,7 @@ def test_create_maintenance_log_persists_and_records_incident_event(monkeypatch)
             "performed_by_user_id": TECH_USER,
             "performed_by_role": "machine_maintenance",
             "work_done": "Cleared kinked inlet hose and flushed filter.",
-            "outcome": "in_progress",
+            "outcome": "completed",
             "created_at": created_at,
         },
     ]
@@ -171,15 +194,16 @@ def test_create_maintenance_log_persists_and_records_incident_event(monkeypatch)
         error_code="E01",
         technician_name="Ali Technician",
         work_done="Cleared kinked inlet hose and flushed filter.",
-        outcome="in_progress",
-        return_to_service=False,
+        incident_id=INCIDENT,
+        command_request_id=cmd_id,
     )
     result = maintenance_logs.create_machine_maintenance_log(
         BRANCH, "washer-sim-01", body, user={"id": TECH_USER}
     )
 
-    assert result["command"] is None
+    assert result["command"] == {"command_id": str(cmd_id), "status": "queued"}
     assert result["item"]["reference_code"] == "MNT-112233"
+    assert result["item"]["outcome"] == "completed"
     assert result["item"]["incident_id"] == str(INCIDENT)
     assert result["item"]["performed_by_role"] == "machine_maintenance"
     assert len(events) == 1
@@ -209,7 +233,7 @@ def test_create_maintenance_log_with_return_to_service_queues_clear_fault(monkey
         {"service_status": "open"},
         None,
         {"status": "queued", "action": "clear_fault", "device_id": DEVICE},
-        None,
+        None,  # no active machine_fault incident during preventive maintenance
         {
             "id": log_id,
             "reference_code": "MNT-CAFE01",
@@ -250,17 +274,180 @@ def test_create_maintenance_log_with_return_to_service_queues_clear_fault(monkey
     )
 
     assert result["item"]["outcome"] == "completed"
+    assert result["item"]["incident_id"] is None
     assert result["command"] == {"command_id": str(cmd_id), "status": "queued"}
     assert any(
         "insert into public.machine_commands" in call.args[0]
         for call in conn.execute.call_args_list
     )
+    assert any(
+        "edge_condition_state = 'active'" in call.args[0].lower()
+        for call in conn.execute.call_args_list
+    )
+
+
+def test_machine_breakdown_log_links_active_fault_and_auto_resolves_on_clear_fault_ack(monkeypatch):
+    import incidents
+    import machine_operations
+
+    conn = MagicMock()
+    created_at = datetime(2026, 11, 26, 6, 0, tzinfo=timezone.utc)
+    log_id = uuid4()
+    cmd_id = uuid4()
+    conn.execute.return_value.fetchone.side_effect = [
+        {
+            "id": DEVICE,
+            "gateway_id": GATEWAY,
+            "source_id": "washer-sim-01",
+            "source_kind": "simulated",
+            "device_type": "washer",
+            "label": "Washer 01",
+            "device_status": "active",
+            "gateway_status": "active",
+        },
+        {
+            "state_payload": {"state": "maintenance", "fault_code": "E01"},
+            "cloud_seen_at": datetime.now(timezone.utc),
+        },
+        {"service_status": "open"},
+        None,  # no pending machine_commands
+        {"status": "queued", "action": "clear_fault", "device_id": DEVICE},
+        {"id": INCIDENT, "workflow_state": "open", "edge_condition_state": "active"},
+        {
+            "id": log_id,
+            "reference_code": "MNT-AUTO01",
+            "branch_id": BRANCH,
+            "device_id": DEVICE,
+            "source_id": "washer-sim-01",
+            "asset_name": "Washer 01",
+            "domain": "machine",
+            "log_kind": "incident_resolution",
+            "lpg_session_id": None,
+            "incident_id": INCIDENT,
+            "error_code": "E01",
+            "fault_name": "Water Inlet Failure",
+            "technician_name": "Ali Technician",
+            "performed_by_user_id": TECH_USER,
+            "performed_by_role": "machine_maintenance",
+            "work_done": "Replaced water inlet solenoid and tested fill.",
+            "outcome": "completed",
+            "created_at": created_at,
+        },
+    ]
+
+    monkeypatch.setattr(maintenance_logs, "_database", _mock_db(conn))
+    monkeypatch.setattr(
+        maintenance_logs,
+        "_authorize_branch_access",
+        lambda *_args: ({"organization_id": ORG, "role": "machine_maintenance"}, {}),
+    )
+    monkeypatch.setattr(maintenance_logs, "_generate_reference_code", lambda: "MNT-AUTO01")
+    monkeypatch.setattr(maintenance_logs, "_insert_incident_event", lambda *_a, **_k: None)
+
+    body = maintenance_logs.MaintenanceLogCreateRequest(
+        error_code="E01",
+        technician_name="Ali Technician",
+        work_done="Replaced water inlet solenoid and tested fill.",
+        command_request_id=cmd_id,
+    )
+    res = maintenance_logs.create_device_maintenance_log(
+        BRANCH, "washer-sim-01", body, user={"id": TECH_USER}
+    )
+    assert res["item"]["incident_id"] == str(INCIDENT)
+    assert res["item"]["log_kind"] == "incident_resolution"
+
+    # Now simulate gateway confirming clear_fault succeeded -> auto-resolves INCIDENT
+    ack_conn = MagicMock()
+    ack_conn.execute.return_value.fetchone.side_effect = [
+        {"status": "dispatched", "action": "clear_fault", "device_id": DEVICE},
+        {
+            "incident_id": INCIDENT,
+            "organization_id": ORG,
+            "branch_id": BRANCH,
+            "log_id": log_id,
+            "log_ref": "MNT-AUTO01",
+            "performed_by_user_id": TECH_USER,
+            "performed_by_role": "machine_maintenance",
+            "technician_name": "Ali Technician",
+            "work_done": "Replaced water inlet solenoid and tested fill.",
+        },
+    ]
+    recorded_events = []
+    monkeypatch.setattr(machine_operations, "_database", _mock_db(ack_conn))
+    monkeypatch.setattr(incidents, "_insert_incident_event", lambda _c, **kw: recorded_events.append(kw))
+
+    ack_res = machine_operations.report_machine_result(
+        machine_operations.EdgeCommandResult(command_id=cmd_id, status="succeeded"),
+        gateway={"id": GATEWAY, "status": "active"},
+    )
+    assert ack_res == {"accepted": True}
+    executed_sql = "\n".join(c.args[0].lower() for c in ack_conn.execute.call_args_list)
+    assert "set edge_condition_state = 'cleared'" in executed_sql
+    assert "workflow_state = 'resolved'" in executed_sql
+    assert len(recorded_events) == 1
+    assert recorded_events[0]["event_type"] == "resolved"
+    assert recorded_events[0]["actor_user_id"] == TECH_USER
+    assert recorded_events[0]["actor_role"] == "machine_maintenance"
+
+
+def test_reconcile_cleared_machine_incident_resolves_when_gateway_acked_via_remote_api(monkeypatch):
+    import incidents
+    import machine_operations
+
+    cmd_id = uuid4()
+    log_id = uuid4()
+    now = datetime.now(timezone.utc)
+
+    cmd_conn = MagicMock()
+    cmd_conn.execute.return_value.fetchone.return_value = {"id": DEVICE}
+    cmd_conn.execute.return_value.fetchall.return_value = [
+        {
+            "id": cmd_id,
+            "action": "clear_fault",
+            "status": "succeeded",
+            "reason": None,
+            "issued_at": now,
+            "result_at": now,
+        }
+    ]
+
+    inc_conn = MagicMock()
+    inc_conn.execute.return_value.fetchone.side_effect = [
+        {"incident_id": INCIDENT, "device_id": DEVICE},
+        {
+            "incident_id": INCIDENT,
+            "organization_id": ORG,
+            "branch_id": BRANCH,
+            "log_id": log_id,
+            "log_ref": "MNT-REMOTE01",
+            "performed_by_user_id": TECH_USER,
+            "performed_by_role": "machine_maintenance",
+            "technician_name": "Ali Technician",
+            "work_done": "Cleared blocked drain pump and verified spin.",
+        },
+    ]
+    recorded_events = []
+    monkeypatch.setattr(machine_operations, "_database", _mock_db(cmd_conn))
+    monkeypatch.setattr(
+        machine_operations,
+        "_authorize_branch_access",
+        lambda *_args: ({"organization_id": ORG, "role": "machine_maintenance"}, {}),
+    )
+    monkeypatch.setattr(incidents, "_database", _mock_db(inc_conn))
+    monkeypatch.setattr(incidents, "_insert_incident_event", lambda _c, **kw: recorded_events.append(kw))
+
+    res = machine_operations.list_machine_commands(
+        BRANCH, "washer-sim-01", user={"id": TECH_USER}
+    )
+    assert res["commands"][0]["status"] == "succeeded"
+    assert len(recorded_events) == 1
+    assert recorded_events[0]["event_type"] == "resolved"
+    assert recorded_events[0]["actor_user_id"] == TECH_USER
 
 
 @pytest.mark.parametrize("state_value", ["idle", "running", "error"])
-@pytest.mark.parametrize("return_to_service", [False, True])
 def test_create_maintenance_log_rejects_non_maintenance_states(
-    monkeypatch, state_value, return_to_service
+    monkeypatch, state_value
 ):
     conn = MagicMock()
     conn.execute.return_value.fetchone.side_effect = [
@@ -290,7 +477,7 @@ def test_create_maintenance_log_rejects_non_maintenance_states(
         technician_name="Ali Technician",
         work_done="Checked valve.",
         outcome="completed",
-        return_to_service=return_to_service,
+        return_to_service=True,
     )
     with pytest.raises(HTTPException) as err:
         maintenance_logs.create_machine_maintenance_log(
@@ -380,3 +567,131 @@ def test_unified_device_maintenance_log_for_lpg_enqueues_complete_maintenance_an
     sql_log = "\n".join(call.args[0].lower() for call in conn.execute.call_args_list)
     assert "insert into public.lpg_commands" in sql_log
     assert "update public.incidents" in sql_log
+
+
+def test_unified_lpg_tank_swap_maintenance_log_verifies_stability_and_skips_auto_log(monkeypatch):
+    from datetime import timedelta
+
+    now = datetime.now(timezone.utc)
+    recent_unstable = [
+        {"sample_at": (now - timedelta(seconds=2)).isoformat(), "gross_weight_kg": 29.0, "weight_valid": True},
+        {"sample_at": (now - timedelta(seconds=7)).isoformat(), "gross_weight_kg": 30.8, "weight_valid": True},
+        {"sample_at": (now - timedelta(seconds=12)).isoformat(), "gross_weight_kg": 29.5, "weight_valid": True},
+    ]
+    conn_unstable = MagicMock()
+    conn_unstable.execute.return_value.fetchone.side_effect = [
+        {
+            "id": DEVICE,
+            "gateway_id": GATEWAY,
+            "source_id": "esp32-lpg-01",
+            "source_kind": "physical",
+            "device_type": "lpg_edge_node",
+            "label": "Main Tank Scale",
+            "device_status": "active",
+            "gateway_status": "active",
+        },
+        {"id": uuid4(), "session_kind": "tank_swap"},
+        {"payload": {"gross_weight_kg": 29.0}, "quality": {"maintenance_mode": True, "recent_samples": recent_unstable}, "cloud_received_at": now},
+        None,  # no pending lpg_commands
+        {"cylinder_tare_kg": 15.2, "rated_capacity_kg": 14.0, "stability_tolerance_kg": 0.25},
+    ]
+    monkeypatch.setattr(maintenance_logs, "_database", _mock_db(conn_unstable))
+    monkeypatch.setattr(
+        maintenance_logs,
+        "_authorize_branch_access",
+        lambda *_args: ({"organization_id": ORG, "role": "lpg_maintenance"}, {}),
+    )
+    body = maintenance_logs.MaintenanceLogCreateRequest(
+        error_code="TANK_SWAP",
+        technician_name="Aiman LPG",
+        work_done="Replaced empty 14kg cylinder and checked regulator.",
+        log_kind="tank_swap",
+    )
+    with pytest.raises(HTTPException) as exc:
+        maintenance_logs.create_device_maintenance_log(BRANCH, "esp32-lpg-01", body, user={"id": TECH_USER})
+    assert exc.value.status_code == 409
+    assert "fluctuating" in str(exc.value.detail).lower()
+
+    # Stable readings succeed, enqueue complete_maintenance, and never auto-link incidents
+    recent_stable = [
+        {"sample_at": (now - timedelta(seconds=2)).isoformat(), "gross_weight_kg": 29.20, "weight_valid": True},
+        {"sample_at": (now - timedelta(seconds=7)).isoformat(), "gross_weight_kg": 29.22, "weight_valid": True},
+        {"sample_at": (now - timedelta(seconds=12)).isoformat(), "gross_weight_kg": 29.19, "weight_valid": True},
+    ]
+    conn_ok = MagicMock()
+    cmd_id = uuid4()
+    session_id = uuid4()
+    conn_ok.execute.return_value.fetchone.side_effect = [
+        {
+            "id": DEVICE,
+            "gateway_id": GATEWAY,
+            "source_id": "esp32-lpg-01",
+            "source_kind": "physical",
+            "device_type": "lpg_edge_node",
+            "label": "Main Tank Scale",
+            "device_status": "active",
+            "gateway_status": "active",
+        },
+        {"id": session_id, "session_kind": "tank_swap"},
+        {"payload": {"gross_weight_kg": 29.20}, "quality": {"maintenance_mode": True, "recent_samples": recent_stable}, "cloud_received_at": now},
+        None,
+        {"cylinder_tare_kg": 15.2, "rated_capacity_kg": 14.0, "stability_tolerance_kg": 0.25},
+        {"status": "queued", "action": "complete_maintenance", "device_id": DEVICE},
+        {
+            "id": uuid4(),
+            "reference_code": "MNT-SWAP01",
+            "branch_id": BRANCH,
+            "device_id": DEVICE,
+            "source_id": "esp32-lpg-01",
+            "asset_name": "Main Tank Scale",
+            "domain": "lpg",
+            "log_kind": "tank_swap",
+            "lpg_session_id": session_id,
+            "incident_id": None,
+            "error_code": "TANK_SWAP",
+            "fault_name": "LPG Cylinder Swap",
+            "technician_name": "Aiman LPG",
+            "performed_by_user_id": TECH_USER,
+            "performed_by_role": "lpg_maintenance",
+            "work_done": "Replaced empty 14kg cylinder and checked regulator.",
+            "outcome": "completed",
+            "created_at": now,
+        },
+    ]
+    monkeypatch.setattr(maintenance_logs, "_database", _mock_db(conn_ok))
+    monkeypatch.setattr(maintenance_logs, "_generate_reference_code", lambda: "MNT-SWAP01")
+    res_ok = maintenance_logs.create_device_maintenance_log(
+        BRANCH,
+        "esp32-lpg-01",
+        body.model_copy(update={"command_request_id": cmd_id}),
+        user={"id": TECH_USER},
+    )
+    assert res_ok["item"]["log_kind"] == "tank_swap"
+    assert res_ok["item"]["incident_id"] is None
+    assert res_ok["command"] == {"command_id": str(cmd_id), "status": "queued"}
+    insert_cmd = next(
+        c for c in conn_ok.execute.call_args_list if "insert into public.lpg_commands" in c.args[0].lower()
+    )
+    assert insert_cmd.args[1][5] == "complete_maintenance"
+    assert not any("from public.incidents" in c.args[0].lower() for c in conn_ok.execute.call_args_list)
+
+
+def test_only_manual_maintenance_log_endpoint_inserts_maintenance_logs():
+    from pathlib import Path
+    import re
+
+    repo_root = Path(__file__).resolve().parents[2]
+    insert_pattern = re.compile(r"insert\s+into\s+(?:public\.)?machine_maintenance_logs\b", re.IGNORECASE)
+    inserting_files: set[str] = set()
+
+    for subdir in ("backend", "pi5"):
+        base = repo_root / subdir
+        for py_file in base.rglob("*.py"):
+            rel_parts = py_file.relative_to(repo_root).parts
+            if any(part.startswith(".venv") or part in ("venv", "tests", "scripts", "__pycache__") for part in rel_parts):
+                continue
+            text = py_file.read_text(encoding="utf-8")
+            if insert_pattern.search(text):
+                inserting_files.add("/".join(rel_parts))
+
+    assert inserting_files == {"backend/maintenance_logs.py"}

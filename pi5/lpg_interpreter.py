@@ -440,6 +440,9 @@ def should_persist_lpg_history(
 
 INCIDENT_RULE_VERSION = "edge-hysteresis-v1"
 REQUIRED_CONSECUTIVE_SAMPLES = 3
+SUSTAINED_GAS_ESCALATION_SECONDS = 60
+ACTIVE_GAS_HEARTBEAT_SECONDS = 60
+PEAK_PPM_UPDATE_DELTA = 15.0
 LPG_LOW_ENTRY_PCT = 15.0
 LPG_CRITICAL_ENTRY_PCT = 5.0
 LPG_LOW_RECOVERY_PCT = 17.0
@@ -503,6 +506,7 @@ class HysteresisStateTracker:
 
     def __init__(self, required_samples: int = REQUIRED_CONSECUTIVE_SAMPLES) -> None:
         self.required_samples = max(1, int(required_samples))
+        self._gas_episodes: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
 
     @staticmethod
     def _is_stale_or_duplicate(state: ConditionTrackerState, sample_identity: str, sample_at: datetime) -> bool:
@@ -773,44 +777,174 @@ class HysteresisStateTracker:
         ppm_text = f"{ppm:.1f} ppm" if ppm is not None else condition
         summary = f"Gas reading stabilized ({ppm_text})"
 
+        meta: Optional[Dict[str, Any]] = None
+        ep_key: Optional[Tuple[str, str, str]] = None
+        duration_seconds = 0
+        peak_ppm = ppm if ppm is not None else 0.0
+        is_sustained = False
+
+        if state.active_episode_id is not None:
+            ep_key = (state.gateway_id, state.source_id, state.active_episode_id)
+            meta = self._gas_episodes.get(ep_key)
+            if meta is None:
+                fallback_start = state.last_sample_at or ts
+                meta = {
+                    "started_at": fallback_start,
+                    "last_reported_at": fallback_start,
+                    "peak_ppm": peak_ppm,
+                    "reported_peak_ppm": peak_ppm,
+                }
+                self._gas_episodes[ep_key] = meta
+            if ppm is not None and ppm > meta["peak_ppm"]:
+                meta["peak_ppm"] = ppm
+            peak_ppm = float(meta["peak_ppm"])
+            duration_seconds = max(0, int(round((ts - meta["started_at"]).total_seconds())))
+            is_sustained = duration_seconds >= SUSTAINED_GAS_ESCALATION_SECONDS
+
         if active is None:
             if condition == "critical":
                 target, fault_code = "critical", "GAS_CRITICAL"
-                summary = f"Critical LPG gas detected ({ppm_text})"
+                summary = f"Critical LPG gas detected in cylinder room ({ppm_text}) — fire/explosion hazard"
             elif condition == "warning":
                 target, fault_code = "warning", "GAS_WARNING"
                 summary = f"Elevated LPG gas detected ({ppm_text})"
         elif active == "warning":
             if condition == "critical":
                 target, fault_code = "critical", "GAS_CRITICAL"
-                summary = f"LPG gas escalated to critical ({ppm_text})"
+                summary = f"LPG gas escalated to critical in cylinder room ({ppm_text}) — fire/explosion hazard"
+            elif condition == "warning" and is_sustained:
+                # Sustained elevated PPM >= 60s inside enclosed LPG room upgrades episode immediately to Critical
+                next_state = ConditionTrackerState(**state.__dict__)
+                next_state.pending_state = None
+                next_state.pending_count = 0
+                next_state.last_sample_identity = sample_identity
+                next_state.last_sample_at = ts
+                next_state.active_severity = "critical"
+                next_state.active_fault_code = "GAS_CRITICAL"
+                next_state.revision += 1
+                if meta is not None:
+                    meta["last_reported_at"] = ts
+                    meta["reported_peak_ppm"] = peak_ppm
+                return next_state, self._build_transition(
+                    next_state,
+                    domain="lpg",
+                    episode_id=str(state.active_episode_id),
+                    transition_type="escalated",
+                    severity="critical",
+                    fault_code="GAS_CRITICAL",
+                    fault_name=None,
+                    summary=(
+                        f"Sustained LPG gas leak in cylinder room ({ppm_text}, "
+                        f"peak {peak_ppm:.1f} ppm over {duration_seconds}s) — fire/explosion hazard"
+                    ),
+                    revision=next_state.revision,
+                    evidence={
+                        "gas_condition": condition,
+                        "estimated_ppm": ppm,
+                        "peak_ppm": round(peak_ppm, 1),
+                        "duration_seconds": duration_seconds,
+                        "sustained": True,
+                        "gas_warn_ppm": cfg["gas_warn_ppm"],
+                        "gas_crit_ppm": cfg["gas_crit_ppm"],
+                    },
+                    occurred_at=ts,
+                )
             elif condition == "normal" and (ppm is None or ppm <= warn_recover):
                 target = "normal"
-                summary = f"Gas concentration recovered below {warn_recover} ppm ({ppm_text})"
+                summary = (
+                    f"Elevated LPG gas burst subsided below danger threshold "
+                    f"({ppm_text}, peak {peak_ppm:.1f} ppm, lasted {duration_seconds}s)"
+                )
         elif active == "critical":
             if condition == "normal" and (ppm is None or ppm <= warn_recover):
                 target = "normal"
-                summary = f"Critical gas alert recovered ({ppm_text})"
-            elif condition == "warning" and (ppm is None or ppm <= crit_recover):
+                summary = (
+                    f"LPG gas alert cleared below danger threshold "
+                    f"({ppm_text}, peak {peak_ppm:.1f} ppm, lasted {duration_seconds}s)"
+                )
+            elif not is_sustained and condition == "warning" and (ppm is None or ppm <= crit_recover):
                 target, fault_code = "warning", "GAS_WARNING"
                 summary = f"Critical gas alert eased to warning ({ppm_text})"
 
-        return self._apply_hysteresis_target(
+        evidence_payload: Dict[str, Any] = {
+            "gas_condition": condition,
+            "estimated_ppm": ppm,
+            "peak_ppm": round(peak_ppm, 1) if peak_ppm > 0 or ppm is not None else None,
+            "duration_seconds": duration_seconds,
+            "sustained": is_sustained,
+            "gas_warn_ppm": cfg["gas_warn_ppm"],
+            "gas_crit_ppm": cfg["gas_crit_ppm"],
+        }
+
+        next_state, transition = self._apply_hysteresis_target(
             state,
             target=target,
             domain="lpg",
             fault_code=fault_code,
             fault_name=None,
             summary=summary,
-            evidence={
-                "gas_condition": condition,
-                "estimated_ppm": ppm,
-                "gas_warn_ppm": cfg["gas_warn_ppm"],
-                "gas_crit_ppm": cfg["gas_crit_ppm"],
-            },
+            evidence=evidence_payload,
             sample_identity=sample_identity,
             sample_at=ts,
         )
+
+        if transition is not None:
+            t_type = transition["transition_type"]
+            t_ep = str(transition["episode_id"])
+            t_key = (state.gateway_id, state.source_id, t_ep)
+            if t_type == "opened":
+                init_peak = ppm if ppm is not None else 0.0
+                self._gas_episodes[t_key] = {
+                    "started_at": ts,
+                    "last_reported_at": ts,
+                    "peak_ppm": init_peak,
+                    "reported_peak_ppm": init_peak,
+                }
+            elif t_type == "cleared":
+                self._gas_episodes.pop(t_key, None)
+            elif meta is not None:
+                meta["last_reported_at"] = ts
+                meta["reported_peak_ppm"] = peak_ppm
+            return next_state, transition
+
+        # Live heartbeat / peak-jump update while elevated gas remains active
+        if (
+            next_state.active_episode_id is not None
+            and meta is not None
+            and condition in ("warning", "critical")
+        ):
+            since_report = (ts - meta["last_reported_at"]).total_seconds()
+            peak_jumped = ppm is not None and ppm >= float(meta["reported_peak_ppm"]) + PEAK_PPM_UPDATE_DELTA
+            if since_report >= ACTIVE_GAS_HEARTBEAT_SECONDS or peak_jumped:
+                next_state.revision += 1
+                meta["last_reported_at"] = ts
+                meta["reported_peak_ppm"] = peak_ppm
+                active_sev = next_state.active_severity or "critical"
+                active_code = next_state.active_fault_code or (
+                    "GAS_CRITICAL" if active_sev == "critical" else "GAS_WARNING"
+                )
+                dur_mins = max(1, round(duration_seconds / 60))
+                live_summary = (
+                    f"Sustained LPG gas leak active in cylinder room ({ppm_text}, "
+                    f"peak {peak_ppm:.1f} ppm, ongoing {dur_mins} min) — fire/explosion hazard"
+                    if active_sev == "critical" or is_sustained
+                    else f"Elevated LPG gas active ({ppm_text}, peak {peak_ppm:.1f} ppm)"
+                )
+                return next_state, self._build_transition(
+                    next_state,
+                    domain="lpg",
+                    episode_id=str(next_state.active_episode_id),
+                    transition_type="updated",
+                    severity=active_sev,
+                    fault_code=active_code,
+                    fault_name=None,
+                    summary=live_summary,
+                    revision=next_state.revision,
+                    evidence=evidence_payload,
+                    occurred_at=ts,
+                )
+
+        return next_state, None
 
     def evaluate_high_temperature(
         self,

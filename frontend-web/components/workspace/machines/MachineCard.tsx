@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { SlidersHorizontal } from "lucide-react";
+import { AlertTriangle, SlidersHorizontal } from "lucide-react";
 import type { RemoteMachine } from "@/app/branches/[branchId]/machines/actions";
 import { formatMytDateTime } from "@/lib/formatDate";
 
@@ -202,6 +202,12 @@ export function MachineCard({
   const badge = getMachineStatusBadge(machine);
   const effectiveStatus = badge.effectiveStatus;
   const isWasher = machine.type !== "dryer";
+  const activeIncidentsCount =
+    typeof machine.active_incidents_count === "number"
+      ? machine.active_incidents_count
+      : machine.active_incident
+        ? 1
+        : 0;
 
   const remainingSecs =
     isFresh && typeof machine.data?.remaining_seconds === "number"
@@ -291,6 +297,12 @@ export function MachineCard({
           </div>
 
           <div className="flex shrink-0 max-w-full flex-wrap items-center gap-2">
+            {activeIncidentsCount > 0 && (
+              <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-negative/40 bg-negative/15 px-2.5 py-1 text-xs font-semibold text-negative">
+                <AlertTriangle className="size-3.5 shrink-0" aria-hidden="true" />
+                <span>Attention!</span>
+              </span>
+            )}
             <span
               className={`inline-flex max-w-full shrink-0 items-center gap-2 whitespace-normal break-words rounded border px-2.5 py-1 text-xs font-medium ${badge.wrapper}`}
             >

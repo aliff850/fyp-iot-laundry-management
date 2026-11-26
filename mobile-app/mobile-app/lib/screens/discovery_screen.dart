@@ -8,6 +8,7 @@ import '../theme/spinsense_theme.dart';
 import '../widgets/branch_map_pane.dart';
 import '../widgets/branch_summary_card.dart';
 import '../widgets/discovery_filter_sheet.dart';
+import '../widgets/spinsense_brand_mark.dart';
 import 'branch_detail_screen.dart';
 
 enum _MobilePane { list, map }
@@ -338,11 +339,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
         titleSpacing: 16,
         title: const Row(
           children: [
-            Icon(
-              Icons.local_laundry_service_outlined,
-              color: SpinSenseColors.accent,
-              size: 24,
-            ),
+            SpinSenseBrandMark(size: 28),
             SizedBox(width: 10),
             Flexible(
               child: Text(

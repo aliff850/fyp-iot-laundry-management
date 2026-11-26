@@ -49,6 +49,15 @@ function domainLabel(domain: IncidentSummary["domain"]) {
   return domain === "lpg" ? "LPG & Safety" : "Machine";
 }
 
+function roleLabel(role: string | null | undefined): string | null {
+  if (!role) return null;
+  if (role === "owner") return "Owner";
+  if (role === "branch_manager") return "Branch Manager";
+  if (role === "machine_maintenance") return "Machine Maintenance";
+  if (role === "lpg_maintenance") return "LPG Maintenance";
+  return role;
+}
+
 export function BranchIncidentsClient({
   branchId,
   userRole,
@@ -255,13 +264,35 @@ export function BranchIncidentsClient({
                         </dd>
                       </div>
                       <div className="min-w-0">
-                        <dt className="text-faint">Follow-up</dt>
-                        <dd className="mt-0.5 flex items-center gap-1.5 text-muted tabular-nums">
-                          <ClipboardList className="size-3.5 shrink-0" aria-hidden="true" />
-                          <span>
-                            {inc.open_tasks_count} open tasks, {inc.linked_reports_count} linked reports
-                          </span>
-                        </dd>
+                        {inc.workflow_state === "resolved" && inc.resolved_by_name ? (
+                          <>
+                            <dt className="text-faint">Resolved by</dt>
+                            <dd className="mt-0.5 flex flex-wrap items-center gap-1.5 text-ink">
+                              <CheckCircle2
+                                className="size-3.5 shrink-0 text-positive"
+                                aria-hidden="true"
+                              />
+                              <span className="font-medium">
+                                {inc.resolved_by_name}
+                              </span>
+                              {inc.resolved_by_role && (
+                                <span className="text-muted">
+                                  ({roleLabel(inc.resolved_by_role)})
+                                </span>
+                              )}
+                            </dd>
+                          </>
+                        ) : (
+                          <>
+                            <dt className="text-faint">Follow-up</dt>
+                            <dd className="mt-0.5 flex items-center gap-1.5 text-muted tabular-nums">
+                              <ClipboardList className="size-3.5 shrink-0" aria-hidden="true" />
+                              <span>
+                                {inc.open_tasks_count} open tasks, {inc.linked_reports_count} linked reports
+                              </span>
+                            </dd>
+                          </>
+                        )}
                       </div>
                     </dl>
                   </div>

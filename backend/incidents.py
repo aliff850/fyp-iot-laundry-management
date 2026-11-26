@@ -118,6 +118,20 @@ def _authorize_scope(
     return member, branch_ids, domains, branch_names
 
 
+_RESOLVER_SELECT_SQL = """
+    (select rp.full_name from public.profiles rp where rp.user_id = i.resolved_by) as resolved_by_name,
+    coalesce(
+      (select ie.actor_role
+       from public.incident_events ie
+       where ie.incident_id = i.id and ie.event_type = 'resolved'
+       order by ie.occurred_at desc, ie.created_at desc
+       limit 1),
+      (select rm.role
+       from public.memberships rm
+       where rm.organization_id = i.organization_id and rm.user_id = i.resolved_by)
+    ) as resolved_by_role"""
+
+
 def _authorize_incident(
     conn,
     user_id: UUID,
@@ -131,7 +145,7 @@ def _authorize_incident(
 
     lock_clause = " for update of i" if for_update else ""
     row = conn.execute(
-        f"""select i.*, b.name as branch_name
+        f"""select i.*, b.name as branch_name, {_RESOLVER_SELECT_SQL}
             from public.incidents i
             join public.branches b
               on b.id = i.branch_id and b.organization_id = i.organization_id
@@ -212,6 +226,125 @@ def _insert_incident_event(
         )
 
 
+def auto_resolve_machine_incident_from_log(
+    conn,
+    *,
+    device_id: UUID,
+    incident_id: UUID | None = None,
+    occurred_at: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Auto-resolve an open machine_fault incident once a completed repair log exists and the machine clears."""
+    occ = _utc(occurred_at) or datetime.now(timezone.utc)
+    clause = "i.id = %s" if incident_id else "i.device_id = %s"
+    target_param = incident_id if incident_id else device_id
+    match = conn.execute(
+        f"""select i.id as incident_id, i.organization_id, i.branch_id,
+                   ml.id as log_id, ml.reference_code as log_ref,
+                   ml.performed_by_user_id, ml.performed_by_role,
+                   ml.technician_name, ml.work_done
+            from public.incidents i
+            join public.machine_maintenance_logs ml
+              on ml.incident_id = i.id and ml.outcome = 'completed'
+            where {clause}
+              and i.domain = 'machine'
+              and i.condition_key = 'machine_fault'
+              and i.workflow_state <> 'resolved'
+            order by ml.created_at desc, i.opened_at desc
+            limit 1
+            for update of i""",
+        (target_param,),
+    ).fetchone()
+    if not match:
+        return None
+
+    note = (match.get("work_done") or "Completed machine maintenance and returned unit to service.").strip()[:1000]
+    actor_uid = match.get("performed_by_user_id")
+    actor_role = match.get("performed_by_role")
+    conn.execute(
+        """update public.incidents
+           set edge_condition_state = 'cleared',
+               cleared_at = coalesce(cleared_at, %s),
+               workflow_state = 'resolved',
+               resolved_by = %s,
+               resolved_at = %s,
+               resolution_note = %s,
+               acknowledged_by = coalesce(acknowledged_by, %s),
+               acknowledged_at = coalesce(acknowledged_at, %s),
+               updated_at = now()
+           where id = %s""",
+        (occ, actor_uid, occ, note, actor_uid, occ, match["incident_id"]),
+    )
+    _insert_incident_event(
+        conn,
+        incident_id=match["incident_id"],
+        organization_id=match["organization_id"],
+        branch_id=match["branch_id"],
+        event_type="resolved",
+        actor_type="operator",
+        actor_user_id=actor_uid,
+        actor_role=actor_role,
+        summary=note,
+        metadata={
+            "edge_condition_state": "cleared",
+            "auto_resolved_from_maintenance_log": True,
+            "maintenance_log_id": str(match["log_id"]),
+            "reference_code": match["log_ref"],
+        },
+        idempotency_key=f"auto-resolve:{match['log_id']}",
+        occurred_at=occ,
+    )
+    return {
+        "resolved": True,
+        "incident_id": str(match["incident_id"]),
+        "maintenance_log_id": str(match["log_id"]),
+    }
+
+
+def reconcile_cleared_machine_incident(
+    *,
+    device_id: UUID | None = None,
+    incident_id: UUID | None = None,
+) -> dict[str, Any] | None:
+    """Reconcile an unresolved machine_fault incident when a completed repair log exists and hardware cleared."""
+    if not device_id and not incident_id:
+        return None
+    clause = "i.id = %s" if incident_id else "i.device_id = %s"
+    target_param = incident_id if incident_id else device_id
+    with _database() as conn:
+        cand = conn.execute(
+            f"""select i.id as incident_id, i.device_id
+                from public.incidents i
+                join public.machine_maintenance_logs ml
+                  on ml.incident_id = i.id and ml.outcome = 'completed'
+                where {clause}
+                  and i.domain = 'machine'
+                  and i.condition_key = 'machine_fault'
+                  and i.workflow_state <> 'resolved'
+                  and (
+                    i.edge_condition_state = 'cleared'
+                    or exists (
+                      select 1
+                      from public.machine_commands mc
+                      where mc.device_id = i.device_id
+                        and mc.action = 'clear_fault'
+                        and mc.status = 'succeeded'
+                        and mc.issued_at >= i.opened_at
+                        and coalesce(mc.result_at, mc.issued_at) >= ml.created_at - interval '5 seconds'
+                    )
+                  )
+                order by ml.created_at desc, i.opened_at desc
+                limit 1""",
+            (target_param,),
+        ).fetchone()
+        if not isinstance(cand, dict) or not cand.get("incident_id") or not cand.get("device_id"):
+            return None
+        return auto_resolve_machine_incident_from_log(
+            conn,
+            device_id=cand["device_id"],
+            incident_id=cand["incident_id"],
+        )
+
+
 def _incident_summary_item(row: dict[str, Any]) -> dict[str, Any]:
     diagnosis = explain_fault(
         row.get("fault_code"),
@@ -241,7 +374,10 @@ def _incident_summary_item(row: dict[str, Any]) -> dict[str, Any]:
         "cleared_at": _iso(row.get("cleared_at")),
         "acknowledged_at": _iso(row.get("acknowledged_at")),
         "resolved_at": _iso(row.get("resolved_at")),
+        "resolved_by_name": row.get("resolved_by_name"),
+        "resolved_by_role": row.get("resolved_by_role"),
         "resolution_note": row.get("resolution_note"),
+        "evidence_snapshot": row.get("evidence_snapshot") if isinstance(row.get("evidence_snapshot"), dict) else {},
         "linked_reports_count": int(row.get("linked_reports_count") or 0),
         "open_tasks_count": int(row.get("open_tasks_count") or 0),
         "diagnosis": diagnosis,
@@ -375,6 +511,11 @@ def ingest_edge_incidents(batch: EdgeIncidentBatch, gateway=Depends(_gateway)):
             occ_utc = _utc(tr.occurred_at) or datetime.now(timezone.utc)
             tid_str = str(tr.transition_id)
 
+            # Low LPG fuel level is a replacement reminder only, never a cloud incident.
+            if tr.condition_key == "lpg_fuel":
+                accepted_ids.append(tid_str)
+                continue
+
             existing = conn.execute(
                 """select * from public.incidents
                    where device_id = %s and edge_episode_id = %s
@@ -445,6 +586,13 @@ def ingest_edge_incidents(batch: EdgeIncidentBatch, gateway=Depends(_gateway)):
                         idempotency_key=tid_str,
                         occurred_at=occ_utc,
                     )
+                    if tr.domain == "machine" and existing.get("workflow_state") != "resolved":
+                        auto_resolve_machine_incident_from_log(
+                            conn,
+                            device_id=dev["id"],
+                            incident_id=existing["id"],
+                            occurred_at=occ_utc,
+                        )
                     accepted_ids.append(tid_str)
                     continue
 
@@ -607,13 +755,36 @@ def get_branch_active_incidents_summary(
         )
         if branch_id not in branch_ids:
             return {"total_count": 0, "incidents": []}
-        return load_branch_active_incidents_summary(
+        summary = load_branch_active_incidents_summary(
             conn,
             member["organization_id"],
             branch_id,
             domains=domains,
             limit=limit,
         )
+    cleared_machine_ids = [
+        UUID(item["id"])
+        for item in summary.get("incidents", [])
+        if item.get("domain") == "machine"
+        and item.get("workflow_state") != "resolved"
+        and item.get("edge_condition_state") == "cleared"
+    ]
+    if cleared_machine_ids:
+        reconciled_any = False
+        for inc_uuid in cleared_machine_ids:
+            res = reconcile_cleared_machine_incident(incident_id=inc_uuid)
+            if res and res.get("resolved"):
+                reconciled_any = True
+        if reconciled_any:
+            with _database(read_only=True) as conn:
+                return load_branch_active_incidents_summary(
+                    conn,
+                    member["organization_id"],
+                    branch_id,
+                    domains=domains,
+                    limit=limit,
+                )
+    return summary
 
 
 @router.get("/incidents")
@@ -653,7 +824,7 @@ def list_incidents(
         params.append(limit)
 
         rows = conn.execute(
-            f"""select i.*, b.name as branch_name,
+            f"""select i.*, b.name as branch_name, {_RESOLVER_SELECT_SQL},
                        (select count(*) from public.customer_reports cr where cr.linked_incident_id = i.id) as linked_reports_count,
                        (select count(*) from public.maintenance_tasks mt where mt.incident_id = i.id and mt.status <> 'completed') as open_tasks_count,
                        count(*) over() as total_matching_count
@@ -668,6 +839,38 @@ def list_incidents(
             tuple(params),
         ).fetchall()
 
+    cleared_machine_rows = [
+        row["id"]
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("domain") == "machine"
+        and row.get("workflow_state") != "resolved"
+        and row.get("edge_condition_state") == "cleared"
+    ]
+    if cleared_machine_rows:
+        reconciled_any = False
+        for inc_uuid in cleared_machine_rows:
+            res = reconcile_cleared_machine_incident(incident_id=inc_uuid)
+            if res and res.get("resolved"):
+                reconciled_any = True
+        if reconciled_any:
+            with _database(read_only=True) as conn:
+                rows = conn.execute(
+                    f"""select i.*, b.name as branch_name, {_RESOLVER_SELECT_SQL},
+                               (select count(*) from public.customer_reports cr where cr.linked_incident_id = i.id) as linked_reports_count,
+                               (select count(*) from public.maintenance_tasks mt where mt.incident_id = i.id and mt.status <> 'completed') as open_tasks_count,
+                               count(*) over() as total_matching_count
+                        from public.incidents i
+                        join public.branches b on b.id = i.branch_id and b.organization_id = i.organization_id
+                        where {' and '.join(clauses)}
+                        order by
+                          case when i.workflow_state <> 'resolved' then 0 else 1 end,
+                          case when i.severity = 'critical' then 0 else 1 end,
+                          i.opened_at desc
+                        limit %s""",
+                    tuple(params),
+                ).fetchall()
+
     total_count = int(rows[0].get("total_matching_count") or len(rows)) if rows else 0
     return {"incidents": [_incident_summary_item(row) for row in rows], "total_count": total_count}
 
@@ -676,6 +879,15 @@ def list_incidents(
 def get_incident_detail(incident_id: UUID, user=Depends(_user)):
     with _database(read_only=True) as conn:
         member, row = _authorize_incident(conn, user["id"], incident_id)
+        if (
+            isinstance(row, dict)
+            and row.get("domain") == "machine"
+            and row.get("workflow_state") != "resolved"
+            and row.get("edge_condition_state") == "cleared"
+        ):
+            rec = reconcile_cleared_machine_incident(incident_id=incident_id)
+            if rec and rec.get("resolved"):
+                member, row = _authorize_incident(conn, user["id"], incident_id)
 
         events = conn.execute(
             """select e.id, e.event_type, e.actor_type, e.actor_user_id, e.actor_role,
@@ -797,6 +1009,16 @@ def get_incident_detail(incident_id: UUID, user=Depends(_user)):
 
     is_specialist = member["role"] in ("machine_maintenance", "lpg_maintenance")
     item = _incident_summary_item(row)
+    if item["workflow_state"] == "resolved" and (
+        not item.get("resolved_by_name") or not item.get("resolved_by_role")
+    ):
+        resolved_event = next(
+            (ev for ev in reversed(events) if ev.get("event_type") == "resolved"),
+            None,
+        )
+        if resolved_event:
+            item["resolved_by_name"] = item.get("resolved_by_name") or resolved_event.get("actor_name")
+            item["resolved_by_role"] = item.get("resolved_by_role") or resolved_event.get("actor_role")
     item["evidence_snapshot"] = row.get("evidence_snapshot") or {}
     item["asset_state"] = asset_state
     item["maintenance_logs"] = [
@@ -893,10 +1115,10 @@ def acknowledge_incident(
             metadata={"note": note_text} if note_text else {},
         )
         updated = conn.execute(
-            """select i.*, b.name as branch_name
-               from public.incidents i
-               join public.branches b on b.id = i.branch_id and b.organization_id = i.organization_id
-               where i.id = %s""",
+            f"""select i.*, b.name as branch_name, {_RESOLVER_SELECT_SQL}
+                from public.incidents i
+                join public.branches b on b.id = i.branch_id and b.organization_id = i.organization_id
+                where i.id = %s""",
             (incident_id,),
         ).fetchone()
     return {"incident": _incident_summary_item(updated)}
@@ -917,6 +1139,14 @@ def resolve_incident(
         if row["workflow_state"] == "resolved":
             return {"incident": _incident_summary_item(row)}
         if row["edge_condition_state"] != "cleared":
+            if row.get("domain") == "lpg" and (
+                row.get("condition_key") in ("gas_concentration", "gas_leak")
+                or str(row.get("fault_code") or "").upper().startswith("GAS_")
+            ):
+                raise HTTPException(
+                    409,
+                    "IMMINENT FIRE & EXPLOSION HAZARD: Elevated LPG gas is still above the danger threshold in the enclosed cylinder room — cannot mark resolved until readings safely clear",
+                )
             raise HTTPException(
                 409,
                 "Cannot resolve incident while the physical edge condition is still active",
@@ -947,10 +1177,10 @@ def resolve_incident(
             metadata={"edge_condition_state": row["edge_condition_state"]},
         )
         updated = conn.execute(
-            """select i.*, b.name as branch_name
-               from public.incidents i
-               join public.branches b on b.id = i.branch_id and b.organization_id = i.organization_id
-               where i.id = %s""",
+            f"""select i.*, b.name as branch_name, {_RESOLVER_SELECT_SQL}
+                from public.incidents i
+                join public.branches b on b.id = i.branch_id and b.organization_id = i.organization_id
+                where i.id = %s""",
             (incident_id,),
         ).fetchone()
     return {"incident": _incident_summary_item(updated)}

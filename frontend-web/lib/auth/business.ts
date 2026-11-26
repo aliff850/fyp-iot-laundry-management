@@ -95,7 +95,7 @@ export async function businessRequest<T>(path: string, method = "GET", body?: ob
   const token = tokenRes.value;
   try {
     const response = await fetch(`${base}${path}`, {
-      method, cache: "no-store", signal: AbortSignal.timeout(method === "GET" ? 10000 : 30000),
+      method, cache: "no-store", signal: AbortSignal.timeout(method === "GET" ? 25000 : 30000),
       headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -511,6 +511,7 @@ export type RemoteMachine = {
   } | null;
   diagnosis?: FaultDiagnosis | null;
   active_incident?: RemoteMachineActiveIncident | null;
+  active_incidents_count?: number;
 };
 
 export type RemoteMachineCommandAction =
@@ -731,9 +732,18 @@ export interface SafetyNodeLpgConfig {
   stability_tolerance_kg: number;
 }
 
+export type LpgNodeConfig = SafetyNodeLpgConfig;
+
 export interface SafetyNodePendingCommand {
   command_id: string;
-  action: "start_tank_swap" | "complete_tank_swap" | "calibrate_gas_baseline" | string;
+  action:
+    | "start_tank_swap"
+    | "complete_tank_swap"
+    | "calibrate_gas_baseline"
+    | "set_tare_weight"
+    | "start_service_maintenance"
+    | "complete_service_maintenance"
+    | string;
   status: string;
   issued_at: string | null;
 }
@@ -753,6 +763,7 @@ export interface SafetyNodeDevice {
   gas_interpretation?: SafetyNodeGasInterpretation | null;
   lpg_config?: SafetyNodeLpgConfig | null;
   pending_command?: SafetyNodePendingCommand | null;
+  active_incidents_count?: number;
   observation: SafetyNodeObservation | null;
 }
 
@@ -818,19 +829,6 @@ export interface LpgCommandStatusResponse {
   result_at: string | null;
 }
 
-export interface LpgStartTankSwapPayload {
-  request_id: string;
-  started_by?: string;
-  service_note?: string;
-}
-
-export interface LpgCompleteTankSwapPayload {
-  request_id: string;
-  completed_by?: string;
-  tare_kg?: number | null;
-  rated_capacity_kg?: number | null;
-}
-
 export interface LpgGasBaselinePayload {
   request_id: string;
   reset: boolean;
@@ -841,6 +839,13 @@ export interface LpgGasBaselinePayload {
   vcc_v?: number | null;
   gas_warn_ppm?: number | null;
   gas_crit_ppm?: number | null;
+}
+
+export interface LpgTareWeightPayload {
+  request_id: string;
+  tare_kg: number;
+  rated_capacity_kg: number;
+  updated_by?: string;
 }
 
 export async function getLpgMaintenanceStatus(
@@ -857,26 +862,11 @@ export async function getLpgMaintenanceStatus(
   return { ok: true, value: result.value };
 }
 
-export async function startLpgTankSwap(
-  branchId: string,
-  sourceId: string,
-  payload: LpgStartTankSwapPayload,
-): Promise<Result<LpgCommandDispatchResponse>> {
-  const result = await businessRequest<LpgCommandDispatchResponse>(
-    `/branches/${encodeURIComponent(branchId)}/lpg/${encodeURIComponent(sourceId)}/maintenance/start`,
-    "POST",
-    payload,
-  );
-  if (!result.ok) return result;
-  if (!result.value || typeof result.value.command_id !== "string") return invalid();
-  return { ok: true, value: result.value };
-}
-
 export interface LpgStartServiceMaintenancePayload {
   request_id: string;
   started_by?: string;
   service_note?: string;
-  session_kind?: "maintenance" | "incident_inspection";
+  session_kind?: "tank_swap" | "maintenance" | "incident_inspection";
   incident_id?: string | null;
 }
 
@@ -916,13 +906,13 @@ export async function completeLpgServiceMaintenance(
   return { ok: true, value: result.value };
 }
 
-export async function completeLpgTankSwap(
+export async function calibrateLpgGasBaseline(
   branchId: string,
   sourceId: string,
-  payload: LpgCompleteTankSwapPayload,
+  payload: LpgGasBaselinePayload,
 ): Promise<Result<LpgCommandDispatchResponse>> {
   const result = await businessRequest<LpgCommandDispatchResponse>(
-    `/branches/${encodeURIComponent(branchId)}/lpg/${encodeURIComponent(sourceId)}/maintenance/complete`,
+    `/branches/${encodeURIComponent(branchId)}/lpg/${encodeURIComponent(sourceId)}/gas-baseline`,
     "POST",
     payload,
   );
@@ -931,13 +921,13 @@ export async function completeLpgTankSwap(
   return { ok: true, value: result.value };
 }
 
-export async function calibrateLpgGasBaseline(
+export async function setLpgTareWeight(
   branchId: string,
   sourceId: string,
-  payload: LpgGasBaselinePayload,
+  payload: LpgTareWeightPayload,
 ): Promise<Result<LpgCommandDispatchResponse>> {
   const result = await businessRequest<LpgCommandDispatchResponse>(
-    `/branches/${encodeURIComponent(branchId)}/lpg/${encodeURIComponent(sourceId)}/gas-baseline`,
+    `/branches/${encodeURIComponent(branchId)}/lpg/${encodeURIComponent(sourceId)}/tare-weight`,
     "POST",
     payload,
   );
@@ -973,64 +963,6 @@ export async function getBranchLpg(branchId: string): Promise<Result<LpgBranchDa
   if (!result.ok) return result;
   if (!result.value?.cylinders || !Array.isArray(result.value.cylinders)) return invalid();
   return { ok: true, value: result.value };
-}
-
-export async function startCylinderReplacement(
-  branchId: string,
-  cylinderId: string,
-  notes?: string
-): Promise<Result<LpgCylinderItem>> {
-  const result = await businessRequest<{ cylinder: LpgCylinderItem }>(
-    `/branches/${branchId}/lpg/cylinders/${cylinderId}/replacement/start`,
-    "POST",
-    { notes }
-  );
-  if (!result.ok) return result;
-  if (!result.value?.cylinder) return invalid();
-  return { ok: true, value: result.value.cylinder };
-}
-
-export async function completeCylinderReplacement(
-  branchId: string,
-  cylinderId: string,
-  newTareKg: number,
-  ratedCapacityKg: number,
-  notes?: string
-): Promise<Result<LpgCylinderItem>> {
-  const result = await businessRequest<{ cylinder: LpgCylinderItem }>(
-    `/branches/${branchId}/lpg/cylinders/${cylinderId}/replacement/complete`,
-    "POST",
-    { new_tare_kg: newTareKg, rated_capacity_kg: ratedCapacityKg, notes }
-  );
-  if (!result.ok) return result;
-  if (!result.value?.cylinder) return invalid();
-  return { ok: true, value: result.value.cylinder };
-}
-
-export async function cancelCylinderReplacement(
-  branchId: string,
-  cylinderId: string
-): Promise<Result<LpgCylinderItem>> {
-  const result = await businessRequest<{ cylinder: LpgCylinderItem }>(
-    `/branches/${branchId}/lpg/cylinders/${cylinderId}/replacement/cancel`,
-    "POST",
-    {}
-  );
-  if (!result.ok) return result;
-  if (!result.value?.cylinder) return invalid();
-  return { ok: true, value: result.value.cylinder };
-}
-
-export async function toggleEmergencyValve(
-  branchId: string,
-  action: "open" | "close"
-): Promise<Result<{ state: "OPEN" | "CLOSED"; emergency_shutoff: boolean; last_actuated: string }>> {
-  const result = await businessRequest<{
-    safety_valve: { state: "OPEN" | "CLOSED"; emergency_shutoff: boolean; last_actuated: string };
-  }>(`/branches/${branchId}/lpg/emergency-shutoff`, "POST", { action });
-  if (!result.ok) return result;
-  if (!result.value?.safety_valve) return invalid();
-  return { ok: true, value: result.value.safety_valve };
 }
 
 // ==========================================
@@ -1724,7 +1656,10 @@ export type IncidentSummary = {
   cleared_at: string | null;
   acknowledged_at: string | null;
   resolved_at: string | null;
+  resolved_by_name?: string | null;
+  resolved_by_role?: string | null;
   resolution_note: string | null;
+  evidence_snapshot?: Record<string, unknown>;
   linked_reports_count: number;
   open_tasks_count: number;
   diagnosis: FaultDiagnosis | null;
@@ -1909,7 +1844,13 @@ export async function updateIncidentTask(
 }
 
 export type MaintenanceLogOutcome = "in_progress" | "completed";
-export type MaintenanceLogKind = "maintenance" | "incident_resolution" | "tank_swap" | "inspection";
+export type MaintenanceLogKind =
+  | "maintenance"
+  | "incident_resolution"
+  | "tank_swap"
+  | "gas_calibration"
+  | "set_tare_weight"
+  | "inspection";
 
 export type MaintenanceLogItem = {
   id: string;
@@ -1946,8 +1887,8 @@ export type MaintenanceLogCreateInput = {
   work_done: string;
   log_kind?: MaintenanceLogKind;
   incident_id?: string | null;
-  outcome: MaintenanceLogOutcome;
-  return_to_service?: boolean;
+  outcome: "completed";
+  return_to_service: true;
   resolve_incident?: boolean;
   command_request_id?: string;
 };

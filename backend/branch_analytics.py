@@ -115,6 +115,8 @@ def _aggregate_incident_metrics(
     resolve_durations_min: list[float] = []
 
     for row in incident_rows:
+        if str(row.get("condition_key") or "").strip().lower() == "lpg_fuel":
+            continue
         raw_id = row.get("id")
         if raw_id is None:
             continue
@@ -740,6 +742,7 @@ def _fetch_analytics_for_branches(
            from public.incidents
            where organization_id = %s
              and branch_id = any(%s)
+             and condition_key <> 'lpg_fuel'
              and opened_at >= %s
              and opened_at <= %s
            order by opened_at, id""",

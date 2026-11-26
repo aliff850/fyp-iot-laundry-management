@@ -192,7 +192,7 @@ export function BranchWorkspaceShell({
                         {branch.name}
                       </h1>
                       <span
-                        className={`rounded border px-2 py-0.5 text-xs font-medium ${
+                        className={`rounded border px-2.5 py-0.5 text-xs font-medium ${
                           branch.service_status === "open"
                             ? "border-positive/30 bg-positive/10 text-positive"
                             : "border-warning/30 bg-warning/10 text-warning"
@@ -201,6 +201,15 @@ export function BranchWorkspaceShell({
                         {branch.service_status === "open"
                           ? "Open to customers"
                           : "Closed to customers"}
+                      </span>
+                      <span
+                        className={`rounded border px-2.5 py-0.5 text-xs font-medium ${
+                          branch.is_published
+                            ? "border-navy-selected bg-navy text-ink"
+                            : "border-line bg-raised text-muted"
+                        }`}
+                      >
+                        {branch.is_published ? "Published" : "Unpublished"}
                       </span>
                     </div>
                     <p className="text-xs text-muted">

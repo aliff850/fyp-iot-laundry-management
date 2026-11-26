@@ -11,7 +11,7 @@ class PublicApiService {
     Duration? timeout,
   })  : baseUrl = (baseUrl ?? AppConfig.apiBaseUrl).replaceAll(RegExp(r'/+$'), ''),
         _client = client ?? http.Client(),
-        _timeout = timeout ?? const Duration(seconds: 12);
+        _timeout = timeout ?? const Duration(seconds: 30);
 
   final String baseUrl;
   final http.Client _client;

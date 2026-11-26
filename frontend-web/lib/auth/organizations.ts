@@ -6,7 +6,7 @@ export async function getPublicOrganizations(): Promise<OrganizationDirectory> {
   const base = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
   if (!base) return { status: "unavailable", organizations: [] };
   try {
-    const response = await fetch(`${base}/public/organizations`, { cache: "no-store", signal: AbortSignal.timeout(5000) });
+    const response = await fetch(`${base}/public/organizations`, { cache: "no-store", signal: AbortSignal.timeout(25000) });
     if (!response.ok) return { status: "unavailable", organizations: [] };
     const body: unknown = await response.json();
     if (!body || typeof body !== "object" || !("organizations" in body) || !Array.isArray(body.organizations) || body.organizations.length > 1000) return { status: "unavailable", organizations: [] };
@@ -28,7 +28,7 @@ export async function checkEmailRegistered(email: string): Promise<EmailRegistra
     const response = await fetch(`${base}/public/registration-email-check`, {
       method: "POST",
       cache: "no-store",
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(25000),
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email }),
     });

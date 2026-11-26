@@ -700,6 +700,12 @@ export function MachineDetailModal({
   }:${countdownInitialSeconds !== null ? "has" : "none"}`;
   const statusTheme = machineStatusTileTheme(effectiveStatus);
   const estimateTheme = remainingEstimateTileTheme(effectiveStatus);
+  const activeIncidentsCount =
+    typeof machine.active_incidents_count === "number"
+      ? machine.active_incidents_count
+      : machine.active_incident
+        ? 1
+        : 0;
 
   const selectedProgramRecord =
     editingProgramId && !creatingProgram
@@ -830,6 +836,28 @@ export function MachineDetailModal({
         </button>
       </div>
 
+      {activeIncidentsCount > 0 && (
+        <div
+          role="alert"
+          className="mt-4 flex flex-col gap-3 rounded-md border border-negative/40 bg-negative/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="flex min-w-0 items-center gap-2.5 text-sm font-medium text-ink">
+            <AlertTriangle className="size-4 shrink-0 text-negative" aria-hidden="true" />
+            <span>
+              Machine has {activeIncidentsCount} active{" "}
+              {activeIncidentsCount === 1 ? "incident" : "incidents"}.
+            </span>
+          </div>
+          <Link
+            href={`/branches/${branchId}/incidents`}
+            className="inline-flex min-h-11 min-w-11 w-full shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-xs font-semibold text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent sm:w-auto"
+          >
+            <span>View Incidents</span>
+            <ArrowRight className="size-3.5 shrink-0" aria-hidden="true" />
+          </Link>
+        </div>
+      )}
+
       {/* 2. Modal Tab Selection Bar */}
       <div
         role="tablist"
@@ -921,32 +949,10 @@ export function MachineDetailModal({
                       </p>
                     </div>
                   </div>
-                  {machine.diagnosis && (
-                    <span
-                      className={`inline-flex shrink-0 self-start rounded border px-2 py-0.5 text-xs font-medium ${
-                        machine.diagnosis.source_status ===
-                        "placeholder_washer_guide"
-                          ? "border-warning/40 bg-warning/10 text-warning"
-                          : machine.diagnosis.source_status ===
-                              "spinsense_safety_rule"
-                            ? "border-line bg-surface text-muted"
-                            : "border-negative/40 bg-surface text-negative"
-                      }`}
-                    >
-                      {machine.diagnosis.source_status ===
-                      "placeholder_washer_guide"
-                        ? "Placeholder guide"
-                        : machine.diagnosis.source_status ===
-                            "spinsense_safety_rule"
-                          ? "SpinSense safety rule"
-                          : "Unverified vendor code"}
-                    </span>
-                  )}
                 </div>
 
                 {machine.diagnosis && (
                   <div className="space-y-3 rounded-md border border-rule bg-surface p-3.5 text-xs">
-                    <p className="text-muted">{machine.diagnosis.disclaimer}</p>
                     <div className="rounded border border-warning/30 bg-warning/10 px-3 py-2 text-ink">
                       <span className="font-semibold text-warning">
                         Safety:{" "}
@@ -978,32 +984,6 @@ export function MachineDetailModal({
                           )}
                         </ol>
                       </div>
-                    )}
-                  </div>
-                )}
-
-                {(effectiveStatus === "ERROR" || Boolean(machine.active_incident)) && (
-                  <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center">
-                    {machine.active_incident && (
-                      <Link
-                        href={`/branches/${branchId}/incidents/${machine.active_incident.id}`}
-                        className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-4 py-2 text-xs font-semibold text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:w-auto"
-                      >
-                        <AlertTriangle className="size-4 shrink-0 text-negative" aria-hidden="true" />
-                        <span>Inspect Incident {machine.active_incident.reference_code}</span>
-                        <ArrowRight className="size-3.5 shrink-0" aria-hidden="true" />
-                      </Link>
-                    )}
-
-                    {onOpenServiceModal && (
-                      <button
-                        type="button"
-                        onClick={() => onOpenServiceModal(machine)}
-                        className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-4 py-2 text-xs font-semibold text-surface transition-colors hover:border-muted hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:w-auto"
-                      >
-                        <Wrench className="size-4 shrink-0" aria-hidden="true" />
-                        <span>Service &amp; Resolve Issue</span>
-                      </button>
                     )}
                   </div>
                 )}
@@ -1171,39 +1151,23 @@ export function MachineDetailModal({
             )}
 
             <section className="flex flex-col gap-3 rounded-md border border-line bg-surface p-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0 space-y-1">
-                <h3 className="text-base font-semibold tracking-tight text-ink">
-                  Maintenance &amp; Service
-                </h3>
-                <p className="text-xs text-muted">
-                  Put the unit into maintenance mode, log tasks performed, and return it to service.
-                </p>
-              </div>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                {machine.active_incident && (
-                  <Link
-                    href={`/branches/${branchId}/incidents/${machine.active_incident.id}`}
-                    className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-4 py-2 text-xs font-semibold text-ink transition-colors hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent sm:w-auto"
-                  >
-                    <span>Inspect Incident {machine.active_incident.reference_code}</span>
-                    <ArrowRight className="size-3.5 shrink-0" aria-hidden="true" />
-                  </Link>
-                )}
-                {onOpenServiceModal && (
-                  <button
-                    type="button"
-                    onClick={() => onOpenServiceModal(machine)}
-                    className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-4 py-2 text-xs font-semibold text-surface transition-colors hover:border-muted hover:bg-muted focus-visible:outline-2 focus-visible:outline-accent sm:w-auto"
-                  >
-                    <Wrench className="size-4 shrink-0" aria-hidden="true" />
-                    <span>
-                      {effectiveStatus === "MAINTENANCE"
-                        ? "Continue Maintenance Log"
-                        : "Maintenance & Service"}
-                    </span>
-                  </button>
-                )}
-              </div>
+              <h3 className="text-base font-semibold tracking-tight text-ink">
+                Maintenance &amp; Service
+              </h3>
+              {onOpenServiceModal && (
+                <button
+                  type="button"
+                  onClick={() => onOpenServiceModal(machine)}
+                  className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-4 py-2 text-xs font-semibold text-surface transition-colors hover:border-muted hover:bg-muted focus-visible:outline-2 focus-visible:outline-accent sm:w-auto"
+                >
+                  <Wrench className="size-4 shrink-0" aria-hidden="true" />
+                  <span>
+                    {effectiveStatus === "MAINTENANCE"
+                      ? "Continue Maintenance Log"
+                      : "Maintenance & Service"}
+                  </span>
+                </button>
+              )}
             </section>
 
             {/* Recent commands (inside Tab 1 matching Pi 5) */}

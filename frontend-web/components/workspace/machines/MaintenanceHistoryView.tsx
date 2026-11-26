@@ -31,6 +31,8 @@ const PAGE_SIZE = 20;
 function logKindLabel(kind?: MaintenanceLogItem["log_kind"]): string {
   if (kind === "incident_resolution") return "Incident Resolution";
   if (kind === "tank_swap") return "Tank Swap";
+  if (kind === "gas_calibration") return "Gas Calibration";
+  if (kind === "set_tare_weight") return "Set Tare Weight";
   if (kind === "inspection") return "Inspection";
   return "Maintenance";
 }

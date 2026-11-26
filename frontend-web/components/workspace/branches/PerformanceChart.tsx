@@ -9,6 +9,7 @@ import {
 import type {
   BranchOverviewAnalytics,
   OverviewAnalyticsPeriod,
+  OverviewIncidentMetrics,
   WorkspaceBranch,
 } from "@/lib/auth/business";
 import {
@@ -17,7 +18,6 @@ import {
   type ResolvedTheme,
 } from "@/components/workspace/branches/ChartCanvas";
 import { BusinessInsightsSections } from "@/components/workspace/branches/BusinessInsightsSections";
-import { IncidentMetricsSection } from "@/components/workspace/branches/IncidentMetricsSection";
 
 export type MachineMetricView = "cycles" | "runtime" | "revenue";
 
@@ -45,6 +45,31 @@ const METRIC_OPTIONS: { key: MachineMetricView; label: string }[] = [
   { key: "runtime", label: "Running minutes" },
   { key: "revenue", label: "Estimated revenue" },
 ];
+
+const EMPTY_INCIDENT_METRICS: OverviewIncidentMetrics = {
+  total_incidents: 0,
+  open_count: 0,
+  acknowledged_count: 0,
+  resolved_count: 0,
+  warning_count: 0,
+  critical_count: 0,
+  machine_count: 0,
+  lpg_count: 0,
+  avg_acknowledge_minutes: null,
+  avg_resolve_minutes: null,
+  ack_sample_count: 0,
+  resolve_sample_count: 0,
+  series: [],
+};
+
+export function formatIncidentDuration(
+  minutes: number | null,
+  hasLoadedData: boolean
+): string {
+  if (!hasLoadedData) return "—";
+  if (minutes === null || !Number.isFinite(minutes)) return "None recorded";
+  return `${minutes.toFixed(1)} min`;
+}
 
 function emptyFallbackAnalytics(branchId: string, period: OverviewAnalyticsPeriod): BranchOverviewAnalytics {
   return {
@@ -457,6 +482,73 @@ export function PerformanceChart({
     };
   }, [activeData.complaints.series]);
 
+  const hasLoadedData = analytics !== null;
+  const incidentMetrics = activeData.incident_metrics ?? EMPTY_INCIDENT_METRICS;
+  const incidentSeries = useMemo(
+    () => incidentMetrics.series ?? [],
+    [incidentMetrics.series]
+  );
+  const hasIncidentActivity =
+    hasLoadedData && incidentMetrics.total_incidents > 0 && incidentSeries.length > 0;
+  const unresolvedIncidentsCount =
+    incidentMetrics.open_count + incidentMetrics.acknowledged_count;
+  const formattedResolveDuration = formatIncidentDuration(
+    incidentMetrics.avg_resolve_minutes,
+    hasLoadedData
+  );
+
+  const incidentChartConfig = useMemo(() => {
+    return (theme: ResolvedTheme): ChartConfiguration => ({
+      type: "bar",
+      data: {
+        labels: incidentSeries.map((pt) => pt.label),
+        datasets: [
+          {
+            label: "Warning",
+            data: incidentSeries.map((pt) => pt.warning),
+            backgroundColor: theme.warning,
+            borderRadius: 3,
+          },
+          {
+            label: "Critical",
+            data: incidentSeries.map((pt) => pt.critical),
+            backgroundColor: theme.negative,
+            borderRadius: 3,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: theme.reducedMotion ? false : undefined,
+        plugins: {
+          legend: {
+            display: true,
+            labels: {
+              color: theme.muted,
+              boxWidth: 12,
+              boxHeight: 12,
+            },
+          },
+        },
+        scales: {
+          x: {
+            stacked: true,
+            ticks: { color: theme.muted, maxRotation: 0, autoSkip: true },
+            grid: { color: theme.rule },
+          },
+          y: {
+            stacked: true,
+            beginAtZero: true,
+            title: { display: true, text: "Incidents", color: theme.muted },
+            ticks: { color: theme.muted, precision: 0 },
+            grid: { color: theme.rule },
+          },
+        },
+      },
+    });
+  }, [incidentSeries]);
+
   const summary = activeData.summary;
   const formattedRevenue = `RM ${Number(summary.estimated_revenue_myr || 0).toFixed(2)}`;
   const formattedRuntime = `${Number(summary.running_minutes || 0).toFixed(1)} min`;
@@ -746,11 +838,82 @@ export function PerformanceChart({
       </div>
 
       {/* Section 4: Incident Metrics */}
-      <IncidentMetricsSection
-        incidentMetrics={activeData.incident_metrics}
-        granularity={activeData.granularity}
-        hasLoadedData={analytics !== null}
-      />
+      <div className="rounded-md border border-rule bg-raised p-4 sm:p-5">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <h3 className="text-base font-bold text-ink">Incident metrics</h3>
+          <span className="text-xs font-medium text-faint">
+            {activeData.granularity === "hour" ? "Hourly MYT" : "Daily MYT"}
+          </span>
+        </div>
+
+        <dl
+          aria-label="Incident metrics summary"
+          className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6"
+        >
+          <div className="min-w-0 rounded-md border border-rule bg-surface p-3.5">
+            <dt className="text-xs font-medium text-muted">Incidents</dt>
+            <dd className="mt-1 text-lg font-extrabold tabular-nums text-ink sm:text-xl">
+              {hasLoadedData ? incidentMetrics.total_incidents : "—"}
+            </dd>
+          </div>
+
+          <div className="min-w-0 rounded-md border border-rule bg-surface p-3.5">
+            <dt className="text-xs font-medium text-muted">Critical alerts</dt>
+            <dd
+              className={`mt-1 text-lg font-extrabold tabular-nums sm:text-xl ${
+                hasLoadedData && incidentMetrics.critical_count > 0
+                  ? "text-negative"
+                  : "text-ink"
+              }`}
+            >
+              {hasLoadedData ? incidentMetrics.critical_count : "—"}
+            </dd>
+          </div>
+
+          <div className="min-w-0 rounded-md border border-rule bg-surface p-3.5">
+            <dt className="text-xs font-medium text-muted">Unresolved</dt>
+            <dd className="mt-1 text-lg font-extrabold tabular-nums text-ink sm:text-xl">
+              {hasLoadedData ? unresolvedIncidentsCount : "—"}
+            </dd>
+          </div>
+
+          <div className="min-w-0 rounded-md border border-rule bg-surface p-3.5">
+            <dt className="text-xs font-medium text-muted">Resolved</dt>
+            <dd className="mt-1 text-lg font-extrabold tabular-nums text-ink sm:text-xl">
+              {hasLoadedData ? incidentMetrics.resolved_count : "—"}
+            </dd>
+          </div>
+
+          <div className="min-w-0 rounded-md border border-rule bg-surface p-3.5">
+            <dt className="text-xs font-medium text-muted">Avg resolution</dt>
+            <dd className="mt-1 text-lg font-extrabold tabular-nums text-ink sm:text-xl">
+              {formattedResolveDuration}
+            </dd>
+          </div>
+
+          <div className="min-w-0 rounded-md border border-rule bg-surface p-3.5">
+            <dt className="text-xs font-medium text-muted">By domain</dt>
+            <dd className="mt-1 text-sm font-bold tabular-nums text-ink sm:text-base">
+              {hasLoadedData
+                ? `${incidentMetrics.machine_count} Machine / ${incidentMetrics.lpg_count} LPG`
+                : "—"}
+            </dd>
+          </div>
+        </dl>
+
+        <div className="mt-4 h-56 w-full min-w-0">
+          {!hasIncidentActivity ? (
+            <div className="flex h-full items-center justify-center rounded-md border border-rule bg-canvas/50 p-4 text-center text-sm text-muted">
+              No incidents recorded in this timeframe.
+            </div>
+          ) : (
+            <ChartCanvas
+              ariaLabel="Incident severity trend stacked bar chart"
+              buildConfig={incidentChartConfig}
+            />
+          )}
+        </div>
+      </div>
 
       {/* Section 5: Customer Complaints */}
       <div className="rounded-md border border-rule bg-raised p-4 sm:p-5">

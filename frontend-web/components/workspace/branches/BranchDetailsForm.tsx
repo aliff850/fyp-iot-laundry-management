@@ -200,7 +200,7 @@ export function BranchDetailsForm({
                 required
                 maxLength={120}
                 defaultValue={branch.name}
-                className="h-10 w-full rounded border border-line bg-canvas px-3 text-sm text-ink"
+                className="min-h-11 w-full rounded border border-line bg-canvas px-3 text-sm text-ink focus-visible:outline-2 focus-visible:outline-accent"
               />
             </label>
 
@@ -210,34 +210,12 @@ export function BranchDetailsForm({
                 name="service_status"
                 value={serviceStatus}
                 onChange={(e) => setServiceStatus(e.target.value as "open" | "closed")}
-                className="min-h-11 w-full rounded border border-line bg-canvas px-3 text-sm text-ink"
+                className="min-h-11 w-full rounded border border-line bg-canvas px-3 text-sm text-ink focus-visible:outline-2 focus-visible:outline-accent"
               >
                 <option value="open">Open to customers</option>
                 <option value="closed">Closed to customers</option>
               </select>
             </label>
-
-            {isOwner ? (
-              <label className="block space-y-1.5 text-xs text-muted">
-                <span>Customer directory visibility</span>
-                <select
-                  name="is_published"
-                  value={isPublished ? "true" : "false"}
-                  onChange={(e) => setIsPublished(e.target.value === "true")}
-                  className="min-h-11 w-full rounded border border-line bg-canvas px-3 text-sm text-ink"
-                >
-                  <option value="false">Unpublished (hidden from customer app)</option>
-                  <option value="true">Published in customer app</option>
-                </select>
-              </label>
-            ) : (
-              <div className="block space-y-1.5 text-xs text-muted">
-                <span>Customer directory visibility</span>
-                <div className="flex min-h-11 w-full items-center rounded border border-line bg-canvas/60 px-3 text-sm text-ink">
-                  {branch.is_published ? "Published in customer app" : "Unpublished (owner only)"}
-                </div>
-              </div>
-            )}
 
             <label className="block space-y-1.5 text-xs text-muted">
               <span>Contact phone</span>
@@ -246,7 +224,7 @@ export function BranchDetailsForm({
                 required
                 maxLength={32}
                 defaultValue={branch.contact_phone}
-                className="h-10 w-full rounded border border-line bg-canvas px-3 text-sm font-mono text-ink"
+                className="min-h-11 w-full rounded border border-line bg-canvas px-3 font-mono text-sm text-ink focus-visible:outline-2 focus-visible:outline-accent"
               />
             </label>
 
@@ -257,7 +235,7 @@ export function BranchDetailsForm({
                   name="primary_manager_user_id"
                   required
                   defaultValue={branch.primary_manager_user_id}
-                  className="h-10 w-full rounded border border-line bg-canvas px-3 text-sm text-ink"
+                  className="min-h-11 w-full rounded border border-line bg-canvas px-3 text-sm text-ink focus-visible:outline-2 focus-visible:outline-accent"
                 >
                   {managers.map((manager) => (
                     <option key={manager.user_id} value={manager.user_id}>
@@ -269,8 +247,43 @@ export function BranchDetailsForm({
             ) : (
               <div className="block space-y-1.5 text-xs text-muted">
                 <span>Primary branch manager</span>
-                <div className="flex h-10 w-full items-center rounded border border-line bg-canvas/60 px-3 text-sm text-ink">
+                <div className="flex min-h-11 w-full items-center rounded border border-line bg-canvas/60 px-3 text-sm text-ink">
                   {branch.primary_manager?.full_name || "Assigned Branch Manager"}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* Customer App Visibility */}
+        <section className="space-y-3 border-t border-rule pt-6">
+          <h2 className="text-sm font-semibold text-ink">Customer App Visibility</h2>
+          <div className="w-full space-y-2 md:max-w-md">
+            {isOwner ? (
+              <>
+                <label className="block space-y-1.5 text-xs text-muted">
+                  <span>Customer directory visibility</span>
+                  <select
+                    name="is_published"
+                    value={isPublished ? "true" : "false"}
+                    onChange={(e) => setIsPublished(e.target.value === "true")}
+                    className="min-h-11 w-full rounded border border-line bg-canvas px-3 text-sm text-ink focus-visible:outline-2 focus-visible:outline-accent"
+                  >
+                    <option value="false">Unpublished (hidden from customer app)</option>
+                    <option value="true">Published in customer app</option>
+                  </select>
+                </label>
+                {isPublished && (
+                  <p className="text-xs leading-relaxed text-warning">
+                    Doing so will make the branch publicly available for customers. Please make sure all details are correct
+                  </p>
+                )}
+              </>
+            ) : (
+              <div className="block space-y-1.5 text-xs text-muted">
+                <span>Customer directory visibility</span>
+                <div className="flex min-h-11 w-full items-center rounded border border-line bg-canvas/60 px-3 text-sm text-ink">
+                  {branch.is_published ? "Published in customer app" : "Unpublished (owner only)"}
                 </div>
               </div>
             )}

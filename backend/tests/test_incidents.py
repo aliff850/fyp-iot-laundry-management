@@ -160,6 +160,7 @@ class _FakeIncidentDB:
             rec["cleared_at"] = None
             rec["last_sample_at"] = max(rec["last_sample_at"], last_at)
             rec["revision"] = max(rec["revision"], rev)
+            rec["evidence_snapshot"] = evidence.obj if hasattr(evidence, "obj") else evidence
             return _Result()
 
         if q.startswith("insert into public.incident_events"):
@@ -187,7 +188,7 @@ class _FakeIncidentDB:
             )
             return _Result()
 
-        if "select i.*, b.name as branch_name from public.incidents i" in q and "where i.id = %s" in q:
+        if "from public.incidents i" in q and "b.name as branch_name" in q and "where i.id = %s" in q:
             inc_id = params[0]
             org_id = params[1] if len(params) > 1 else ORG_ID
             rec = self.incidents.get(inc_id)
@@ -195,7 +196,7 @@ class _FakeIncidentDB:
                 return _Result(row=None)
             return _Result(row=dict(rec))
 
-        if "select i.*, b.name as branch_name from public.incidents i" in q:
+        if "from public.incidents i" in q and "b.name as branch_name" in q:
             return _Result(rows=list(self.incidents.values()))
 
         if "select 1 from public.branch_assignments" in q:
@@ -251,8 +252,11 @@ class _FakeIncidentDB:
         if "update public.incidents set workflow_state = 'resolved'" in q:
             uid, note, _, inc_id = params
             rec = self.incidents[inc_id]
+            resolver = self.memberships.get(uid, {})
             rec["workflow_state"] = "resolved"
             rec["resolved_by"] = uid
+            rec["resolved_by_name"] = resolver.get("full_name")
+            rec["resolved_by_role"] = resolver.get("role")
             rec["resolved_at"] = datetime.now(timezone.utc)
             rec["resolution_note"] = note
             return _Result()
@@ -471,13 +475,109 @@ def test_edge_incident_outage_batch_replay_protection_and_resolution_gating():
             assert clear_resp.status_code == 200
             assert db.incidents[inc_id]["edge_condition_state"] == "cleared"
 
-            # Now resolution succeeds
+            # Now resolution succeeds and returns resolver name & role
             resolve_resp = client.post(
                 f"/incidents/{inc_id}/resolve",
                 json={"resolution_note": "Inlet filter cleared and test cycle passed"},
             )
             assert resolve_resp.status_code == 200
-            assert resolve_resp.json()["incident"]["workflow_state"] == "resolved"
+            resolved_incident = resolve_resp.json()["incident"]
+            assert resolved_incident["workflow_state"] == "resolved"
+            assert resolved_incident["resolved_by_name"] == "Ali Tech"
+            assert resolved_incident["resolved_by_role"] == "machine_maintenance"
+
+            resolved_detail = client.get(f"/incidents/{inc_id}")
+            assert resolved_detail.status_code == 200
+            assert resolved_detail.json()["incident"]["resolved_by_name"] == "Ali Tech"
+            assert resolved_detail.json()["incident"]["resolved_by_role"] == "machine_maintenance"
+
+            # Enclosed LPG cylinder room gas_leak incident upgrades in place and blocks resolution with life-safety message
+            lpg_ep_id = uuid4()
+            lpg_open_tr = uuid4()
+            lpg_esc_tr = uuid4()
+            lpg_open_resp = client.post(
+                "/edge/incidents",
+                json={
+                    "gateway_id": str(GW_ID),
+                    "transitions": [
+                        {
+                            "transition_id": str(lpg_open_tr),
+                            "source_id": "lpg_1",
+                            "episode_id": str(lpg_ep_id),
+                            "domain": "lpg",
+                            "condition_key": "gas_leak",
+                            "transition_type": "opened",
+                            "severity": "warning",
+                            "fault_code": "GAS_WARNING",
+                            "fault_name": "Elevated LPG Gas Reading",
+                            "summary": "Elevated LPG reading in cylinder room (~42 ppm).",
+                            "rule_version": "edge-hysteresis-v1",
+                            "revision": 1,
+                            "evidence": {"estimated_ppm": 42.0, "peak_ppm": 42.0, "duration_seconds": 15},
+                            "occurred_at": (now - timedelta(seconds=70)).isoformat(),
+                        },
+                        {
+                            "transition_id": str(lpg_esc_tr),
+                            "source_id": "lpg_1",
+                            "episode_id": str(lpg_ep_id),
+                            "domain": "lpg",
+                            "condition_key": "gas_leak",
+                            "transition_type": "escalated",
+                            "severity": "critical",
+                            "fault_code": "GAS_CRITICAL",
+                            "fault_name": "Sustained LPG Leak — Fire & Explosion Hazard",
+                            "summary": "Sustained elevated LPG concentration in cylinder room (~95 ppm, peak 110 ppm over 1m 10s).",
+                            "rule_version": "edge-hysteresis-v1",
+                            "revision": 2,
+                            "evidence": {"estimated_ppm": 95.0, "peak_ppm": 110.0, "duration_seconds": 70, "sustained": True},
+                            "occurred_at": now.isoformat(),
+                        },
+                    ],
+                },
+            )
+            assert lpg_open_resp.status_code == 200
+            lpg_incidents = [i for i in db.incidents.values() if i["domain"] == "lpg"]
+            assert len(lpg_incidents) == 1
+            lpg_inc = lpg_incidents[0]
+            assert lpg_inc["severity"] == "critical"
+            assert lpg_inc["fault_code"] == "GAS_CRITICAL"
+            assert lpg_inc["evidence_snapshot"]["peak_ppm"] == 110.0
+
+            main.app.dependency_overrides[incidents._user] = lambda: {"id": LPG_TECH_ID}
+            lpg_premature = client.post(
+                f"/incidents/{lpg_inc['id']}/resolve",
+                json={"resolution_note": "Tried closing early"},
+            )
+            assert lpg_premature.status_code == 409
+            assert "fire & explosion hazard" in lpg_premature.json()["detail"].lower()
+
+            # Legacy lpg_fuel transitions are acknowledged without opening cloud incidents
+            fuel_tr = uuid4()
+            fuel_resp = client.post(
+                "/edge/incidents",
+                json={
+                    "gateway_id": str(GW_ID),
+                    "transitions": [
+                        {
+                            "transition_id": str(fuel_tr),
+                            "source_id": "lpg_1",
+                            "episode_id": str(uuid4()),
+                            "domain": "lpg",
+                            "condition_key": "lpg_fuel",
+                            "transition_type": "opened",
+                            "severity": "critical",
+                            "fault_code": "LPG_CRITICAL",
+                            "summary": "LPG reserve dropped below 5%",
+                            "rule_version": "edge-hysteresis-v1",
+                            "revision": 1,
+                            "occurred_at": now.isoformat(),
+                        }
+                    ],
+                },
+            )
+            assert fuel_resp.status_code == 200
+            assert fuel_resp.json()["accepted_ids"] == [str(fuel_tr)]
+            assert not any(i["condition_key"] == "lpg_fuel" for i in db.incidents.values())
     finally:
         main.app.dependency_overrides.clear()
 

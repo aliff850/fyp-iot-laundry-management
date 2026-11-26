@@ -28,7 +28,7 @@ def test_explain_fault_covers_e01_to_e05_and_legacy_sim_aliases():
         assert diagnosis["fault_code"] == code
         assert diagnosis["title"] == title
         assert diagnosis["source_status"] == "placeholder_washer_guide"
-        assert "placeholder" in diagnosis["disclaimer"].lower()
+        assert diagnosis["disclaimer"] == ""
         assert len(diagnosis["likely_causes"]) >= 2
         assert len(diagnosis["troubleshooting_steps"]) >= 3
         assert diagnosis["safety_precautions"]
@@ -45,15 +45,23 @@ def test_explain_fault_unknown_vendor_codes_remain_unverified():
         assert diagnosis["fault_code"] == unknown_code
         assert diagnosis["source_status"] == "unverified_vendor_code"
         assert f"Unverified vendor code ({unknown_code})" == diagnosis["title"]
-        assert "no verified manufacturer documentation" in diagnosis["disclaimer"].lower()
+        assert diagnosis["disclaimer"] == ""
 
 
 def test_explain_fault_supports_lpg_domain_and_empty_code():
     assert fault_catalog.explain_fault(None) is None
     assert fault_catalog.explain_fault("   ") is None
+    warn_lpg = fault_catalog.explain_fault("gas_warning", domain="lpg")
+    assert warn_lpg is not None
+    assert warn_lpg["disclaimer"] == ""
+    assert "do not enter the enclosed lpg cylinder room" in warn_lpg["safety_precautions"].lower()
+    assert "recalibrate" not in warn_lpg["safety_precautions"].lower()
+
     lpg = fault_catalog.explain_fault("gas_critical", domain="lpg")
     assert lpg is not None
     assert lpg["source_status"] == "spinsense_safety_rule"
+    assert lpg["disclaimer"] == ""
+    assert "IMMINENT FIRE & EXPLOSION DANGER" in lpg["safety_precautions"]
     assert "Evacuate" in lpg["safety_precautions"]
 
 
@@ -174,6 +182,7 @@ def test_list_machine_state_attaches_explainable_diagnosis_and_redacts_specialis
     assert len(machines) == 1
     machine = machines[0]
     assert machine["state"] == "error"
+    assert machine["active_incidents_count"] == 0
     assert "price_myr" not in machine["data"]["settings"]
     assert machine["diagnosis"]["fault_code"] == "E01"
     assert machine["diagnosis"]["source_status"] == "placeholder_washer_guide"

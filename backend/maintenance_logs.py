@@ -32,10 +32,17 @@ class MaintenanceLogCreateRequest(BaseModel):
     error_code: str = Field(min_length=1, max_length=64)
     technician_name: str = Field(min_length=2, max_length=120)
     work_done: str = Field(min_length=3, max_length=4000)
-    log_kind: Literal["maintenance", "incident_resolution", "tank_swap", "inspection"] = "maintenance"
+    log_kind: Literal[
+        "maintenance",
+        "incident_resolution",
+        "tank_swap",
+        "gas_calibration",
+        "set_tare_weight",
+        "inspection",
+    ] = "maintenance"
     incident_id: UUID | None = None
-    outcome: Literal["in_progress", "completed"] = "in_progress"
-    return_to_service: bool = False
+    outcome: Literal["completed"] = "completed"
+    return_to_service: Literal[True] = True
     resolve_incident: bool = False
     command_request_id: UUID | None = None
 
@@ -306,7 +313,7 @@ def _create_device_maintenance_log(
                 command_result = {"command_id": str(cmd_id), "status": cmd_row["status"]}
         else:
             session_row = conn.execute(
-                """select id from public.lpg_maintenance_sessions
+                """select id, session_kind from public.lpg_maintenance_sessions
                    where device_id = %s and status = 'active'
                    order by started_at desc
                    limit 1""",
@@ -314,7 +321,8 @@ def _create_device_maintenance_log(
             ).fetchone()
             active_lpg_session_id = session_row["id"] if session_row else None
             lpg_latest = conn.execute(
-                "select quality, cloud_received_at from public.lpg_latest where device_id = %s",
+                """select payload, quality, gateway_receipt_at, source_recorded_at, cloud_received_at
+                   from public.lpg_latest where device_id = %s""",
                 (device["id"],),
             ).fetchone()
             lpg_quality = (
@@ -347,16 +355,72 @@ def _create_device_maintenance_log(
                 ).fetchone()
                 if pending:
                     raise HTTPException(409, "Another LPG service command is pending confirmation")
+
+                is_tank_swap = body.log_kind == "tank_swap" or (
+                    isinstance(session_row, dict)
+                    and session_row.get("session_kind") == "tank_swap"
+                    and body.log_kind == "maintenance"
+                )
+                target_action = "complete_maintenance"
                 cmd_id = body.command_request_id or uuid4()
-                args = {
+
+                if is_tank_swap:
+                    from lpg_operations import DEFAULT_STABILITY_TOLERANCE_KG, _evaluate_swap_stability_from_observations, _finite_number, _utc_dt
+
+                    cfg_row = conn.execute(
+                        """select cylinder_tare_kg, rated_capacity_kg, stability_tolerance_kg
+                           from public.lpg_node_config where device_id = %s""",
+                        (device["id"],),
+                    ).fetchone() or {}
+                    tol_kg = _finite_number(cfg_row.get("stability_tolerance_kg")) or DEFAULT_STABILITY_TOLERANCE_KG
+                    raw_recent = lpg_quality.get("recent_samples")
+                    stability_rows: list[dict[str, Any]] = []
+                    if isinstance(raw_recent, list) and raw_recent:
+                        for item in raw_recent:
+                            if not isinstance(item, dict):
+                                continue
+                            sample_dt = _utc_dt(item.get("sample_at"))
+                            if sample_dt is None:
+                                continue
+                            stability_rows.append({
+                                "gateway_receipt_at": sample_dt,
+                                "source_recorded_at": sample_dt,
+                                "payload": {"gross_weight_kg": item.get("gross_weight_kg")},
+                                "quality": {
+                                    "source_time_quality": "device_reported",
+                                    "weight_valid": item.get("weight_valid", True),
+                                },
+                            })
+                    if not stability_rows:
+                        stability_rows = conn.execute(
+                            """select gateway_receipt_at, source_recorded_at, payload, quality
+                               from public.telemetry_observations
+                               where device_id = %s and branch_id = %s and organization_id = %s
+                               order by gateway_receipt_at desc, id desc
+                               limit 10""",
+                            (device["id"], branch_id, member["organization_id"]),
+                        ).fetchall()
+                    stability = _evaluate_swap_stability_from_observations(
+                        stability_rows,
+                        tolerance_kg=tol_kg,
+                        now=datetime.now(timezone.utc),
+                    )
+                    if not stability.get("stable"):
+                        raise HTTPException(
+                            409,
+                            str(stability.get("reason") or "Scale reading is not stable yet"),
+                        )
+
+                args: dict[str, Any] = {
                     "completed_by": technician_name[:80],
                     "service_note": " ".join(work_done.split())[:240],
                 }
+
                 conn.execute(
                     """insert into public.lpg_commands
                        (id, device_id, gateway_id, branch_id, organization_id, action,
                         arguments, status, actor_user_id, actor_label, expires_at)
-                       values (%s, %s, %s, %s, %s, 'complete_maintenance', %s, 'queued', %s, %s, now() + interval '45 seconds')
+                       values (%s, %s, %s, %s, %s, %s, %s, 'queued', %s, %s, now() + interval '45 seconds')
                        on conflict (id) do nothing""",
                     (
                         cmd_id,
@@ -364,6 +428,7 @@ def _create_device_maintenance_log(
                         device["gateway_id"],
                         branch_id,
                         member["organization_id"],
+                        target_action,
                         Jsonb(args),
                         user["id"],
                         technician_name[:80],
@@ -374,10 +439,11 @@ def _create_device_maintenance_log(
                        where id = %s and branch_id = %s and actor_user_id = %s""",
                     (cmd_id, branch_id, user["id"]),
                 ).fetchone()
-                if not cmd_row or cmd_row["action"] != "complete_maintenance" or cmd_row["device_id"] != device["id"]:
+                if not cmd_row or cmd_row["action"] != target_action or cmd_row["device_id"] != device["id"]:
                     raise HTTPException(409, "Command request ID is already used")
                 command_result = {"command_id": str(cmd_id), "status": cmd_row["status"]}
 
+        active_incident = None
         if body.incident_id:
             active_incident = conn.execute(
                 """select id, workflow_state, edge_condition_state
@@ -390,19 +456,27 @@ def _create_device_maintenance_log(
             ).fetchone()
             if not active_incident:
                 raise HTTPException(404, "Target incident not found for this device")
-        else:
+        elif not is_lpg:
             active_incident = conn.execute(
                 """select id, workflow_state, edge_condition_state
                    from public.incidents
                    where device_id = %s
                      and organization_id = %s
-                     and domain = %s
+                     and domain = 'machine'
+                     and condition_key = 'machine_fault'
+                     and edge_condition_state = 'active'
                      and workflow_state <> 'resolved'
                    order by opened_at desc
-                   limit 1""",
-                (device["id"], member["organization_id"], domain),
+                   limit 1
+                   for update""",
+                (device["id"], member["organization_id"]),
             ).fetchone()
 
+        effective_log_kind = (
+            "incident_resolution"
+            if (not is_lpg and active_incident and body.log_kind == "maintenance")
+            else body.log_kind
+        )
         reference_code = _generate_reference_code()
         fault_name = _resolve_fault_name(error_code, latest_payload, domain=domain)
         row = conn.execute(
@@ -425,7 +499,7 @@ def _create_device_maintenance_log(
                 device["source_id"],
                 device["label"],
                 domain,
-                body.log_kind,
+                effective_log_kind,
                 active_lpg_session_id,
                 active_incident["id"] if active_incident else None,
                 error_code,

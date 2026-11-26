@@ -441,3 +441,28 @@ def test_lpg_general_service_maintenance_start_and_complete_without_weight_check
     assert status2 == "succeeded" and reason2 is None
     assert payload2["completed_by"] == "Farah LPG"
     assert state["sessions"][-1]["status"] == "completed"
+
+
+def test_lpg_set_tare_weight_updates_config_and_allows_bench_zero_tare(monkeypatch):
+    worker, state, _ = _make_worker(monkeypatch)
+    status, reason, payload = worker._execute_lpg_command({
+        "command_id": str(uuid.uuid4()),
+        "source_id": "lpg-main",
+        "action": "set_tare_weight",
+        "arguments": {"tare_kg": 0.0, "rated_capacity_kg": 5.0, "updated_by": "Bench Tech"},
+    })
+    assert status == "succeeded" and reason is None
+    assert payload == {"tare_kg": 0.0, "rated_capacity_kg": 5.0, "updated_by": "Bench Tech"}
+    assert state["configs"][("gw-1", "lpg-main")]["cylinder_tare_kg"] == 0.0
+    assert state["configs"][("gw-1", "lpg-main")]["rated_capacity_kg"] == 5.0
+    assert state["devices"][("gw-1", "lpg-main")]["capacity_kg"] == 5.0
+
+    # Negative tare rejected cleanly
+    status_bad, reason_bad, _ = worker._execute_lpg_command({
+        "command_id": str(uuid.uuid4()),
+        "source_id": "lpg-main",
+        "action": "set_tare_weight",
+        "arguments": {"tare_kg": -1.0, "rated_capacity_kg": 14.0},
+    })
+    assert status_bad == "failed"
+    assert "tare" in (reason_bad or "").lower()

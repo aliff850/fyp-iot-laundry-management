@@ -1,14 +1,13 @@
 "use client";
 
 import React, { useState } from "react";
-import { Flame, Wrench } from "lucide-react";
+import Link from "next/link";
+import { AlertTriangle, ArrowRight, Wrench } from "lucide-react";
 import type {
   SafetyNodeDevice,
   SafetyNodeObservation,
   SafetyNodeValues,
 } from "@/lib/auth/business";
-import { LpgGasBaselineModal } from "./LpgGasBaselineModal";
-import { LpgTankSwapModal } from "./LpgTankSwapModal";
 import { ServiceAndIncidentModal } from "@/components/workspace/common/ServiceAndIncidentModal";
 
 export interface LpgCylinderCardProps {
@@ -143,8 +142,6 @@ export function LpgCylinderCard({
   defaultActorName,
   onRefresh,
 }: LpgCylinderCardProps) {
-  const [swapModalOpen, setSwapModalOpen] = useState(false);
-  const [gasModalOpen, setGasModalOpen] = useState(false);
   const [serviceModalOpen, setServiceModalOpen] = useState(false);
   const observation = device.observation;
   const freshness = getFreshnessInfo(observation);
@@ -240,6 +237,14 @@ export function LpgCylinderCard({
             ? "stale"
             : "offline");
 
+  const activeIncidentsCount =
+    typeof device.active_incidents_count === "number"
+      ? device.active_incidents_count
+      : 0;
+  const incidentsHref = branchId
+    ? `/branches/${encodeURIComponent(branchId)}/incidents`
+    : null;
+
   const modeBadge =
     operatingMode === "maintenance"
       ? {
@@ -305,6 +310,12 @@ export function LpgCylinderCard({
 
           <div className="flex shrink-0 flex-col items-start gap-1.5 sm:items-end">
             <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+              {activeIncidentsCount > 0 && (
+                <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-negative/40 bg-negative/15 px-2.5 py-1 text-xs font-semibold text-negative">
+                  <AlertTriangle className="size-3.5 shrink-0" aria-hidden="true" />
+                  <span>Attention!</span>
+                </span>
+              )}
               {modeBadge && (
                 <span
                   className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border px-2.5 py-1 text-xs font-medium ${modeBadge.className}`}
@@ -327,6 +338,34 @@ export function LpgCylinderCard({
           </div>
         </div>
       </div>
+
+      {activeIncidentsCount > 0 && (
+        <div
+          role="alert"
+          className="flex flex-col gap-2.5 rounded-md border border-negative/40 bg-negative/10 p-3 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-ink">
+            <AlertTriangle
+              className="size-4 shrink-0 text-negative"
+              aria-hidden="true"
+            />
+            <span className="tabular-nums">
+              {`This device has ${activeIncidentsCount} active ${
+                activeIncidentsCount === 1 ? "incident" : "incidents"
+              }.`}
+            </span>
+          </div>
+          {incidentsHref ? (
+            <Link
+              href={incidentsHref}
+              className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-1.5 rounded-md border border-negative/40 bg-raised px-3.5 py-2 text-xs font-semibold text-ink transition-colors hover:border-negative/60 hover:bg-control focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:w-auto"
+            >
+              <span>View incidents</span>
+              <ArrowRight className="size-3.5 shrink-0" aria-hidden="true" />
+            </Link>
+          ) : null}
+        </div>
+      )}
 
       {/* Tier 2: Horizontal Telemetry & Provenance Reading Grid */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -439,77 +478,28 @@ export function LpgCylinderCard({
 
         {branchId && (
           <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-            <button
-              type="button"
-              onClick={() => setGasModalOpen(true)}
-              className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-sm font-medium text-ink transition-colors duration-150 enabled:hover:bg-navy-hover enabled:active:bg-navy-selected motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted motion-reduce:transition-none sm:w-auto"
-            >
-              <Flame className="size-4 shrink-0 text-muted" aria-hidden="true" />
-              <span>
-                {device.gas_interpretation?.ppm_calibrated || device.lpg_config?.mq6_ro_kohm != null
-                  ? "Recalibrate gas"
-                  : "Calibrate clean air"}
-              </span>
-            </button>
-
             {isMaintenance ? (
-              isTankSwapSession ? (
-                <button
-                  type="button"
-                  onClick={() => setSwapModalOpen(true)}
-                  className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-3.5 py-2 text-sm font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted motion-reduce:transition-none sm:w-auto"
-                >
-                  <Wrench className="size-4 shrink-0" aria-hidden="true" />
-                  <span>Complete tank swap</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setServiceModalOpen(true)}
-                  className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-3.5 py-2 text-sm font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted motion-reduce:transition-none sm:w-auto"
-                >
-                  <Wrench className="size-4 shrink-0" aria-hidden="true" />
-                  <span>Complete maintenance &amp; log</span>
-                </button>
-              )
+              <button
+                type="button"
+                onClick={() => setServiceModalOpen(true)}
+                className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-3.5 py-2 text-sm font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted motion-reduce:transition-none sm:w-auto"
+              >
+                <Wrench className="size-4 shrink-0" aria-hidden="true" />
+                <span>Complete maintenance &amp; log</span>
+              </button>
             ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setServiceModalOpen(true)}
-                  className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-sm font-medium text-ink transition-colors duration-150 enabled:hover:bg-navy-hover enabled:active:bg-navy-selected motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted motion-reduce:transition-none sm:w-auto"
-                >
-                  <Wrench className="size-4 shrink-0 text-warning" aria-hidden="true" />
-                  <span>Maintenance / Log service</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSwapModalOpen(true)}
-                  className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-ink bg-ink px-3.5 py-2 text-sm font-semibold text-surface transition-colors duration-150 enabled:hover:border-muted enabled:hover:bg-muted motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:border-control disabled:bg-raised disabled:text-muted motion-reduce:transition-none sm:w-auto"
-                >
-                  <Wrench className="size-4 shrink-0" aria-hidden="true" />
-                  <span>Swap tank</span>
-                </button>
-              </>
+              <button
+                type="button"
+                onClick={() => setServiceModalOpen(true)}
+                className="inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-3.5 py-2 text-sm font-medium text-ink transition-colors duration-150 enabled:hover:bg-navy-hover enabled:active:bg-navy-selected motion-safe:enabled:active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted motion-reduce:transition-none sm:w-auto"
+              >
+                <Wrench className="size-4 shrink-0 text-warning" aria-hidden="true" />
+                <span>Maintenance / Log service</span>
+              </button>
             )}
           </div>
         )}
       </div>
-
-      {swapModalOpen && branchId && (
-        <LpgTankSwapModal
-          open
-          mode={isMaintenance ? "complete" : "start"}
-          branchId={branchId}
-          device={device}
-          defaultActorName={defaultActorName}
-          onClose={() => setSwapModalOpen(false)}
-          onConfirmed={async () => {
-            if (onRefresh) await onRefresh();
-          }}
-        />
-      )}
 
       {serviceModalOpen && branchId && (
         <ServiceAndIncidentModal
@@ -520,6 +510,7 @@ export function LpgCylinderCard({
           assetLabel={device.label}
           assetStatus={operatingMode.toUpperCase()}
           isMaintenanceMode={isMaintenance}
+          lpgDevice={device}
           defaultTechnicianName={defaultActorName ?? ""}
           defaultErrorCode={
             gasInfo?.gas_condition === "critical"
@@ -530,19 +521,6 @@ export function LpgCylinderCard({
           }
           onClose={() => setServiceModalOpen(false)}
           onCompleted={async () => {
-            if (onRefresh) await onRefresh();
-          }}
-        />
-      )}
-
-      {gasModalOpen && branchId && (
-        <LpgGasBaselineModal
-          open
-          branchId={branchId}
-          device={device}
-          defaultActorName={defaultActorName}
-          onClose={() => setGasModalOpen(false)}
-          onConfirmed={async () => {
             if (onRefresh) await onRefresh();
           }}
         />

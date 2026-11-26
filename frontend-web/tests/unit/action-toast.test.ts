@@ -184,6 +184,7 @@ describe("Bottom-left floating ActionToast system", () => {
     );
     expect(maintHtml).toContain("Maintenance Active");
     expect(maintHtml).toContain("Complete service &amp; return online");
+    expect(maintHtml).not.toContain("Stay in maintenance");
     expect(maintHtml).not.toContain('role="status"');
     expect(maintHtml).not.toContain('role="alert"');
   });

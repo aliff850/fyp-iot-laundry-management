@@ -365,3 +365,111 @@ def test_lpg_maintenance_mode_pauses_gas_and_temp_and_low_fuel_does_not_open_inc
     )
     assert fuel_tr is not None and fuel_tr["transition_type"] == "cleared"
     assert cleared_fuel.active_episode_id is None
+
+
+def test_short_ppm_burst_vs_sustained_leak_auto_escalation_and_heartbeat():
+    tracker = lpg_interpreter.HysteresisStateTracker()
+    base = datetime(2026, 11, 26, 9, 0, 0, tzinfo=timezone.utc)
+    cfg = {"gas_warn_ppm": 20.0, "gas_crit_ppm": 80.0}
+
+    # 1. Fleeting 2-sample (<15s) blip that drops back to normal creates ZERO incidents
+    st = lpg_interpreter.ConditionTrackerState("gw-1", "lpg_room_1", "gas_concentration")
+    for idx, (cond, ppm) in enumerate([("warning", 28.0), ("warning", 31.0), ("normal", 8.0)]):
+        st, tr = tracker.evaluate_gas_concentration(
+            st,
+            gas_info={"gas_condition": cond, "estimated_ppm": ppm},
+            node_config=cfg,
+            sample_identity=f"blip:{idx}",
+            sample_at=base + timedelta(seconds=idx * 5),
+        )
+        assert tr is None
+    assert st.active_episode_id is None
+
+    # 2. Short PPM burst (15s-30s < 60s) opens ONE Warning incident and clears as subsided
+    for idx in range(3):
+        st, tr = tracker.evaluate_gas_concentration(
+            st,
+            gas_info={"gas_condition": "warning", "estimated_ppm": 32.0 + idx * 3},
+            node_config=cfg,
+            sample_identity=f"burst:{idx}",
+            sample_at=base + timedelta(seconds=20 + idx * 5),
+        )
+    assert tr is not None
+    assert tr["transition_type"] == "opened"
+    assert tr["severity"] == "warning"
+    assert tr["fault_code"] == "GAS_WARNING"
+    burst_ep = tr["episode_id"]
+
+    # Drops below warn_recover (17.0 ppm) within 25s (< 60s) -> cleared without escalating to critical
+    for idx in range(3):
+        st, tr = tracker.evaluate_gas_concentration(
+            st,
+            gas_info={"gas_condition": "normal", "estimated_ppm": 6.5},
+            node_config=cfg,
+            sample_identity=f"burst_clr:{idx}",
+            sample_at=base + timedelta(seconds=35 + idx * 5),
+        )
+    assert tr is not None
+    assert tr["transition_type"] == "cleared"
+    assert tr["episode_id"] == burst_ep
+    assert tr["severity"] == "warning"
+    assert tr["evidence"]["sustained"] is False
+    assert tr["evidence"]["peak_ppm"] == 38.0
+    assert "subsided" in tr["summary"].lower()
+
+    # 3. Sustained elevated PPM (>= 60s continuous warning) upgrades the SAME incident to Critical
+    t2 = base + timedelta(minutes=5)
+    for idx in range(3):
+        st, tr = tracker.evaluate_gas_concentration(
+            st,
+            gas_info={"gas_condition": "warning", "estimated_ppm": 35.0},
+            node_config=cfg,
+            sample_identity=f"leak:{idx}",
+            sample_at=t2 + timedelta(seconds=idx * 5),
+        )
+    assert tr is not None and tr["transition_type"] == "opened" and tr["severity"] == "warning"
+    leak_ep = tr["episode_id"]
+    opened_at = t2 + timedelta(seconds=10)
+
+    # Stay elevated for 55s (< 60s): still warning, no duplicate episode
+    for sec in range(5, 60, 5):
+        st, tr = tracker.evaluate_gas_concentration(
+            st,
+            gas_info={"gas_condition": "warning", "estimated_ppm": 42.0},
+            node_config=cfg,
+            sample_identity=f"leak_hold:{sec}",
+            sample_at=opened_at + timedelta(seconds=sec),
+        )
+        assert tr is None
+        assert st.active_episode_id == leak_ep
+
+    # At 60s continuous elevated PPM -> SAME episode escalates to GAS_CRITICAL!
+    st, esc_tr = tracker.evaluate_gas_concentration(
+        st,
+        gas_info={"gas_condition": "warning", "estimated_ppm": 46.0},
+        node_config=cfg,
+        sample_identity="leak_60s",
+        sample_at=opened_at + timedelta(seconds=60),
+    )
+    assert esc_tr is not None
+    assert esc_tr["episode_id"] == leak_ep
+    assert esc_tr["transition_type"] == "escalated"
+    assert esc_tr["severity"] == "critical"
+    assert esc_tr["fault_code"] == "GAS_CRITICAL"
+    assert esc_tr["evidence"]["sustained"] is True
+    assert esc_tr["evidence"]["peak_ppm"] == 46.0
+
+    # Another 60s of sustained gas emits live heartbeat update on the SAME episode (no downgrade, no duplicate)
+    st, hb_tr = tracker.evaluate_gas_concentration(
+        st,
+        gas_info={"gas_condition": "warning", "estimated_ppm": 52.0},
+        node_config=cfg,
+        sample_identity="leak_120s",
+        sample_at=opened_at + timedelta(seconds=120),
+    )
+    assert hb_tr is not None
+    assert hb_tr["episode_id"] == leak_ep
+    assert hb_tr["transition_type"] == "updated"
+    assert hb_tr["severity"] == "critical"
+    assert hb_tr["evidence"]["peak_ppm"] == 52.0
+    assert hb_tr["evidence"]["duration_seconds"] == 120

@@ -437,8 +437,11 @@ def test_durable_machine_and_lpg_maintenance_history_shown_after_returning_to_id
     assert "Ali Tech" in log_ev["detail"]
     assert "·" not in log_ev["detail"]
 
-    assert f"lpgmaint:{lpg_sess_id}:completed" in by_id
-    lpg_ev = by_id[f"lpgmaint:{lpg_sess_id}:completed"]
-    assert lpg_ev["kind"] == "lpg_maintenance_completed"
-    assert lpg_ev["severity"] == "positive"
+    assert f"lpgmaint:{lpg_sess_id}" in by_id
+    assert f"lpgmaint:{lpg_sess_id}:completed" not in by_id
+    lpg_ev = by_id[f"lpgmaint:{lpg_sess_id}"]
+    assert lpg_ev["kind"] == "lpg_maintenance"
+    assert lpg_ev["severity"] == "warning"
+    assert lpg_ev["title"] == "LPG set to maintenance"
+    assert lpg_ev["active"] is False
     assert "Owner Admin" in lpg_ev["detail"]

@@ -112,7 +112,7 @@ describe("incident workflow and deep links", () => {
     ).toBe("/branches/branch-1/lpg");
   });
 
-  it("keeps physical condition distinct from workflow state and blocks resolve while active", () => {
+  it("renders streamlined header, incident explanation without placeholders, and response controls", () => {
     const ownerHtml = renderToString(
       React.createElement(IncidentDetailClient, {
         branchId: "branch-1",
@@ -121,24 +121,78 @@ describe("incident workflow and deep links", () => {
         initialIncident: sampleIncident,
       }),
     );
-    expect(ownerHtml).toContain("Active Fault / Condition");
-    expect(ownerHtml).toContain("Physical edge condition must report Cleared before this incident can be resolved.");
-    expect(ownerHtml).toContain("Assign Specialist Task");
-    expect(ownerHtml).toContain("Water Inlet Failure");
-    expect(ownerHtml).toContain("Placeholder guide");
-    const resolveBtn = ownerHtml.match(/<button[^>]*>Resolve Incident<\/button>/)?.[0] ?? "";
-    expect(resolveBtn).toContain("disabled");
+    const ownerText = ownerHtml.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
+    expect(ownerText).toContain("Back to Incidents");
+    expect(ownerHtml).toContain('href="/branches/branch-1/incidents"');
+    expect(ownerText).toContain("Demo Washer 01");
+    expect(ownerText).toContain("INC-7A2F10");
+    expect(ownerText).toContain("Critical");
+    expect(ownerText).toContain("Water Inlet Failure");
+    expect(ownerText).toContain("Incident Response");
+    expect(ownerText).toContain("Go to Machines");
+    expect(ownerHtml).toContain('href="/branches/branch-1/machines"');
+    expect(ownerText).toContain("Complete Service & Return Online");
+    expect(ownerText).not.toContain("Technician observation");
+    expect(ownerText).not.toContain("Mark incident as resolved");
 
-    const techHtml = renderToString(
+    // Explicitly verify removed legacy clutter & placeholders
+    expect(ownerText).not.toContain("Placeholder guide");
+    expect(ownerText).not.toContain("Placeholder troubleshooting guide");
+    expect(ownerText).not.toContain("Physical Condition (Edge)");
+    expect(ownerText).not.toContain("Staff Workflow State");
+    expect(ownerText).not.toContain("edge-hysteresis-v1");
+    expect(ownerText).not.toContain("Assign Specialist Task");
+    expect(ownerText).not.toContain("Acknowledge Incident");
+    expect(ownerText).not.toContain("Audit Timeline");
+    expect(ownerText).not.toContain("Linked Customer Reports");
+    expect(ownerText).not.toContain("Service Asset & Log Work");
+    expect(ownerText).not.toContain("Back to Machines");
+
+    // Enclosed fireproof LPG cylinder room active gas leak shows life-safety warning, telemetry, and disabled resolve button
+    const activeGasIncident: IncidentDetail = {
+      ...sampleIncident,
+      domain: "lpg",
+      condition_key: "gas_leak",
+      asset_name: "Primary Weighing Station",
+      source_id: "esp32-lpg-01",
+      fault_code: "GAS_CRITICAL",
+      fault_name: "Sustained LPG Leak — Fire & Explosion Hazard",
+      summary: "Sustained elevated LPG concentration in cylinder room (~145 ppm).",
+      evidence_snapshot: {
+        estimated_ppm: 145.2,
+        peak_ppm: 180.6,
+        duration_seconds: 125,
+      },
+      diagnosis: {
+        fault_code: "GAS_CRITICAL",
+        title: "Sustained / Critical LPG Leak — Fire & Explosion Hazard",
+        source_status: "spinsense_safety_rule",
+        disclaimer: "",
+        plain_explanation: "Sustained elevated LPG gas concentration in the enclosed fireproof cylinder room.",
+        likely_causes: ["Active cylinder valve leak"],
+        safety_precautions: "IMMINENT FIRE & EXPLOSION HAZARD: Evacuate immediately.",
+        troubleshooting_steps: ["Shut off external main LPG isolation valve."],
+      },
+    };
+    const gasHtml = renderToString(
       React.createElement(IncidentDetailClient, {
         branchId: "branch-1",
-        userId: "tech-1",
-        userRole: "machine_maintenance",
-        initialIncident: sampleIncident,
+        userId: "owner-1",
+        userRole: "owner",
+        initialIncident: activeGasIncident,
       }),
     );
-    expect(techHtml).not.toContain("Assign Specialist Task");
-    expect(techHtml).toContain("Mark In Progress");
+    const gasText = gasHtml.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
+    expect(gasText).toContain("Inspect Device");
+    expect(gasText).toContain("Technician observation");
+    expect(gasText).toContain("Mark incident as resolved");
+    const gasResolveBtn = gasHtml.match(/<button[^>]*>Mark incident as resolved<\/button>/)?.[0] ?? "";
+    expect(gasResolveBtn).toContain("disabled");
+    expect(gasText).toContain("IMMINENT FIRE & EXPLOSION HAZARD");
+    expect(gasText).toContain("Sustained leak active");
+    expect(gasText).toContain("145.2 ppm");
+    expect(gasText).toContain("Peak 180.6 ppm");
+    expect(gasHtml).toContain('href="/branches/branch-1/lpg"');
   });
 
   it("formats SSR timestamps deterministically in MYT without locale hydration drift", () => {
@@ -148,17 +202,29 @@ describe("incident workflow and deep links", () => {
     expect(formatMytTime("2026-11-23T16:15:05Z")).toBe("00:15:05 MYT");
     expect(formatMytTime(null, "Never")).toBe("Never");
 
-    const ownerHtml = renderToString(
+    const resolvedHtml = renderToString(
       React.createElement(IncidentDetailClient, {
         branchId: "branch-1",
         userId: "owner-1",
         userRole: "owner",
-        initialIncident: sampleIncident,
+        initialIncident: {
+          ...sampleIncident,
+          edge_condition_state: "cleared",
+          workflow_state: "resolved",
+          resolved_by_name: "Ali Tech",
+          resolved_by_role: "machine_maintenance",
+          resolved_at: "2026-11-23T09:20:00Z",
+          resolution_note: "Replaced inlet solenoid and verified normal fill.",
+        },
       }),
     );
-    const text = ownerHtml.replace(/<!--.*?-->/g, "");
-    expect(text).toContain("Last edge sample: 23 Nov, 17:05 MYT");
-    expect(text).toContain("Opened: 23 Nov, 17:00 MYT");
+    const text = resolvedHtml.replace(/<!--.*?-->/g, "");
+    expect(text).toContain("Resolved");
+    expect(text).toContain("Resolved by Ali Tech");
+    expect(text).toContain("Machine Maintenance");
+    expect(text).not.toContain(">Incident resolved<");
+    expect(text).toContain("23 Nov, 17:20 MYT");
+    expect(text).toContain("Replaced inlet solenoid and verified normal fill.");
     expect(text).not.toMatch(/\b(?:AM|PM|am|pm)\b/);
   });
 });

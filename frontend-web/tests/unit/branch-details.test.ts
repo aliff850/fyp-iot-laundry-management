@@ -36,6 +36,7 @@ import { ActionToast } from "@/components/workspace/common/ActionToast";
 import { BranchDetailsForm } from "@/components/workspace/branches/BranchDetailsForm";
 import { BranchDirectoryCard } from "@/components/workspace/branches/BranchDirectoryList";
 import { OrganizationLogoCard } from "@/components/workspace/account/OrganizationLogoCard";
+import { BranchWorkspaceShell } from "@/components/workspace/layout/BranchWorkspaceShell";
 import {
   deleteBranchImageAction,
   setBranchCoverImageAction,
@@ -89,6 +90,16 @@ describe("BranchDetailsForm component", () => {
     );
     const text = raw.replace(/<!--.*?-->/g, "");
     expect(text).toContain("Branch Identity &amp; Status");
+    expect(text).toContain("Customer App Visibility");
+    expect(text.indexOf("Branch Identity &amp; Status")).toBeLessThan(
+      text.indexOf("Customer App Visibility"),
+    );
+    expect(text.indexOf("Customer App Visibility")).toBeLessThan(
+      text.indexOf("Operating Hours"),
+    );
+    expect(text).not.toContain(
+      "Doing so will make the branch publicly available for customers. Please make sure all details are correct",
+    );
     expect(text).toContain("MSU Shah Alam");
     expect(text).toContain("1 Jalan University, Seksyen 13");
     expect(text).toContain("Shah Alam");
@@ -110,6 +121,16 @@ describe("BranchDetailsForm component", () => {
     );
     const text = raw.replace(/<!--.*?-->/g, "");
     expect(text).toContain("Branch Identity &amp; Status");
+    expect(text).toContain("Customer App Visibility");
+    expect(text.indexOf("Branch Identity &amp; Status")).toBeLessThan(
+      text.indexOf("Customer App Visibility"),
+    );
+    expect(text.indexOf("Customer App Visibility")).toBeLessThan(
+      text.indexOf("Operating Hours"),
+    );
+    expect(text).not.toContain(
+      "Doing so will make the branch publicly available for customers. Please make sure all details are correct",
+    );
     expect(text).toContain("MSU Shah Alam");
     expect(text).toContain("Operating Hours");
     expect(text).toContain("Address &amp; Location");
@@ -141,10 +162,48 @@ describe("BranchDetailsForm component", () => {
       }),
     );
     const text = raw.replace(/<!--.*?-->/g, "");
+    expect(text).toContain("Customer App Visibility");
     expect(text).toContain("Customer directory visibility");
     expect(text).toContain("Published in customer app");
+    expect(text).toContain(
+      "Doing so will make the branch publicly available for customers. Please make sure all details are correct",
+    );
     expect(text).toContain("Use structured weekly schedule for Open now status");
     expect(text).toContain("Apply daily hours to Mon–Sun");
+  });
+
+  it("renders Published and Unpublished status tag in BranchWorkspaceShell header", () => {
+    const unpublishedHeader = renderToString(
+      React.createElement(
+        BranchWorkspaceShell,
+        {
+          branch: { ...mockBranch, is_published: false },
+          activeTab: "details",
+          userRole: "owner",
+          organizationName: "SpinSense HQ",
+          hideIncidentsBanner: true,
+        },
+        React.createElement("div", null, "Details Content"),
+      ),
+    );
+    expect(unpublishedHeader).toContain("Open to customers");
+    expect(unpublishedHeader).toContain(">Unpublished<");
+
+    const publishedHeader = renderToString(
+      React.createElement(
+        BranchWorkspaceShell,
+        {
+          branch: { ...mockBranch, is_published: true },
+          activeTab: "details",
+          userRole: "owner",
+          organizationName: "SpinSense HQ",
+          hideIncidentsBanner: true,
+        },
+        React.createElement("div", null, "Details Content"),
+      ),
+    );
+    expect(publishedHeader).toContain("Open to customers");
+    expect(publishedHeader).toContain(">Published<");
   });
 
   it("renders OrganizationLogoCard with initials fallback and uploaded logo", () => {

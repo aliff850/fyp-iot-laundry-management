@@ -8,6 +8,7 @@ import 'package:http/testing.dart';
 import 'package:mobile_app/screens/discovery_screen.dart';
 import 'package:mobile_app/services/public_api_service.dart';
 import 'package:mobile_app/theme/spinsense_theme.dart';
+import 'package:mobile_app/widgets/spinsense_brand_mark.dart';
 
 class _BlankMemoryTileProvider extends TileProvider {
   static final Uint8List _transparentPng = Uint8List.fromList(<int>[
@@ -61,6 +62,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    expect(find.byType(SpinSenseBrandMark), findsOneWidget);
     expect(find.text('SpinSense'), findsOneWidget);
     expect(find.text('Near me'), findsOneWidget);
     expect(find.text('No laundromat branches are published right now.'), findsOneWidget);

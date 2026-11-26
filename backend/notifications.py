@@ -607,20 +607,19 @@ def _build_lpg_maintenance_session_events(
                 "active": True,
             })
         elif status == "completed":
-            occurred_at = (
-                _utc_iso(_utc_dt(row.get("completed_at")))
-                or _utc_iso(_utc_dt(row.get("started_at")))
-                or checked_at_iso
-            )
+            occurred_at = _utc_iso(_utc_dt(row.get("started_at"))) or checked_at_iso
+            detail = f"{label} {action_label} started by {started_by}"
+            if note:
+                detail = f"{detail} ({note})"
             events.append({
-                "id": f"lpgmaint:{sess_id}:completed",
+                "id": f"lpgmaint:{sess_id}",
                 "branch_id": branch_id_str,
                 "branch_name": branch_name,
                 "category": "lpg",
-                "kind": "lpg_maintenance_completed",
-                "severity": "positive",
-                "title": "LPG maintenance completed",
-                "detail": f"{label} {action_label} completed by {completed_by}",
+                "kind": "lpg_maintenance",
+                "severity": "warning",
+                "title": "LPG set to maintenance",
+                "detail": detail,
                 "source_id": source_id,
                 "device_label": label,
                 "occurred_at": occurred_at,
@@ -719,7 +718,7 @@ def get_notifications(
                    left join lateral (
                        select id from public.incidents inc
                        where inc.device_id = d.id
-                         and (inc.edge_condition_state = 'active' or inc.workflow_state <> 'resolved')
+                         and inc.edge_condition_state = 'active'
                        order by inc.opened_at desc
                        limit 1
                    ) inc on true

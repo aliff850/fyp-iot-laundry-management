@@ -1,10 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
+import { ServiceAndIncidentModal } from "@/components/workspace/common/ServiceAndIncidentModal";
 import { LpgCylinderCard } from "@/components/workspace/lpg/LpgCylinderCard";
-import { LpgGasBaselineModal } from "@/components/workspace/lpg/LpgGasBaselineModal";
 import { LpgSafetyPanel } from "@/components/workspace/lpg/LpgSafetyPanel";
-import { LpgTankSwapModal } from "@/components/workspace/lpg/LpgTankSwapModal";
 import { LpgWorkspaceView } from "@/components/workspace/lpg/LpgWorkspaceView";
 import type { LpgSafetySnapshot, SafetyNodeDevice } from "@/lib/auth/business";
 
@@ -16,9 +15,10 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/app/branches/[branchId]/lpg/actions", () => ({
   refreshBranchLpgSafety: vi.fn(),
   fetchLpgMaintenanceStatus: vi.fn(),
-  startBranchLpgTankSwap: vi.fn(),
-  completeBranchLpgTankSwap: vi.fn(),
+  startBranchLpgServiceMaintenance: vi.fn(),
+  completeBranchLpgServiceMaintenance: vi.fn(),
   calibrateBranchLpgGasBaseline: vi.fn(),
+  setBranchLpgTareWeight: vi.fn(),
   fetchLpgCommandStatus: vi.fn(),
 }));
 
@@ -179,6 +179,22 @@ describe("LpgCylinderCard component", () => {
     expect(text).toContain("No approved observation");
     expect(text).toContain("Cloud delivery unknown");
   });
+
+  it("renders Attention! badge and full-width active incidents warning banner without font-mono", () => {
+    const raw = ReactDOMServer.renderToString(
+      React.createElement(LpgCylinderCard, {
+        device: { ...freshDevice, active_incidents_count: 2 },
+        branchId: snapshotFixture.branch_id,
+      }),
+    );
+    const text = raw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
+
+    expect(text).toContain("Attention!");
+    expect(text).toContain("This device has 2 active incidents.");
+    expect(text).toContain("View incidents");
+    expect(raw).toContain(`href="/branches/${snapshotFixture.branch_id}/incidents"`);
+    expect(raw).not.toContain("font-mono");
+  });
 });
 
 describe("LpgSafetyPanel & LpgWorkspaceView", () => {
@@ -191,7 +207,7 @@ describe("LpgSafetyPanel & LpgWorkspaceView", () => {
     expect(text).toContain("No approved LPG or safety nodes on this branch.");
   });
 
-  it("renders feed of approved safety nodes and polling view container", () => {
+  it("renders unified Maintenance / Log service button without redundant Swap tank or Recalibrate gas buttons", () => {
     const raw = ReactDOMServer.renderToString(
       React.createElement(LpgWorkspaceView, {
         initialSnapshot: snapshotFixture,
@@ -206,20 +222,19 @@ describe("LpgSafetyPanel & LpgWorkspaceView", () => {
     expect(text).toContain("Primary Weighing Station");
     expect(text).toContain("Reserve Tank Node");
     expect(text).toContain("Unreported Station");
-    expect(text).toContain("Calibrate clean air");
-    expect(text).toContain("Swap tank");
     expect(text).toContain("Maintenance / Log service");
+    expect(text).not.toContain("Swap tank");
+    expect(text).not.toContain("Calibrate clean air");
+    expect(text).not.toContain("Recalibrate gas");
     expect(text).toContain("Online");
     expect(raw).toContain("min-h-11");
     expect(raw).toContain("bg-navy");
-    expect(raw).toContain("bg-ink");
-    expect(raw).toContain("text-surface");
     expect(raw).not.toContain("size-2 rounded-full");
     expect(raw).not.toContain("bg-control");
     expect(raw).not.toContain("font-mono");
   });
 
-  it("switches footer labels to Recalibrate gas and Complete tank swap when calibrated & in maintenance", () => {
+  it("switches single footer button to Complete maintenance & log when in maintenance", () => {
     const calibratedMaintDevice: SafetyNodeDevice = {
       ...freshDevice,
       maintenance_mode: true,
@@ -254,9 +269,12 @@ describe("LpgSafetyPanel & LpgWorkspaceView", () => {
     );
     const text = raw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
 
-    expect(text).toContain("Recalibrate gas");
-    expect(text).toContain("Complete tank swap");
+    expect(text).toContain("Complete maintenance & log");
+    expect(text).not.toContain("Recalibrate gas");
+    expect(text).not.toContain("Complete tank swap");
     expect(text).toContain("Morning cylinder swap");
+    expect(raw).toContain("bg-ink");
+    expect(raw).toContain("text-surface");
   });
 
   it("renders Low mode reminder badge when fuel falls below 15% without creating an Incident badge", () => {
@@ -285,67 +303,112 @@ describe("LpgSafetyPanel & LpgWorkspaceView", () => {
   });
 });
 
-describe("LpgTankSwapModal & LpgGasBaselineModal", () => {
-  it("renders Start & Complete tank swap dialogs with pre-filled staff attribution and scale verification", () => {
-    const startRaw = ReactDOMServer.renderToString(
-      React.createElement(LpgTankSwapModal, {
+describe("Unified LPG ServiceAndIncidentModal modules & placement", () => {
+  it("places Gas Calibration module ABOVE Maintenance & Resolution Log when gas_calibration is selected", () => {
+    const raw = ReactDOMServer.renderToString(
+      React.createElement(ServiceAndIncidentModal, {
         open: true,
-        mode: "start",
         branchId: snapshotFixture.branch_id,
-        device: freshDevice,
-        defaultActorName: "Farah",
+        domain: "lpg",
+        sourceId: freshDevice.source_id,
+        assetLabel: freshDevice.label,
+        assetStatus: "ONLINE",
+        isMaintenanceMode: true,
+        lpgDevice: freshDevice,
+        initialLpgOption: "gas_calibration",
+        defaultTechnicianName: "Farah",
         onClose: vi.fn(),
-        onConfirmed: vi.fn(),
       }),
     );
-    expect(startRaw).toContain('role="dialog"');
-    expect(startRaw).toContain("Start tank swap");
-    expect(startRaw).toContain("Farah");
-    expect(startRaw).toContain("Service note (optional)");
-    expect(startRaw).not.toContain("bg-control");
-    expect(startRaw).not.toContain(" ? ");
-    expect(startRaw).not.toContain("font-mono");
+    const text = raw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
 
-    const completeRaw = ReactDOMServer.renderToString(
-      React.createElement(LpgTankSwapModal, {
-        open: true,
-        mode: "complete",
-        branchId: snapshotFixture.branch_id,
-        device: freshDevice,
-        defaultActorName: "Farah",
-        onClose: vi.fn(),
-        onConfirmed: vi.fn(),
-      }),
-    );
-    expect(completeRaw).toContain("Complete tank swap");
-    expect(completeRaw).toContain("Waiting for stable scale reading");
-    expect(completeRaw).toContain("Empty cylinder tare (kg)");
-    expect(completeRaw).toContain("Rated LPG capacity (kg)");
-    expect(completeRaw).toContain("Confirm tank swap");
+    const gasIdx = text.indexOf("MQ-6 Gas Calibration");
+    const logIdx = text.indexOf("Maintenance & Resolution Log");
+    expect(gasIdx).toBeGreaterThan(0);
+    expect(logIdx).toBeGreaterThan(gasIdx);
+    expect(text).toContain("Warning alert (ppm)");
+    expect(text).toContain("Critical alert (ppm)");
+    expect(text).toContain("Calibrate clean air");
+    expect(text).not.toContain("Tare Weight & Capacity");
+    expect(text).not.toContain("Stay in maintenance");
+    expect(text).toContain("Complete service & return online");
   });
 
-  it("renders Gas Baseline calibration modal with alert limits and advanced circuit controls", () => {
+  it("places Tare Weight module ABOVE Maintenance & Resolution Log when set_tare_weight is selected", () => {
     const raw = ReactDOMServer.renderToString(
-      React.createElement(LpgGasBaselineModal, {
+      React.createElement(ServiceAndIncidentModal, {
         open: true,
         branchId: snapshotFixture.branch_id,
-        device: freshDevice,
-        defaultActorName: "Farah",
+        domain: "lpg",
+        sourceId: freshDevice.source_id,
+        assetLabel: freshDevice.label,
+        assetStatus: "ONLINE",
+        isMaintenanceMode: true,
+        lpgDevice: freshDevice,
+        initialLpgOption: "set_tare_weight",
+        defaultTechnicianName: "Farah",
         onClose: vi.fn(),
-        onConfirmed: vi.fn(),
       }),
     );
-    expect(raw).toContain('role="dialog"');
-    expect(raw).toContain("Calibrate gas baseline");
-    expect(raw).toContain("Warning alert (ppm)");
-    expect(raw).toContain("Critical alert (ppm)");
-    expect(raw).toContain("Advanced circuit settings");
-    expect(raw).toContain("Clear calibration");
-    expect(raw).toContain("Save alert limits");
-    expect(raw).toContain("Calibrate clean air");
-    expect(raw).toContain("bg-negative");
-    expect(raw).not.toContain("bg-control");
-    expect(raw).not.toContain(" ? ");
-    expect(raw).not.toContain("font-mono");
+    const text = raw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
+
+    const tareIdx = text.indexOf("Tare Weight & Capacity");
+    const logIdx = text.indexOf("Maintenance & Resolution Log");
+    expect(tareIdx).toBeGreaterThan(0);
+    expect(logIdx).toBeGreaterThan(tareIdx);
+    expect(text).toContain("Empty cylinder tare (kg)");
+    expect(text).toContain("Rated LPG capacity (kg)");
+    expect(text).toContain("Save tare & capacity");
+    expect(text).not.toContain("MQ-6 Gas Calibration");
+    expect(text).not.toContain("Stay in maintenance");
+  });
+
+  it("omits calibration and tare modules above log section when swap_tank or incident_inspection is selected", () => {
+    const swapRaw = ReactDOMServer.renderToString(
+      React.createElement(ServiceAndIncidentModal, {
+        open: true,
+        branchId: snapshotFixture.branch_id,
+        domain: "lpg",
+        sourceId: freshDevice.source_id,
+        assetLabel: freshDevice.label,
+        assetStatus: "ONLINE",
+        isMaintenanceMode: true,
+        lpgDevice: freshDevice,
+        initialLpgOption: "swap_tank",
+        defaultTechnicianName: "Farah",
+        onClose: vi.fn(),
+      }),
+    );
+    const swapText = swapRaw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
+    expect(swapText).toContain("Place replacement cylinder and wait for stable scale reading");
+    expect(swapText).not.toContain("MQ-6 Gas Calibration");
+    expect(swapText).not.toContain("Tare Weight & Capacity");
+    expect(swapText).not.toContain("Stay in maintenance");
+
+    const incRaw = ReactDOMServer.renderToString(
+      React.createElement(ServiceAndIncidentModal, {
+        open: true,
+        branchId: snapshotFixture.branch_id,
+        domain: "lpg",
+        sourceId: freshDevice.source_id,
+        assetLabel: freshDevice.label,
+        assetStatus: "ONLINE",
+        isMaintenanceMode: true,
+        lpgDevice: freshDevice,
+        incident: {
+          id: "inc-99",
+          reference_code: "INC-99",
+          fault_code: "GAS_WARNING",
+          workflow_state: "open",
+          edge_condition_state: "cleared",
+        },
+        defaultTechnicianName: "Farah",
+        onClose: vi.fn(),
+      }),
+    );
+    const incText = incRaw.replace(/<!--.*?-->/g, "").replace(/&amp;/g, "&");
+    expect(incText).toContain("Incident inspection");
+    expect(incText).not.toContain("MQ-6 Gas Calibration");
+    expect(incText).not.toContain("Tare Weight & Capacity");
   });
 });

@@ -844,6 +844,67 @@ class EdgeSyncWorker:
                         },
                     )
 
+                if action == "set_tare_weight":
+                    tare_kg = lpg_interpreter.finite_float(args.get("tare_kg"))
+                    rated_capacity_kg = lpg_interpreter.finite_float(args.get("rated_capacity_kg"))
+                    if rated_capacity_kg is None:
+                        rated_capacity_kg = (
+                            cfg["rated_capacity_kg"]
+                            or lpg_interpreter.finite_float(device.get("capacity_kg"))
+                            or 14.0
+                        )
+                    if tare_kg is None or tare_kg < 0.0 or tare_kg > 200.0:
+                        conn.rollback()
+                        return "failed", "Cylinder tare weight must be between 0 and 200 kg", {}
+                    if rated_capacity_kg <= 0.0 or rated_capacity_kg > 500.0:
+                        conn.rollback()
+                        return "failed", "Rated capacity must be between 0.1 and 500 kg", {}
+                    updated_by = str(args.get("updated_by") or "Operator").strip()[:80] or "Operator"
+                    tare_rounded = round(float(tare_kg), 3)
+                    cap_rounded = round(float(rated_capacity_kg), 3)
+
+                    cursor.execute(
+                        """INSERT INTO lpg_node_config
+                           (gateway_id, source_id, mq6_vcc_v, mq6_rl_kohm, mq6_divider_ratio,
+                            mq6_ro_kohm, mq6_baseline_v, gas_warn_ppm, gas_crit_ppm,
+                            cylinder_tare_kg, rated_capacity_kg, stability_tolerance_kg, updated_by)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           ON DUPLICATE KEY UPDATE
+                             cylinder_tare_kg=VALUES(cylinder_tare_kg),
+                             rated_capacity_kg=VALUES(rated_capacity_kg),
+                             updated_by=VALUES(updated_by)""",
+                        (
+                            self.gateway_id,
+                            source_id,
+                            cfg["mq6_vcc_v"],
+                            cfg["mq6_rl_kohm"],
+                            cfg["mq6_divider_ratio"],
+                            cfg["mq6_ro_kohm"],
+                            cfg["mq6_baseline_v"],
+                            cfg["gas_warn_ppm"],
+                            cfg["gas_crit_ppm"],
+                            tare_rounded,
+                            cap_rounded,
+                            cfg["stability_tolerance_kg"],
+                            updated_by,
+                        ),
+                    )
+                    cursor.execute(
+                        "UPDATE device_registry SET capacity_kg=%s WHERE gateway_id=%s AND source_id=%s",
+                        (cap_rounded, self.gateway_id, source_id),
+                    )
+                    conn.commit()
+                    self.last_lpg_state_digest = None
+                    return (
+                        "succeeded",
+                        None,
+                        {
+                            "tare_kg": tare_rounded,
+                            "rated_capacity_kg": cap_rounded,
+                            "updated_by": updated_by,
+                        },
+                    )
+
                 conn.rollback()
                 return "failed", f"Unsupported LPG action: {action}", {}
         except Exception as err:
@@ -888,6 +949,7 @@ class EdgeSyncWorker:
                         "start_tank_swap",
                         "complete_tank_swap",
                         "calibrate_gas_baseline",
+                        "set_tare_weight",
                         "start_maintenance",
                         "complete_maintenance",
                     }

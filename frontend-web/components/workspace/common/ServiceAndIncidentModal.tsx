@@ -1,9 +1,11 @@
 "use client";
 
-import React, { useEffect, useId, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Wrench, X } from "lucide-react";
+import React, { useCallback, useEffect, useId, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2, Flame, RefreshCw, Scale, Wrench, X } from "lucide-react";
 import {
   fetchLpgCommandStatus,
+  fetchLpgMaintenanceStatus,
+  refreshBranchLpgSafety,
   startBranchLpgServiceMaintenance,
 } from "@/app/branches/[branchId]/lpg/actions";
 import {
@@ -16,7 +18,20 @@ import {
   resolveIncidentAction,
 } from "@/app/branches/[branchId]/incidents/[incidentId]/actions";
 import { useActionToast } from "@/components/workspace/common/ActionToastContext";
-import type { MaintenanceLogKind } from "@/lib/auth/business";
+import { LpgGasCalibrationModule } from "@/components/workspace/lpg/LpgGasCalibrationModule";
+import { LpgTareWeightModule } from "@/components/workspace/lpg/LpgTareWeightModule";
+import type {
+  LpgNodeConfig,
+  LpgSwapStability,
+  MaintenanceLogKind,
+  SafetyNodeDevice,
+} from "@/lib/auth/business";
+
+export type LpgMaintenanceOption =
+  | "gas_calibration"
+  | "set_tare_weight"
+  | "swap_tank"
+  | "incident_inspection";
 
 export interface ServiceIncidentContext {
   id: string;
@@ -41,6 +56,8 @@ export interface ServiceAndIncidentModalProps {
   defaultTechnicianName?: string;
   defaultErrorCode?: string | null;
   incident?: ServiceIncidentContext | null;
+  lpgDevice?: SafetyNodeDevice | null;
+  initialLpgOption?: LpgMaintenanceOption;
   onClose: () => void;
   onCompleted?: () => Promise<void> | void;
 }
@@ -55,7 +72,15 @@ const SECONDARY_BTN_CLASS =
   "inline-flex min-h-11 min-w-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-control bg-navy px-4 py-2 text-xs font-semibold text-ink transition-colors enabled:hover:bg-navy-hover focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted sm:w-auto";
 
 const QUICK_CODES_MACHINE = ["PREVENTIVE", "INSPECTION", "CLEANING", "E01", "E02", "E03", "E04", "E05"];
-const QUICK_CODES_LPG = ["INSPECTION", "GAS_CHECK", "LEAK_TEST", "CALIBRATION", "GAS_WARNING", "GAS_CRITICAL"];
+const QUICK_CODES_LPG = [
+  "TANK_SWAP",
+  "CALIBRATION",
+  "SET_TARE",
+  "INSPECTION",
+  "LEAK_TEST",
+  "GAS_WARNING",
+  "GAS_CRITICAL",
+];
 
 function randomUuid(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -66,6 +91,35 @@ function randomUuid(): string {
     const v = c === "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
+}
+
+function defaultCodeForLpgOption(
+  option: LpgMaintenanceOption,
+  incident?: ServiceIncidentContext | null,
+  fallbackCode?: string | null,
+): string {
+  if (option === "gas_calibration") return "CALIBRATION";
+  if (option === "set_tare_weight") return "SET_TARE";
+  if (option === "swap_tank") return "TANK_SWAP";
+  return incident?.fault_code?.trim() || fallbackCode?.trim() || "INSPECTION";
+}
+
+function resolveInitialLpgOption(
+  initialLpgOption: LpgMaintenanceOption | undefined,
+  incident: ServiceIncidentContext | null,
+  lpgDevice: SafetyNodeDevice | null,
+): LpgMaintenanceOption {
+  if (initialLpgOption) return initialLpgOption;
+  if (incident) return "incident_inspection";
+  if (lpgDevice?.maintenance_session?.session_kind === "tank_swap") return "swap_tank";
+  if (
+    lpgDevice &&
+    !lpgDevice.gas_interpretation?.ppm_calibrated &&
+    lpgDevice.lpg_config?.mq6_ro_kohm == null
+  ) {
+    return "gas_calibration";
+  }
+  return "swap_tank";
 }
 
 export function ServiceAndIncidentModal({
@@ -81,19 +135,24 @@ export function ServiceAndIncidentModal({
   defaultTechnicianName = "",
   defaultErrorCode = null,
   incident = null,
+  lpgDevice = null,
+  initialLpgOption,
   onClose,
   onCompleted,
 }: ServiceAndIncidentModalProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const mountedRef = useRef(true);
+  const customCodeEditedRef = useRef(false);
   const { notify } = useActionToast();
 
+  const resolvedStartOption = resolveInitialLpgOption(initialLpgOption, incident, lpgDevice);
   const initialCode =
-    incident?.fault_code?.trim() ||
-    defaultErrorCode?.trim() ||
-    (domain === "lpg" ? "INSPECTION" : "PREVENTIVE");
+    domain === "lpg"
+      ? defaultCodeForLpgOption(resolvedStartOption, incident, defaultErrorCode)
+      : incident?.fault_code?.trim() || defaultErrorCode?.trim() || "PREVENTIVE";
 
+  const [lpgOption, setLpgOption] = useState<LpgMaintenanceOption>(resolvedStartOption);
   const [maintenanceOverride, setMaintenanceOverride] = useState(false);
   const maintenanceActive = isMaintenanceMode || maintenanceOverride;
   const [technicianName, setTechnicianName] = useState(defaultTechnicianName.trim());
@@ -104,6 +163,16 @@ export function ServiceAndIncidentModal({
   );
   const [isCommandPending, setIsCommandPending] = useState(false);
   const [isSubmittingLog, setIsSubmittingLog] = useState(false);
+
+  const [liveLpgDevice, setLiveLpgDevice] = useState<SafetyNodeDevice | null>(lpgDevice);
+  const [liveLpgConfig, setLiveLpgConfig] = useState<LpgNodeConfig | null>(
+    lpgDevice?.lpg_config ?? null,
+  );
+  const [stability, setStability] = useState<LpgSwapStability | null>(null);
+  const [loadingLpgStatus, setLoadingLpgStatus] = useState(false);
+
+  const activeLpgDevice = lpgDevice ?? liveLpgDevice;
+  const activeLpgConfig = liveLpgConfig ?? activeLpgDevice?.lpg_config ?? null;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -122,6 +191,49 @@ export function ServiceAndIncidentModal({
     }
   }, [open]);
 
+  const refreshLpgState = useCallback(async () => {
+    if (domain !== "lpg") return;
+    setLoadingLpgStatus(true);
+    try {
+      const [maintRes, snapRes] = await Promise.all([
+        fetchLpgMaintenanceStatus(branchId, sourceId),
+        lpgDevice ? Promise.resolve(null) : refreshBranchLpgSafety(branchId),
+      ]);
+      if (!mountedRef.current) return;
+      if (maintRes.ok) {
+        setLiveLpgConfig(maintRes.value.lpg_config);
+        setStability(maintRes.value.stability);
+        if (maintRes.value.maintenance_mode) {
+          setMaintenanceOverride(true);
+        }
+      }
+      if (snapRes && snapRes.ok) {
+        const match = snapRes.value.devices.find((d) => d.source_id === sourceId) ?? null;
+        if (match) setLiveLpgDevice(match);
+      }
+    } finally {
+      if (mountedRef.current) setLoadingLpgStatus(false);
+    }
+  }, [branchId, domain, lpgDevice, sourceId]);
+
+  useEffect(() => {
+    if (!open || domain !== "lpg") return;
+    let cancelled = false;
+    const initialTimer = window.setTimeout(() => {
+      if (!cancelled) void refreshLpgState();
+    }, 0);
+    const interval = window.setInterval(() => {
+      if (!cancelled && !isCommandPending && !isSubmittingLog) {
+        void refreshLpgState();
+      }
+    }, 3000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(initialTimer);
+      window.clearInterval(interval);
+    };
+  }, [open, domain, isCommandPending, isSubmittingLog, refreshLpgState]);
+
   if (!open) return null;
 
   const busy = isCommandPending || isSubmittingLog;
@@ -129,6 +241,13 @@ export function ServiceAndIncidentModal({
   const isMachineBlocked =
     domain === "machine" &&
     (!branchOpen || !canControlHardware || assetStatus === "OFFLINE");
+
+  const selectLpgOption = (nextOption: LpgMaintenanceOption) => {
+    setLpgOption(nextOption);
+    if (!customCodeEditedRef.current) {
+      setErrorCode(defaultCodeForLpgOption(nextOption, incident, defaultErrorCode));
+    }
+  };
 
   const pollMachineCommand = async (commandId: string): Promise<"succeeded" | "failed" | "timeout"> => {
     for (let attempt = 0; attempt < 16; attempt++) {
@@ -209,11 +328,28 @@ export function ServiceAndIncidentModal({
           });
         }
       } else {
+        const sessionKind =
+          lpgOption === "swap_tank"
+            ? "tank_swap"
+            : incident
+              ? "incident_inspection"
+              : "maintenance";
+        const noteLabel =
+          lpgOption === "swap_tank"
+            ? "LPG tank swap"
+            : lpgOption === "gas_calibration"
+              ? "MQ-6 gas calibration"
+              : lpgOption === "set_tare_weight"
+                ? "Cylinder tare weight configuration"
+                : incident
+                  ? `Inspecting ${incident.reference_code}`
+                  : "Routine maintenance";
+
         const res = await startBranchLpgServiceMaintenance(branchId, sourceId, {
           request_id: requestId,
           started_by: technicianName.trim() || defaultTechnicianName || "Operator",
-          service_note: incident ? `Inspecting ${incident.reference_code}` : "Routine maintenance",
-          session_kind: incident ? "incident_inspection" : "maintenance",
+          service_note: noteLabel,
+          session_kind: sessionKind,
           incident_id: incident?.id ?? null,
         });
         if (!res.ok) {
@@ -232,8 +368,9 @@ export function ServiceAndIncidentModal({
             id: toastId,
             kind: "success",
             title: "LPG node in maintenance mode",
-            message: `${assetLabel} alerts are paused for inspection and service logging.`,
+            message: `${assetLabel} readings evaluation and alerts are paused for service.`,
           });
+          await refreshLpgState();
           await onCompleted?.();
         } else {
           notify({
@@ -272,14 +409,14 @@ export function ServiceAndIncidentModal({
     return "pending_clearance";
   };
 
-  const handleSubmit = async (returnToService: boolean) => {
+  const handleCompleteService = async () => {
     if (busy) return;
     if (!maintenanceActive) {
       notify({
         id: `service-log-${branchId}-${sourceId}`,
         kind: "error",
         title: "Maintenance mode required",
-        message: "Enter maintenance mode before saving a service record.",
+        message: "Put the device into maintenance mode before completing service.",
       });
       return;
     }
@@ -303,7 +440,7 @@ export function ServiceAndIncidentModal({
         id: toastId,
         kind: "error",
         title: "Service or error code required",
-        message: "Enter an error code or service code (e.g., PREVENTIVE, E01, GAS_WARNING).",
+        message: "Enter an error code or service code (e.g., PREVENTIVE, E01, TANK_SWAP).",
       });
       return;
     }
@@ -321,20 +458,28 @@ export function ServiceAndIncidentModal({
     notify({
       id: toastId,
       kind: "info",
-      title: returnToService ? "Completing service" : "Saving service log",
-      message: returnToService
-        ? `Logging service work on ${assetLabel} and returning to normal operation…`
-        : `Saving work-in-progress log for ${assetLabel}…`,
+      title: "Completing service",
+      message: `Logging service work on ${assetLabel} and returning to normal operation…`,
     });
 
     try {
-      const logKind: MaintenanceLogKind = incident
-        ? "incident_resolution"
-        : domain === "lpg"
-          ? "inspection"
-          : "maintenance";
+      const logKind: MaintenanceLogKind =
+        domain === "machine"
+          ? incident
+            ? "incident_resolution"
+            : "maintenance"
+          : lpgOption === "swap_tank"
+            ? "tank_swap"
+            : lpgOption === "gas_calibration"
+              ? "gas_calibration"
+              : lpgOption === "set_tare_weight"
+                ? "set_tare_weight"
+                : incident
+                  ? "incident_resolution"
+                  : "inspection";
+
       const shouldAttemptResolve = Boolean(
-        returnToService && incident && autoResolveIncident && incident.workflow_state !== "resolved",
+        incident && autoResolveIncident && incident.workflow_state !== "resolved",
       );
 
       const res = await submitDeviceMaintenanceLog(branchId, sourceId, {
@@ -343,28 +488,28 @@ export function ServiceAndIncidentModal({
         work_done: trimmedWork,
         log_kind: logKind,
         incident_id: incident?.id ?? null,
-        outcome: returnToService ? "completed" : "in_progress",
-        return_to_service: returnToService,
+        outcome: "completed",
+        return_to_service: true,
         resolve_incident: shouldAttemptResolve,
-        ...(returnToService ? { command_request_id: randomUuid() } : {}),
+        command_request_id: randomUuid(),
       });
 
       if (!res.ok) {
         notify({
           id: toastId,
           kind: "error",
-          title: "Could not save service log",
+          title: "Could not complete service",
           message: res.message,
         });
         return;
       }
 
-      if (!returnToService || !res.value.command?.command_id) {
+      if (!res.value.command?.command_id) {
         notify({
           id: toastId,
           kind: "success",
-          title: "Service log saved",
-          message: `${res.value.item.reference_code} recorded while staying in maintenance mode.`,
+          title: "Service completed",
+          message: `${res.value.item.reference_code} recorded.`,
         });
         await onCompleted?.();
         onClose();
@@ -418,7 +563,7 @@ export function ServiceAndIncidentModal({
           id: toastId,
           kind: "success",
           title: "Service completed",
-          message: `${res.value.item.reference_code} saved and ${assetLabel} returned to service.`,
+          message: `${res.value.item.reference_code} saved and ${assetLabel} returned to normal operation.`,
         });
       }
 
@@ -435,6 +580,22 @@ export function ServiceAndIncidentModal({
       if (mountedRef.current) setIsSubmittingLog(false);
     }
   };
+
+  const lpgOptions: { id: LpgMaintenanceOption; label: string; icon: typeof Wrench }[] = [
+    ...(incident
+      ? [{ id: "incident_inspection" as const, label: "Incident inspection", icon: AlertTriangle }]
+      : []),
+    { id: "gas_calibration", label: "Gas calibration", icon: Flame },
+    { id: "set_tare_weight", label: "Set tare weight", icon: Scale },
+    { id: "swap_tank", label: "Swap tank", icon: Wrench },
+  ];
+
+  const isSwapBlockedByUnstableScale =
+    domain === "lpg" &&
+    lpgOption === "swap_tank" &&
+    maintenanceActive &&
+    stability !== null &&
+    !stability.stable;
 
   return (
     <dialog
@@ -506,20 +667,18 @@ export function ServiceAndIncidentModal({
           </div>
         )}
 
-        <section className="rounded-md border border-line bg-raised/35 p-4 space-y-3">
+        <section className="space-y-4 rounded-md border border-line bg-raised/35 p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0 space-y-1">
-              <h3 className="text-sm font-semibold text-ink">
-                1. Hardware Maintenance Mode
-              </h3>
+              <h3 className="text-sm font-semibold text-ink">Hardware Maintenance Mode</h3>
               <p className="text-xs text-muted">
                 {maintenanceActive
                   ? domain === "lpg"
-                    ? "Readings evaluation and safety alerts are paused while this node is in maintenance."
-                    : "Customer wash/dry cycles are paused while this machine is in maintenance."
+                    ? "Readings evaluation and safety alerts are paused until service is logged and completed."
+                    : "Customer wash/dry cycles are paused until service is logged and completed."
                   : domain === "lpg"
-                    ? "Enter maintenance mode to pause gas and fuel alert triggers before logging service work."
-                    : "Put this unit into maintenance mode (from idle or error) before recording service work."}
+                    ? "Select a maintenance task and put this LPG node into maintenance mode."
+                    : "Put this unit into maintenance mode before recording service work."}
               </p>
             </div>
 
@@ -540,6 +699,7 @@ export function ServiceAndIncidentModal({
               </button>
             )}
           </div>
+
           {isMachineBlocked && !maintenanceActive && (
             <p className="text-xs text-negative">
               {!branchOpen
@@ -547,12 +707,117 @@ export function ServiceAndIncidentModal({
                 : "Machine must be online to enter maintenance mode."}
             </p>
           )}
+
+          {domain === "lpg" && (
+            <div className="space-y-2 border-t border-rule pt-3">
+              <span className="block text-xs font-medium text-muted">LPG maintenance task</span>
+              <div
+                role="radiogroup"
+                aria-label="LPG maintenance task"
+                className={`grid grid-cols-1 gap-2 ${
+                  lpgOptions.length === 4 ? "sm:grid-cols-2" : "sm:grid-cols-3"
+                }`}
+              >
+                {lpgOptions.map((opt) => {
+                  const Icon = opt.icon;
+                  const selected = lpgOption === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      disabled={busy}
+                      onClick={() => selectLpgOption(opt.id)}
+                      className={`inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border px-3 py-2 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60 ${
+                        selected
+                          ? "border-accent bg-navy-selected text-ink"
+                          : "border-control bg-surface text-muted hover:bg-raised hover:text-ink"
+                      }`}
+                    >
+                      <Icon className="size-3.5 shrink-0" aria-hidden="true" />
+                      <span>{opt.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {domain === "lpg" && lpgOption === "swap_tank" && maintenanceActive && (
+            <div
+              className={`rounded-md border-l-2 bg-surface px-3.5 py-3 ${
+                stability?.stable ? "border-positive" : "border-warning"
+              }`}
+            >
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p
+                    className={`text-xs font-semibold ${
+                      stability?.stable ? "text-positive" : "text-warning"
+                    }`}
+                  >
+                    {stability?.stable
+                      ? "Scale reading stable — ready to complete swap"
+                      : "Place replacement cylinder and wait for stable scale reading"}
+                  </p>
+                  <p className="mt-1 text-xs text-muted">
+                    {stability?.reason || "Checking last 3 valid load-cell readings…"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={loadingLpgStatus || busy}
+                  onClick={() => void refreshLpgState()}
+                  className={SECONDARY_BTN_CLASS}
+                >
+                  <RefreshCw
+                    className={`size-3.5 shrink-0 ${loadingLpgStatus ? "animate-spin" : ""}`}
+                    aria-hidden="true"
+                  />
+                  <span>Re-check scale</span>
+                </button>
+              </div>
+            </div>
+          )}
         </section>
 
+        {domain === "lpg" && lpgOption === "gas_calibration" && (
+          <LpgGasCalibrationModule
+            branchId={branchId}
+            sourceId={sourceId}
+            assetLabel={assetLabel}
+            device={activeLpgDevice}
+            lpgConfig={activeLpgConfig}
+            maintenanceActive={maintenanceActive}
+            actorName={technicianName.trim() || defaultTechnicianName || "Operator"}
+            disabled={busy}
+            onConfigured={async () => {
+              await refreshLpgState();
+              await onCompleted?.();
+            }}
+          />
+        )}
+
+        {domain === "lpg" && lpgOption === "set_tare_weight" && (
+          <LpgTareWeightModule
+            branchId={branchId}
+            sourceId={sourceId}
+            assetLabel={assetLabel}
+            device={activeLpgDevice}
+            lpgConfig={activeLpgConfig}
+            maintenanceActive={maintenanceActive}
+            actorName={technicianName.trim() || defaultTechnicianName || "Operator"}
+            disabled={busy}
+            onConfigured={async () => {
+              await refreshLpgState();
+              await onCompleted?.();
+            }}
+          />
+        )}
+
         <section className="space-y-4">
-          <h3 className="text-sm font-semibold text-ink">
-            2. Maintenance &amp; Resolution Log
-          </h3>
+          <h3 className="text-sm font-semibold text-ink">Maintenance &amp; Resolution Log</h3>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <label className="flex min-w-0 flex-col gap-1.5 text-xs font-medium text-muted">
@@ -574,8 +839,11 @@ export function ServiceAndIncidentModal({
                 type="text"
                 value={errorCode}
                 disabled={busy || !maintenanceActive}
-                onChange={(e) => setErrorCode(e.target.value)}
-                placeholder={domain === "lpg" ? "INSPECTION or GAS_WARNING" : "PREVENTIVE or E01"}
+                onChange={(e) => {
+                  customCodeEditedRef.current = true;
+                  setErrorCode(e.target.value);
+                }}
+                placeholder={domain === "lpg" ? "TANK_SWAP or CALIBRATION" : "PREVENTIVE or E01"}
                 maxLength={64}
                 className={INPUT_CLASS}
               />
@@ -588,8 +856,11 @@ export function ServiceAndIncidentModal({
                 key={code}
                 type="button"
                 disabled={busy || !maintenanceActive}
-                onClick={() => setErrorCode(code)}
-                className={`min-h-9 rounded border px-2.5 py-1 font-mono text-[11px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 ${
+                onClick={() => {
+                  customCodeEditedRef.current = true;
+                  setErrorCode(code);
+                }}
+                className={`min-h-11 rounded border px-2.5 py-1 font-mono text-[11px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 ${
                   errorCode.trim().toUpperCase() === code
                     ? "border-accent bg-navy-selected text-ink"
                     : "border-rule bg-raised text-muted hover:border-control hover:text-ink"
@@ -603,11 +874,11 @@ export function ServiceAndIncidentModal({
           <label className="flex flex-col gap-1.5 text-xs font-medium text-muted">
             <span>Tasks conducted / inspection findings</span>
             <textarea
-              rows={5}
+              rows={4}
               value={workDone}
               disabled={busy || !maintenanceActive}
               onChange={(e) => setWorkDone(e.target.value)}
-              placeholder="Describe checks performed, components serviced, gas leak test results, or repair steps…"
+              placeholder="Describe checks performed, components serviced, cylinder replacement, calibration, or repair steps…"
               maxLength={4000}
               className="w-full min-w-0 rounded-md border border-control bg-canvas px-3 py-2.5 text-sm text-ink placeholder:text-faint transition-colors focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted"
             />
@@ -633,17 +904,17 @@ export function ServiceAndIncidentModal({
       <div className="flex flex-col-reverse gap-2.5 border-t border-rule bg-surface px-5 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-6">
         <button
           type="button"
-          disabled={busy || !maintenanceActive}
-          onClick={() => handleSubmit(false)}
+          disabled={busy}
+          onClick={onClose}
           className={SECONDARY_BTN_CLASS}
         >
-          {isSubmittingLog ? "Saving…" : "Save progress (Stay in maintenance)"}
+          Close
         </button>
 
         <button
           type="button"
-          disabled={busy || !maintenanceActive}
-          onClick={() => handleSubmit(true)}
+          disabled={busy || !maintenanceActive || isSwapBlockedByUnstableScale}
+          onClick={() => void handleCompleteService()}
           className={PRIMARY_BTN_CLASS}
         >
           {isSubmittingLog ? "Completing…" : "Complete service & return online"}
