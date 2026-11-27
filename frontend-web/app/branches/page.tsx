@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Activity, AlertCircle, Building2, MapPin, Plus, Users, WashingMachine } from "lucide-react";
+import { Building2, Users } from "lucide-react";
 import { Notice } from "@/components/auth/AuthForm";
 import { WorkspaceShell } from "@/components/workspace/layout/WorkspaceShell";
 import { MetricCard, MetricGrid } from "@/components/workspace/common/MetricCard";
@@ -9,7 +9,7 @@ import { BranchDirectoryView } from "@/components/workspace/branches/BranchDirec
 import { PerformanceChart } from "@/components/workspace/branches/PerformanceChart";
 import { fetchBranchesAnalytics } from "@/app/branches/actions";
 import { getBranchDirectory, getMembership, getOrganizationAnalytics } from "@/lib/auth/business";
-import { primaryButton, secondaryButton } from "@/lib/auth/styles";
+import { secondaryButton } from "@/lib/auth/styles";
 
 export const metadata: Metadata = { title: "Branches" };
 export const dynamic = "force-dynamic";
@@ -45,32 +45,36 @@ export default async function BranchesPage() {
       {directory.ok && <>
         {owner && directory.value.summary && (
           <section
-            className="rounded-md border border-line bg-surface p-5 md:p-6"
-            aria-label="Organization statistics"
+            className="rounded-md border border-line bg-surface p-4 sm:p-5"
+            aria-labelledby="org-overview-heading"
           >
-            <div className="space-y-6">
-              <div>
-                <h2 id="org-infrastructure-heading" className="text-sm font-semibold text-ink mb-3">
-                  Infrastructure
-                </h2>
-                <MetricGrid columns={3} ariaLabel="Infrastructure statistics">
-                  <MetricCard size="sm" variant="raised" icon={<Building2 className="size-4" aria-hidden="true" />} label="Branches" value={directory.value.summary.branch_count} />
-                  <MetricCard size="sm" variant="raised" icon={<Users className="size-4" aria-hidden="true" />} label="Approved personnel" value={directory.value.summary.personnel_count} />
-                  <MetricCard size="sm" variant="raised" icon={<WashingMachine className="size-4" aria-hidden="true" />} label="Registered machines" value={0} />
-                </MetricGrid>
-              </div>
-
-              <div className="border-t border-rule pt-6">
-                <h2 id="org-operations-heading" className="text-sm font-semibold text-ink mb-3">
-                  Operational activity
-                </h2>
-                <MetricGrid columns={3} ariaLabel="Operational activity statistics">
-                  <MetricCard size="sm" variant="raised" icon={<Users className="size-4" aria-hidden="true" />} label="Pending requests" value={directory.value.summary.pending_request_count} href="/personnel" />
-                  <MetricCard size="sm" variant="raised" icon={<Activity className="size-4" aria-hidden="true" />} label="Machines running" value={0} />
-                  <MetricCard size="sm" variant="raised" icon={<AlertCircle className="size-4" aria-hidden="true" />} label="Machines down" value={0} />
-                </MetricGrid>
-              </div>
-            </div>
+            <h2 id="org-overview-heading" className="mb-3 text-base font-bold text-ink">
+              Organization overview
+            </h2>
+            <MetricGrid columns={3} ariaLabel="Organization statistics">
+              <MetricCard
+                size="overview"
+                variant="raised"
+                icon={<Building2 className="size-4" aria-hidden="true" />}
+                label="Branches"
+                value={directory.value.summary.branch_count}
+              />
+              <MetricCard
+                size="overview"
+                variant="raised"
+                icon={<Users className="size-4" aria-hidden="true" />}
+                label="Approved personnel"
+                value={directory.value.summary.personnel_count}
+              />
+              <MetricCard
+                size="overview"
+                variant="raised"
+                icon={<Users className="size-4" aria-hidden="true" />}
+                label="Pending requests"
+                value={directory.value.summary.pending_request_count}
+                href="/personnel"
+              />
+            </MetricGrid>
           </section>
         )}
         <BranchDirectoryView branches={directory.value.branches} owner={owner} />

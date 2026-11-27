@@ -95,6 +95,20 @@ describe("MetricCard and MetricGrid components", () => {
     expect(raw).toContain("hover:bg-raised/60");
   });
 
+  it("supports overview size matching PerformanceChart KPI typography", () => {
+    const raw = renderToString(
+      React.createElement(MetricCard, {
+        label: "Branches",
+        value: 3,
+        size: "overview",
+        variant: "raised",
+      })
+    );
+    expect(raw).toContain("p-3.5 sm:p-4");
+    expect(raw).toContain("text-lg font-extrabold sm:text-2xl");
+    expect(raw).toContain("font-medium text-muted");
+  });
+
   it("renders MetricGrid with responsive 3-column, 4-column, and 6-column column layouts", () => {
     const raw3 = renderToString(
       React.createElement(

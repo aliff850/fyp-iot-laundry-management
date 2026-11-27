@@ -8,6 +8,7 @@ import {
   type GeocodeActionResult,
 } from "@/app/branches/actions";
 import type { GeocodeResult } from "@/lib/auth/business";
+import { attachResilientOsmTileLayer } from "@/lib/maps/tileLayer";
 
 const MALAYSIA_CENTER: [number, number] = [4.2105, 101.9758];
 const MALAYSIA_DEFAULT_ZOOM = 6;
@@ -113,13 +114,7 @@ export function BranchLocationPicker({
       );
       mapInstance.current = map;
 
-      L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", {
-        attribution:
-          '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors, Tiles style by <a href="https://www.hotosm.org/" target="_blank" rel="noreferrer">Humanitarian OpenStreetMap Team</a>',
-        subdomains: "abc",
-        maxZoom: 19,
-        referrerPolicy: "strict-origin-when-cross-origin",
-      }).addTo(map);
+      attachResilientOsmTileLayer(L, map);
 
       if (latNum !== null && lngNum !== null && Number.isFinite(latNum) && Number.isFinite(lngNum)) {
         placeOrMoveMarker(L, map, latNum, lngNum);

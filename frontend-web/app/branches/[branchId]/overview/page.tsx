@@ -3,10 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
-  Activity,
-  AlertCircle,
   Flame,
-  MessageSquareWarning,
   ShieldCheck,
   Users,
   WashingMachine,
@@ -156,82 +153,43 @@ export default async function BranchOverviewPage({ params }: BranchOverviewPageP
           </div>
         )}
 
-        {/* Grouped Metric Statistics Container (Infrastructure & Operational Activity) */}
+        {/* Branch Infrastructure Metric Statistics */}
         <section
-          className="rounded-md border border-line bg-surface p-5 md:p-6"
-          aria-label="Branch statistics"
+          className="rounded-md border border-line bg-surface p-4 sm:p-5"
+          aria-labelledby="branch-infrastructure-heading"
         >
-          <div className="space-y-6">
-            <div>
-              <h2 id="branch-infrastructure-heading" className="text-sm font-semibold text-ink mb-3">
-                Infrastructure
-              </h2>
-              <MetricGrid
-                columns={3}
-                ariaLabel="Branch infrastructure statistics"
-              >
-                <MetricCard
-                  size="sm"
-                  variant="raised"
-                  icon={<WashingMachine className="size-4" aria-hidden="true" />}
-                  label="Total machines"
-                  value={overview.fleet.total_machines}
-                  href={`/branches/${branch.id}/machines`}
-                />
-                <MetricCard
-                  size="sm"
-                  variant="raised"
-                  icon={<Flame className="size-4" aria-hidden="true" />}
-                  label="LPG cylinders"
-                  value={overview.lpg.total_cylinders}
-                  href={`/branches/${branch.id}/lpg`}
-                />
-                <MetricCard
-                  size="sm"
-                  variant="raised"
-                  icon={<Users className="size-4" aria-hidden="true" />}
-                  label="Branch personnel"
-                  value={overview.personnel.total_assigned}
-                  href={`/branches/${branch.id}/personnel`}
-                />
-              </MetricGrid>
-            </div>
-
-            <div className="border-t border-rule pt-6">
-              <h2 id="branch-operations-heading" className="text-sm font-semibold text-ink mb-3">
-                Operational activity
-              </h2>
-              <MetricGrid
-                columns={3}
-                ariaLabel="Branch operational activity statistics"
-              >
-                <MetricCard
-                  size="sm"
-                  variant="raised"
-                  icon={<Activity className="size-4" aria-hidden="true" />}
-                  label="Machines running"
-                  value={overview.fleet.running}
-                  href={`/branches/${branch.id}/machines`}
-                />
-                <MetricCard
-                  size="sm"
-                  variant="raised"
-                  icon={<AlertCircle className="size-4" aria-hidden="true" />}
-                  label="Machines down"
-                  value={overview.fleet.error + overview.fleet.offline}
-                  href={`/branches/${branch.id}/machines`}
-                />
-                <MetricCard
-                  size="sm"
-                  variant="raised"
-                  icon={<MessageSquareWarning className="size-4" aria-hidden="true" />}
-                  label="Customer reports"
-                  value={overview.customer_reports.pending_count}
-                  href={`/branches/${branch.id}/customer-reports`}
-                />
-              </MetricGrid>
-            </div>
-          </div>
+          <h2 id="branch-infrastructure-heading" className="mb-3 text-base font-bold text-ink">
+            Infrastructure
+          </h2>
+          <MetricGrid
+            columns={3}
+            ariaLabel="Branch infrastructure statistics"
+          >
+            <MetricCard
+              size="overview"
+              variant="raised"
+              icon={<WashingMachine className="size-4" aria-hidden="true" />}
+              label="Total machines"
+              value={overview.fleet.total_machines}
+              href={`/branches/${branch.id}/machines`}
+            />
+            <MetricCard
+              size="overview"
+              variant="raised"
+              icon={<Flame className="size-4" aria-hidden="true" />}
+              label="LPG cylinders"
+              value={overview.lpg.total_cylinders}
+              href={`/branches/${branch.id}/lpg`}
+            />
+            <MetricCard
+              size="overview"
+              variant="raised"
+              icon={<Users className="size-4" aria-hidden="true" />}
+              label="Branch personnel"
+              value={overview.personnel.total_assigned}
+              href={`/branches/${branch.id}/personnel`}
+            />
+          </MetricGrid>
         </section>
 
         <Suspense fallback={<OverviewPanelSkeleton tall />}>

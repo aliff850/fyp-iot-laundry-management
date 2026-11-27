@@ -10,7 +10,7 @@ export interface MetricCardProps {
   href?: string;
   valueClassName?: string;
   className?: string;
-  size?: "sm" | "md"; // "sm" = p-3 (dense 6-column grid); "md" = p-4 (4-column summary KPI bar)
+  size?: "sm" | "md" | "overview"; // "sm" = p-3; "md" = p-4; "overview" = matches PerformanceChart KPI tiles
   variant?: "surface" | "raised"; // "surface" = standard bg-surface; "raised" = nested well bg-raised/40 per DESIGN.md
   children?: React.ReactNode; // For custom slots (e.g. status badges)
   ariaLabel?: string;
@@ -62,16 +62,21 @@ export function MetricCard({
   ariaLabel,
 }: MetricCardProps) {
   const isSm = size === "sm";
-  const paddingClass = isSm ? "p-3" : "p-4";
-  const valueSizeClass = isSm ? "text-xl font-semibold" : "text-2xl sm:text-3xl font-semibold";
-  const mtClass = isSm ? "mt-1" : "mt-2";
+  const isOverview = size === "overview";
+  const paddingClass = isSm ? "p-3" : isOverview ? "p-3.5 sm:p-4" : "p-4";
+  const valueSizeClass = isSm
+    ? "text-xl font-semibold"
+    : isOverview
+      ? "text-lg font-extrabold sm:text-2xl"
+      : "text-2xl sm:text-3xl font-semibold";
+  const mtClass = isSm || isOverview ? "mt-1" : "mt-2";
   const isRaised = variant === "raised";
   const bgClass = isRaised ? "bg-raised/40" : "bg-surface";
   const hoverBgClass = isRaised ? "hover:bg-raised/60" : "hover:bg-raised";
 
   const content = (
     <>
-      <div className="flex items-center gap-1.5 text-xs text-muted">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted">
         {icon && (
           <span className="shrink-0 text-muted" aria-hidden="true">
             {icon}
@@ -105,7 +110,7 @@ export function MetricCard({
     </>
   );
 
-  const baseClasses = `flex flex-col justify-between rounded-md border border-line ${bgClass} transition-colors ${paddingClass} ${className}`.trim();
+  const baseClasses = `min-w-0 min-h-11 flex flex-col justify-between rounded-md border border-line ${bgClass} transition-colors ${paddingClass} ${className}`.trim();
 
   if (href) {
     return (
